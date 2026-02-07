@@ -511,6 +511,19 @@ function App() {
   const groupsRef = useRef(null)
   const [taxOpen, setTaxOpen] = useState(false)
   const taxRef = useRef(null)
+  const [selectedClientIds, setSelectedClientIds] = useState([])
+  const selectAllRef = useRef(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkForm, setBulkForm] = useState({
+    status: '',
+    visibilidade: '',
+    grupos: [],
+    tributacao: '',
+  })
+  const [bulkGroupsOpen, setBulkGroupsOpen] = useState(false)
+  const bulkGroupsRef = useRef(null)
+  const [bulkTaxOpen, setBulkTaxOpen] = useState(false)
+  const bulkTaxRef = useRef(null)
 
   useEffect(() => {
     const shouldRemember = localStorage.getItem(STORAGE_KEYS.remember) === 'true'
@@ -546,6 +559,39 @@ function App() {
     document.addEventListener('mousedown', handleOutsideClick)
     return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [taxOpen])
+
+  useEffect(() => {
+    if (!bulkGroupsOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (bulkGroupsRef.current && !bulkGroupsRef.current.contains(event.target)) {
+        setBulkGroupsOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [bulkGroupsOpen])
+
+  useEffect(() => {
+    if (!bulkTaxOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (bulkTaxRef.current && !bulkTaxRef.current.contains(event.target)) {
+        setBulkTaxOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [bulkTaxOpen])
+
+  useEffect(() => {
+    if (!selectAllRef.current) return
+    const total = clients.length
+    const selected = selectedClientIds.length
+    selectAllRef.current.indeterminate = selected > 0 && selected < total
+  }, [clients.length, selectedClientIds.length])
 
   const handleLogin = (event) => {
     event.preventDefault()
@@ -602,12 +648,33 @@ function App() {
     setCreateOpen(false)
   }
 
+  const openBulkModal = () => {
+    if (!selectedClientIds.length) return
+    setBulkOpen(true)
+    setBulkGroupsOpen(false)
+    setBulkTaxOpen(false)
+  }
+
   const handleClientChange = (field, value) => {
     setClientForm((prev) => ({ ...prev, [field]: value }))
   }
 
   const toggleGroup = (group) => {
     setClientForm((prev) => {
+      const current = Array.isArray(prev.grupos) ? prev.grupos : []
+      if (current.includes(group)) {
+        return { ...prev, grupos: current.filter((item) => item !== group) }
+      }
+      return { ...prev, grupos: [...current, group] }
+    })
+  }
+
+  const handleBulkChange = (field, value) => {
+    setBulkForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const toggleBulkGroup = (group) => {
+    setBulkForm((prev) => {
       const current = Array.isArray(prev.grupos) ? prev.grupos : []
       if (current.includes(group)) {
         return { ...prev, grupos: current.filter((item) => item !== group) }
@@ -634,14 +701,42 @@ function App() {
     setClientForm({ ...emptyClientForm })
   }
 
+  const handleBulkSave = () => {
+    if (!selectedClientIds.length) return
+    setClients((prev) =>
+      prev.map((client) => {
+        if (!selectedClientIds.includes(client.id)) return client
+        return {
+          ...client,
+          ...(bulkForm.status ? { status: bulkForm.status } : {}),
+          ...(bulkForm.visibilidade ? { visibilidade: bulkForm.visibilidade } : {}),
+          ...(bulkForm.tributacao ? { tributacao: bulkForm.tributacao } : {}),
+          ...(bulkForm.grupos.length ? { grupos: bulkForm.grupos } : {}),
+        }
+      }),
+    )
+    setBulkOpen(false)
+    setBulkGroupsOpen(false)
+    setBulkTaxOpen(false)
+    setBulkForm({ status: '', visibilidade: '', grupos: [], tributacao: '' })
+  }
+
   const requestDelete = (client) => {
-    setPendingDelete(client)
+    setPendingDelete([client])
+    setConfirmOpen(true)
+  }
+
+  const requestBulkDelete = () => {
+    if (!selectedClientIds.length) return
+    setPendingDelete(clients.filter((client) => selectedClientIds.includes(client.id)))
     setConfirmOpen(true)
   }
 
   const confirmDelete = () => {
     if (pendingDelete) {
-      setClients((prev) => prev.filter((client) => client.id !== pendingDelete.id))
+      const idsToDelete = pendingDelete.map((client) => client.id)
+      setClients((prev) => prev.filter((client) => !idsToDelete.includes(client.id)))
+      setSelectedClientIds((prev) => prev.filter((id) => !idsToDelete.includes(id)))
     }
     setPendingDelete(null)
     setConfirmOpen(false)
@@ -652,9 +747,25 @@ function App() {
     setConfirmOpen(false)
   }
 
+  const toggleSelectAll = () => {
+    if (selectedClientIds.length === clients.length) {
+      setSelectedClientIds([])
+    } else {
+      setSelectedClientIds(clients.map((client) => client.id))
+    }
+  }
+
+  const toggleSelectClient = (clientId) => {
+    setSelectedClientIds((prev) =>
+      prev.includes(clientId) ? prev.filter((id) => id !== clientId) : [...prev, clientId],
+    )
+  }
+
   const selectedGroups = Array.isArray(clientForm.grupos) ? clientForm.grupos : []
   const selectedTax = clientForm.tributacao || ''
   const isReadOnly = clientMode === 'view'
+  const bulkSelectedGroups = Array.isArray(bulkForm.grupos) ? bulkForm.grupos : []
+  const bulkSelectedTax = bulkForm.tributacao || ''
 
   return (
     <div className="app">
@@ -1149,7 +1260,37 @@ function App() {
                 </header>
 
                 <div className="client-table card">
+                  <div className="client-select-all">
+                    <label>
+                      <input
+                        type="checkbox"
+                        ref={selectAllRef}
+                        checked={clients.length > 0 && selectedClientIds.length === clients.length}
+                        onChange={toggleSelectAll}
+                      />
+                      Selecionar todos
+                    </label>
+                    <div className="bulk-actions">
+                      <button
+                        type="button"
+                        className="chip small"
+                        disabled={!selectedClientIds.length}
+                        onClick={openBulkModal}
+                      >
+                        Editar em lote
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-outline"
+                        disabled={!selectedClientIds.length}
+                        onClick={requestBulkDelete}
+                      >
+                        Excluir selecionados
+                      </button>
+                    </div>
+                  </div>
                   <div className="client-head">
+                    <span />
                     <span>Nome</span>
                     <span>Apelido</span>
                     <span>Documento</span>
@@ -1164,6 +1305,13 @@ function App() {
                   <div className="client-rows">
                     {clients.map((client) => (
                       <div className="client-row" key={client.id}>
+                        <span>
+                          <input
+                            type="checkbox"
+                            checked={selectedClientIds.includes(client.id)}
+                            onChange={() => toggleSelectClient(client.id)}
+                          />
+                        </span>
                         <span>{client.nome}</span>
                         <span>{client.apelido}</span>
                         <span className="client-doc">
@@ -1683,8 +1831,16 @@ function App() {
                   </button>
                 </header>
                 <p className="confirm-text">
-                  Deseja excluir o cliente{' '}
-                  <strong>{pendingDelete ? pendingDelete.nome : 'selecionado'}</strong>?
+                  {pendingDelete && pendingDelete.length > 1 ? (
+                    <>
+                      Deseja excluir <strong>{pendingDelete.length}</strong> clientes selecionados?
+                    </>
+                  ) : (
+                    <>
+                      Deseja excluir o cliente{' '}
+                      <strong>{pendingDelete && pendingDelete[0] ? pendingDelete[0].nome : 'selecionado'}</strong>?
+                    </>
+                  )}
                 </p>
                 <div className="form-actions">
                   <button className="chip small" type="button" onClick={cancelDelete}>
@@ -1694,6 +1850,161 @@ function App() {
                     Excluir
                   </button>
                 </div>
+              </div>
+            </div>
+          ) : null}
+
+          {bulkOpen ? (
+            <div className="modal-backdrop" onClick={() => setBulkOpen(false)}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <header className="modal-header">
+                  <h3>Editar em lote</h3>
+                  <button className="modal-close" type="button" onClick={() => setBulkOpen(false)}>
+                    ×
+                  </button>
+                </header>
+                <p className="confirm-text">
+                  Aplicar alterações para <strong>{selectedClientIds.length}</strong> clientes selecionados.
+                </p>
+                <form
+                  className="client-form"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    handleBulkSave()
+                  }}
+                >
+                  <div className="form-grid">
+                    <div className="field">
+                      <label>Status</label>
+                      <select
+                        value={bulkForm.status}
+                        onChange={(event) => handleBulkChange('status', event.target.value)}
+                      >
+                        <option value="">Manter atual</option>
+                        <option>Ativo</option>
+                        <option>Inativo</option>
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label>Visibilidade</label>
+                      <select
+                        value={bulkForm.visibilidade}
+                        onChange={(event) => handleBulkChange('visibilidade', event.target.value)}
+                      >
+                        <option value="">Manter atual</option>
+                        <option>Geral</option>
+                        <option>Restrito</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <div className="field">
+                      <label>Grupos</label>
+                      <div className="multi-select" ref={bulkGroupsRef}>
+                        <div
+                          className={`multi-trigger ${bulkGroupsOpen ? 'open' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setBulkGroupsOpen((prev) => !prev)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              setBulkGroupsOpen((prev) => !prev)
+                            }
+                          }}
+                        >
+                          {bulkSelectedGroups.length ? (
+                            <div className="multi-tags">
+                              {bulkSelectedGroups.map((grupo) => (
+                                <span className="tag-pill" key={grupo}>
+                                  {grupo}
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      toggleBulkGroup(grupo)
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="placeholder">Manter atual</span>
+                          )}
+                          <span className="caret" />
+                        </div>
+                        {bulkGroupsOpen ? (
+                          <div className="multi-menu">
+                            {groupOptions.map((option) => (
+                              <button
+                                type="button"
+                                className={`multi-option ${
+                                  bulkSelectedGroups.includes(option) ? 'selected' : ''
+                                }`}
+                                key={option}
+                                onClick={() => toggleBulkGroup(option)}
+                              >
+                                <span className="check" />
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="field">
+                      <label>Tributação</label>
+                      <div className="single-select" ref={bulkTaxRef}>
+                        <div
+                          className={`single-trigger ${bulkTaxOpen ? 'open' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setBulkTaxOpen((prev) => !prev)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              setBulkTaxOpen((prev) => !prev)
+                            }
+                          }}
+                        >
+                          {bulkSelectedTax ? (
+                            <span>{bulkSelectedTax}</span>
+                          ) : (
+                            <span className="placeholder">Manter atual</span>
+                          )}
+                          <span className="caret" />
+                        </div>
+                        {bulkTaxOpen ? (
+                          <div className="single-menu">
+                            {taxOptions.map((option) => (
+                              <button
+                                key={option}
+                                type="button"
+                                className={`single-option ${bulkSelectedTax === option ? 'selected' : ''}`}
+                                onClick={() => {
+                                  handleBulkChange('tributacao', option)
+                                  setBulkTaxOpen(false)
+                                }}
+                              >
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="form-actions">
+                    <button className="chip small" type="button" onClick={() => setBulkOpen(false)}>
+                      Cancelar
+                    </button>
+                    <button className="primary small" type="submit">
+                      Aplicar
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           ) : null}
