@@ -505,6 +505,45 @@ const getTaskDisplayConclusion = (row) => {
   return row.conclusionDate || row.deliveryDate || ''
 }
 
+const isCompletedTaskStatus = (status) => {
+  const normalizedStatus = String(status || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  return ['finalizada', 'concluida', 'dispensada', 'cancelada'].some((keyword) =>
+    normalizedStatus.includes(keyword),
+  )
+}
+
+const getTaskProgressColumnKey = ({
+  todayIso,
+  actionIso,
+  metaIso,
+  dueIso,
+  isCompleted,
+  hasDeliveryDate,
+}) => {
+  if (isCompleted || hasDeliveryDate) return 'review'
+  if (actionIso && todayIso < actionIso) return 'notStarted'
+  if (metaIso && todayIso < metaIso) return 'doing'
+  if (dueIso && todayIso <= dueIso) return 'pending'
+  return 'pending'
+}
+
+const getDepartmentLabel = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const normalized = text.toLowerCase()
+  if (normalized.startsWith('back office - ')) {
+    return text.slice('Back Office - '.length).trim()
+  }
+  if (normalized.startsWith('backoffice - ')) {
+    return text.slice('Backoffice - '.length).trim()
+  }
+  return text
+}
+
 const formatCompetenceValue = (value) => {
   if (!value) return ''
   const normalized = String(value).trim().toUpperCase()
@@ -2055,6 +2094,170 @@ function App() {
   const isReadOnly = clientMode === 'view'
   const bulkSelectedGroups = Array.isArray(bulkForm.grupos) ? bulkForm.grupos : []
   const bulkSelectedTax = bulkForm.tributacao || ''
+  const currentMonthLabel = getCompetenceFromDate(getTodayIsoLocal(), 'Mesmo mês')
+  const todayIso = getTodayIsoLocal()
+  const getEmptyProgressBucket = () => ({ notStarted: 0, doing: 0, pending: 0, review: 0 })
+  const overviewMetrics = tasksRows.reduce(
+    (acc, row) => {
+      const displayStatus = getTaskDisplayStatus(row)
+      const actionIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'A'))
+      const metaIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'M'))
+      const dueIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'V'))
+      const deliveryIso = parseBrDateToIso(row.deliveryDate)
+      const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
+      const isCompleted = isCompletedTaskStatus(displayStatus.status)
+      const progressColumn = getTaskProgressColumnKey({
+        todayIso,
+        actionIso,
+        metaIso,
+        dueIso,
+        isCompleted,
+        hasDeliveryDate,
+      })
+
+      if (!isCompleted) {
+        acc.pending += 1
+        acc.progress.open[progressColumn] += 1
+      }
+
+      if (!isCompleted && dueIso && dueIso === todayIso) {
+        acc.dueToday += 1
+        acc.progress.dueToday[progressColumn] += 1
+      }
+
+      if (!isCompleted && metaIso && dueIso && todayIso >= metaIso && todayIso <= dueIso) {
+        acc.subjectToFine += 1
+        acc.progress.attention[progressColumn] += 1
+      }
+
+      if (deliveryIso && dueIso && deliveryIso > dueIso) {
+        acc.generatedFine += 1
+      }
+
+      return acc
+    },
+    {
+      dueToday: 0,
+      subjectToFine: 0,
+      generatedFine: 0,
+      pending: 0,
+      progress: {
+        open: getEmptyProgressBucket(),
+        dueToday: getEmptyProgressBucket(),
+        attention: getEmptyProgressBucket(),
+      },
+    },
+  )
+  const completedTasks = Math.max(0, tasksRows.length - overviewMetrics.pending)
+  const completionPercent = tasksRows.length
+    ? Math.round((completedTasks / tasksRows.length) * 100)
+    : 0
+  const dashboardStats = stats.map((stat) => {
+    const dynamicValueByLabel = {
+      'Vencem Hoje': overviewMetrics.dueToday,
+      'Sujeitas à Multa': overviewMetrics.subjectToFine,
+      'Multas Geradas': overviewMetrics.generatedFine,
+      Pendentes: overviewMetrics.pending,
+    }
+    return {
+      ...stat,
+      value: String(dynamicValueByLabel[stat.label] ?? stat.value),
+    }
+  })
+  const progressRowsData = [
+    {
+      label: 'Abertas',
+      tone: 'amber',
+      values: [
+        overviewMetrics.progress.open.notStarted,
+        overviewMetrics.progress.open.doing,
+        overviewMetrics.progress.open.pending,
+        overviewMetrics.progress.open.review,
+      ],
+    },
+    {
+      label: 'Vencem Hoje',
+      tone: 'rose',
+      values: [
+        overviewMetrics.progress.dueToday.notStarted,
+        overviewMetrics.progress.dueToday.doing,
+        overviewMetrics.progress.dueToday.pending,
+        overviewMetrics.progress.dueToday.review,
+      ],
+    },
+    {
+      label: 'Atenção',
+      tone: 'violet',
+      values: [
+        overviewMetrics.progress.attention.notStarted,
+        overviewMetrics.progress.attention.doing,
+        overviewMetrics.progress.attention.pending,
+        overviewMetrics.progress.attention.review,
+      ],
+    },
+  ]
+  const departmentsInSystem = Array.from(
+    new Set(
+      [
+        ...users.map((user) => getDepartmentLabel(user.departamento)),
+        ...clients.flatMap((client) =>
+          (Array.isArray(client.grupos) ? client.grupos : []).map((group) => getDepartmentLabel(group)),
+        ),
+        ...tasksRows.map((task) => getDepartmentLabel(task.dept)),
+      ].filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  const obligationsByDepartment = new Map(
+    departmentsInSystem.map((department) => [
+      department,
+      { name: department, action: 0, alert: 0, pending: 0, done: 0 },
+    ]),
+  )
+  tasksRows.forEach((task) => {
+    const department = getDepartmentLabel(task.dept) || 'Sem departamento'
+    const displayStatus = getTaskDisplayStatus(task)
+    const isCompleted = isCompletedTaskStatus(displayStatus.status)
+    const actionIso = parseBrDateToIso(getTaggedReportDate(task.dates, 'A'))
+    const metaIso = parseBrDateToIso(getTaggedReportDate(task.dates, 'M'))
+    const dueIso = parseBrDateToIso(getTaggedReportDate(task.dates, 'V'))
+
+    if (!obligationsByDepartment.has(department)) {
+      obligationsByDepartment.set(department, {
+        name: department,
+        action: 0,
+        alert: 0,
+        pending: 0,
+        done: 0,
+      })
+    }
+
+    const current = obligationsByDepartment.get(department)
+    if (!current) return
+
+    if (isCompleted) {
+      current.done += 1
+      return
+    }
+
+    current.pending += 1
+
+    if (metaIso && dueIso && todayIso >= metaIso && todayIso <= dueIso) {
+      current.alert += 1
+      return
+    }
+
+    if (actionIso && todayIso >= actionIso && (!metaIso || todayIso < metaIso)) {
+      current.action += 1
+    }
+  })
+  const obligationsRowsDynamic = Array.from(obligationsByDepartment.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, 'pt-BR'),
+  )
+  const controlRowsData = controlRows.map((group) =>
+    group.group === 'Obrigações'
+      ? { ...group, items: obligationsRowsDynamic.length ? obligationsRowsDynamic : group.items }
+      : group,
+  )
   const selectedTaskLogs = selectedTask
     ? taskActionLogs.filter((log) => log.taskId === selectedTask.id)
     : []
@@ -2280,7 +2483,7 @@ function App() {
             {screen === 'dashboard' ? (
               <div className="dashboard-view">
                 <section className="stats">
-                  {stats.map((stat, index) => (
+                  {dashboardStats.map((stat, index) => (
                     <article
                       key={stat.label}
                       className={`stat-card tone-${stat.tone}`}
@@ -2309,7 +2512,7 @@ function App() {
                         <span>Pendente</span>
                         <span>Revisão</span>
                       </div>
-                      {progressRows.map((row) => (
+                      {progressRowsData.map((row) => (
                         <div className="progress-row" key={row.label}>
                           <span className={`tag tone-${row.tone}`}>{row.label}</span>
                           {row.values.map((value, idx) => (
@@ -2325,19 +2528,19 @@ function App() {
                   <article className="card performance" style={{ '--delay': '0.16s' }}>
                     <header>
                       <h4>Performance do Mês</h4>
-                      <span>FEV/2026</span>
+                      <span>{currentMonthLabel || '-'}</span>
                     </header>
                     <div className="performance-body">
                       <div className="metric">
-                        <strong>0</strong>
+                        <strong>{completedTasks}</strong>
                         <span>Tarefas Realizadas</span>
                       </div>
                       <div className="donut">
-                        <div className="donut-value">0%</div>
+                        <div className="donut-value">{completionPercent}%</div>
                         <span>Tarefas Concluídas</span>
                       </div>
                       <div className="metric">
-                        <strong>14</strong>
+                        <strong>{overviewMetrics.pending}</strong>
                         <span>Tarefas Restantes</span>
                       </div>
                     </div>
@@ -2346,22 +2549,6 @@ function App() {
                     </button>
                   </article>
 
-                  <article className="card client-view" style={{ '--delay': '0.22s' }}>
-                    <header>
-                      <h4>Visão do Cliente</h4>
-                      <span>Indicadores chave</span>
-                    </header>
-                    <div className="client-cards">
-                      <div className="pill-card">
-                        <p>Aguardando resposta</p>
-                        <strong>0</strong>
-                      </div>
-                      <div className="pill-card muted">
-                        <p>Com impedimento</p>
-                        <strong>0</strong>
-                      </div>
-                    </div>
-                  </article>
                 </section>
 
                 <section className="card control-panel" style={{ '--delay': '0.26s' }}>
@@ -2386,7 +2573,7 @@ function App() {
                       </button>
                     </div>
                   </header>
-                  {controlRows.map((group) => (
+                  {controlRowsData.map((group) => (
                     <div className="control-group" key={group.group}>
                       <div className="control-head">
                         <span>{group.group}</span>
