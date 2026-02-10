@@ -1,4 +1,7 @@
 ﻿import { useEffect, useRef, useState } from 'react'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
+import * as XLSX from 'xlsx'
 import './App.css'
 
 const stats = [
@@ -96,10 +99,13 @@ const reportRows = [
     status: 'Concluída na programação',
     dept: 'Back Office - Fiscal',
     subject: 'Back Office - Fiscal - ISS - MAR/2022',
+    competence: 'MAR/2022',
     client: 'LM Soluções (CF Lavras) 3831',
     cnpj: '45.055.208/0001-46',
     clientStatus: 'Desativado',
     dates: ['A: 09/04/2022', 'M: 09/04/2022', 'V: 10/04/2022'],
+    deliveryDate: '10/04/2022',
+    conclusionDate: '10/04/2022',
     owner: 'Jhonata',
     authorizer: 'Jhonata',
     guests: 'Não definido',
@@ -110,10 +116,13 @@ const reportRows = [
     status: 'Finalizada',
     dept: 'Back Office - Fiscal',
     subject: 'Back Office - Fiscal - ISS - MAR/2022',
+    competence: 'MAR/2022',
     client: 'Prons Saúde 731',
     cnpj: '32.044.511/0001-00',
     clientStatus: 'Desativado',
     dates: ['A: 10/04/2022', 'M: 10/04/2022', 'V: 10/04/2022'],
+    deliveryDate: '10/04/2022',
+    conclusionDate: '10/04/2022',
     owner: 'Jocicle Lima da Silva',
     authorizer: 'Jhonata',
     guests: 'Não definido',
@@ -124,10 +133,13 @@ const reportRows = [
     status: 'Concluída após o prazo',
     dept: 'Back Office - Fiscal',
     subject: 'Back Office - Fiscal - DAS - Simples Nacional - MAI/2022',
+    competence: 'MAI/2022',
     client: 'Eliane Joias LTDA 3641',
     cnpj: '26.445.449/0001-57',
     clientStatus: 'Ativo',
     dates: ['A: 14/06/2022', 'M: 14/06/2022', 'V: 14/06/2022'],
+    deliveryDate: '14/06/2022',
+    conclusionDate: '14/06/2022',
     owner: 'Jhonata',
     authorizer: 'Jhonata',
     guests: 'Não definido',
@@ -138,10 +150,13 @@ const reportRows = [
     status: 'Cancelada',
     dept: 'Back Office - Fiscal',
     subject: 'Back Office - Fiscal - Destda - MAI/2022',
+    competence: 'MAI/2022',
     client: 'Biohealth Comércio e Importação 3902',
     cnpj: '32.014.717/0001-89',
     clientStatus: 'Ativo',
     dates: ['A: 21/06/2022', 'M: 21/06/2022', 'V: 21/06/2022'],
+    deliveryDate: '21/06/2022',
+    conclusionDate: '21/06/2022',
     owner: 'Carine Vieira Costa',
     authorizer: 'Jhonata',
     guests: 'Não definido',
@@ -152,10 +167,13 @@ const reportRows = [
     status: 'Concluída após o prazo',
     dept: 'Back Office - Fiscal',
     subject: 'Back Office - Fiscal - DAS - Simples Nacional - JUN/2022',
+    competence: 'JUN/2022',
     client: 'BG Clean Multisserviços 4315',
     cnpj: '46.386.433/0001-28',
     clientStatus: 'Ativo',
     dates: ['A: 11/07/2022', 'M: 13/07/2022', 'V: 15/07/2022'],
+    deliveryDate: '15/07/2022',
+    conclusionDate: '15/07/2022',
     owner: 'Marcelo Araújo Samuel',
     authorizer: 'Jhonata',
     guests: 'Não definido',
@@ -166,10 +184,13 @@ const reportRows = [
     status: 'Concluída após o prazo',
     dept: 'Back Office - Fiscal',
     subject: 'Back Office - Fiscal - Pesquisa de Situação Fiscal - JUN/2022',
+    competence: 'JUN/2022',
     client: 'Fastsignal Comércio e Serviços D 4124',
     cnpj: '08.763.976/0001-28',
     clientStatus: 'Desativado',
     dates: ['A: 18/07/2022', 'M: 18/07/2022', 'V: 18/07/2022'],
+    deliveryDate: '18/07/2022',
+    conclusionDate: '18/07/2022',
     owner: 'Jhonata',
     authorizer: 'Jhonata',
     guests: 'Não definido',
@@ -179,6 +200,256 @@ const reportRows = [
 
 const groupOptions = ['Dep. Pessoal', 'Fiscal', 'Contábil', 'Sucesso do Cliente']
 const taxOptions = ['Simples Nacional', 'Lucro Real', 'Lucro Presumido', 'MEI']
+const dateFilterOptions = ['Ação', 'Meta', 'Conclusão']
+const taskDateFilterOptions = ['Ação', 'Meta', 'Vencimento', 'Data da Entrega']
+const operationalActionKeys = ['A Realizar', '3 Dias', 'Hoje', 'Último Dia']
+const operationalOverdueKeys = ['Após Ação', 'Após Meta', 'Após Vencimento']
+const operationalCompletedKeys = ['Concluído', 'Fora Meta', 'Fora Prazo', 'Dispensado']
+const operationalPendingKeys = ['Aguardando', 'Retificando']
+
+const operationalRecords = [
+  {
+    id: 1,
+    department: 'Administrativo',
+    obligation: 'Fechamento Mensal',
+    client: 'LM Soluções',
+    groupClient: 'Fiscal',
+    user: 'Yasmin Fraga',
+    team: 'Back Office',
+    actionDate: '2026-02-02',
+    metaDate: '2026-02-10',
+    conclusionDate: '2026-02-13',
+    action: { 'A Realizar': 0, '3 Dias': 1, Hoje: 0, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 0, 'Após Meta': 1, 'Após Vencimento': 0 },
+    completed: { Concluído: 0, 'Fora Meta': 0, 'Fora Prazo': 1, Dispensado: 0 },
+    pending: { Aguardando: 0, Retificando: 1 },
+  },
+  {
+    id: 2,
+    department: 'Financeiro',
+    obligation: 'Conciliação',
+    client: 'Prons Saúde',
+    groupClient: 'Dep. Pessoal',
+    user: 'Yasmin Fraga',
+    team: 'Back Office',
+    actionDate: '2026-02-05',
+    metaDate: '2026-02-12',
+    conclusionDate: '2026-02-14',
+    action: { 'A Realizar': 1, '3 Dias': 0, Hoje: 0, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 0, 'Após Meta': 0, 'Após Vencimento': 0 },
+    completed: { Concluído: 1, 'Fora Meta': 0, 'Fora Prazo': 0, Dispensado: 0 },
+    pending: { Aguardando: 1, Retificando: 0 },
+  },
+  {
+    id: 3,
+    department: 'RH',
+    obligation: 'Folha',
+    client: 'BG Clean',
+    groupClient: 'Dep. Pessoal',
+    user: 'Carine Vieira',
+    team: 'Dep. Pessoal',
+    actionDate: '2026-02-06',
+    metaDate: '2026-02-15',
+    conclusionDate: '2026-02-16',
+    action: { 'A Realizar': 0, '3 Dias': 0, Hoje: 1, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 0, 'Após Meta': 1, 'Após Vencimento': 0 },
+    completed: { Concluído: 2, 'Fora Meta': 0, 'Fora Prazo': 0, Dispensado: 0 },
+    pending: { Aguardando: 0, Retificando: 1 },
+  },
+  {
+    id: 4,
+    department: 'Contabilidade',
+    obligation: 'Balancete',
+    client: 'Fastsignal',
+    groupClient: 'Contábil',
+    user: 'Jhonata',
+    team: 'Contábil',
+    actionDate: '2026-02-07',
+    metaDate: '2026-02-18',
+    conclusionDate: '2026-02-19',
+    action: { 'A Realizar': 1, '3 Dias': 0, Hoje: 0, 'Último Dia': 1 },
+    overdue: { 'Após Ação': 0, 'Após Meta': 0, 'Após Vencimento': 1 },
+    completed: { Concluído: 1, 'Fora Meta': 1, 'Fora Prazo': 0, Dispensado: 0 },
+    pending: { Aguardando: 2, Retificando: 0 },
+  },
+  {
+    id: 5,
+    department: 'Comercial',
+    obligation: 'Onboarding',
+    client: 'Norte Tech',
+    groupClient: 'Sucesso do Cliente',
+    user: 'Sueli Prado',
+    team: 'Comercial',
+    actionDate: '2026-02-09',
+    metaDate: '2026-02-20',
+    conclusionDate: '2026-02-21',
+    action: { 'A Realizar': 0, '3 Dias': 1, Hoje: 1, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 1, 'Após Meta': 0, 'Após Vencimento': 0 },
+    completed: { Concluído: 1, 'Fora Meta': 0, 'Fora Prazo': 1, Dispensado: 0 },
+    pending: { Aguardando: 1, Retificando: 1 },
+  },
+  {
+    id: 6,
+    department: 'Fiscal',
+    obligation: 'Apuração',
+    client: 'Aquarela Studio',
+    groupClient: 'Fiscal',
+    user: 'Marcelo Araújo',
+    team: 'Fiscal',
+    actionDate: '2026-02-11',
+    metaDate: '2026-02-22',
+    conclusionDate: '2026-02-23',
+    action: { 'A Realizar': 1, '3 Dias': 0, Hoje: 0, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 0, 'Após Meta': 1, 'Após Vencimento': 1 },
+    completed: { Concluído: 0, 'Fora Meta': 1, 'Fora Prazo': 0, Dispensado: 1 },
+    pending: { Aguardando: 1, Retificando: 0 },
+  },
+  {
+    id: 7,
+    department: 'Fiscal',
+    obligation: 'Apuração',
+    client: 'Impacto Logística',
+    groupClient: 'Fiscal',
+    user: 'Paulo Meireles',
+    team: 'Fiscal',
+    actionDate: '2026-01-28',
+    metaDate: '2026-02-07',
+    conclusionDate: '2026-02-08',
+    action: { 'A Realizar': 0, '3 Dias': 1, Hoje: 0, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 1, 'Após Meta': 0, 'Após Vencimento': 0 },
+    completed: { Concluído: 1, 'Fora Meta': 0, 'Fora Prazo': 0, Dispensado: 0 },
+    pending: { Aguardando: 0, Retificando: 1 },
+  },
+  {
+    id: 8,
+    department: 'Contabilidade',
+    obligation: 'Fechamento Anual',
+    client: 'Orion Foods',
+    groupClient: 'Contábil',
+    user: 'Laura Martins',
+    team: 'Contábil',
+    actionDate: '2026-02-15',
+    metaDate: '2026-02-25',
+    conclusionDate: '2026-02-27',
+    action: { 'A Realizar': 1, '3 Dias': 1, Hoje: 0, 'Último Dia': 0 },
+    overdue: { 'Após Ação': 0, 'Após Meta': 0, 'Após Vencimento': 1 },
+    completed: { Concluído: 2, 'Fora Meta': 0, 'Fora Prazo': 0, Dispensado: 0 },
+    pending: { Aguardando: 0, Retificando: 1 },
+  },
+]
+
+const initialOperationalFilters = {
+  department: 'Todos',
+  obligation: 'Todos',
+  clientQuery: '',
+  groupClient: 'Todos',
+  user: 'Todos',
+  team: 'Todos',
+  dateBy: 'Ação',
+  startDate: '2026-02-01',
+  endDate: '2026-02-28',
+}
+
+const initialTaskFilters = {
+  taskType: 'Solicitação',
+  subject: 'Todos',
+  client: 'Todos',
+  department: 'Todos',
+  status: 'Todos',
+  clientStatus: 'Todos',
+  owner: 'Todos',
+  dateBy: 'Ação',
+  startDate: '',
+  endDate: '',
+  query: '',
+}
+
+const sumCategoryCounts = (records, categoryField, keys) =>
+  keys.reduce((acc, key) => {
+    acc[key] = records.reduce((total, row) => total + (row[categoryField]?.[key] || 0), 0)
+    return acc
+  }, {})
+
+const getCountsTotal = (counts) => Object.values(counts).reduce((total, value) => total + value, 0)
+
+const getHighlightPercent = (counts) => {
+  const total = getCountsTotal(counts)
+  if (!total) return 0
+  const maxValue = Math.max(...Object.values(counts))
+  return Math.round((maxValue / total) * 100)
+}
+
+const formatDateForFile = (value) => {
+  if (!value) return 'sem-data'
+  return value.replaceAll('-', '')
+}
+
+const getCsvCell = (value) => {
+  const text = String(value ?? '')
+  if (text.includes(',') || text.includes('"') || text.includes('\n')) {
+    return `"${text.replaceAll('"', '""')}"`
+  }
+  return text
+}
+
+const parseBrDateToIso = (value) => {
+  if (!value) return ''
+  const [day, month, year] = value.split('/')
+  if (!day || !month || !year) return ''
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+}
+
+const parseIsoDateToBr = (value) => {
+  if (!value) return ''
+  const [year, month, day] = value.split('-')
+  if (!day || !month || !year) return ''
+  return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`
+}
+
+const getNowBrDate = () => parseIsoDateToBr(new Date().toISOString().slice(0, 10))
+
+const getNowBrTimestamp = () =>
+  new Date().toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+
+const formatFileSize = (bytes) => {
+  if (!bytes) return '0 KB'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const getTaggedReportDate = (dates, key) => {
+  const entry = (dates || []).find((item) => item.startsWith(`${key}:`))
+  if (!entry) return ''
+  return entry.split(':')[1]?.trim() || ''
+}
+
+const getCsvContent = (rows) => {
+  if (!rows.length) return ''
+  const headers = Object.keys(rows[0])
+  const lines = [headers.join(','), ...rows.map((row) => headers.map((header) => getCsvCell(row[header])).join(','))]
+  return `\uFEFF${lines.join('\n')}`
+}
+
+const downloadFileFromBlob = (content, fileName, type) => {
+  const blob = new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
 
 const initialClients = [
   {
@@ -495,13 +766,34 @@ const STORAGE_KEYS = {
 
 function App() {
   const [screen, setScreen] = useState('login')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [remember, setRemember] = useState(false)
+  const [remember, setRemember] = useState(
+    () => localStorage.getItem(STORAGE_KEYS.remember) === 'true',
+  )
+  const [username, setUsername] = useState(() =>
+    localStorage.getItem(STORAGE_KEYS.remember) === 'true'
+      ? localStorage.getItem(STORAGE_KEYS.user) || ''
+      : '',
+  )
+  const [password, setPassword] = useState(() =>
+    localStorage.getItem(STORAGE_KEYS.remember) === 'true'
+      ? localStorage.getItem(STORAGE_KEYS.pass) || ''
+      : '',
+  )
   const [error, setError] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [clientOpen, setClientOpen] = useState(false)
   const [clients, setClients] = useState(initialClients)
+  const [tasksRows, setTasksRows] = useState(() =>
+    reportRows.map((task) => ({
+      ...task,
+      attachments: [],
+      baixaAt: '',
+      baixaAction: '',
+    })),
+  )
+  const [selectedTaskId, setSelectedTaskId] = useState(null)
+  const [taskEditMode, setTaskEditMode] = useState(false)
+  const [taskActionLogs, setTaskActionLogs] = useState([])
   const [clientForm, setClientForm] = useState(emptyClientForm)
   const [clientMode, setClientMode] = useState('create')
   const [editingId, setEditingId] = useState(null)
@@ -524,15 +816,12 @@ function App() {
   const bulkGroupsRef = useRef(null)
   const [bulkTaxOpen, setBulkTaxOpen] = useState(false)
   const bulkTaxRef = useRef(null)
-
-  useEffect(() => {
-    const shouldRemember = localStorage.getItem(STORAGE_KEYS.remember) === 'true'
-    if (shouldRemember) {
-      setRemember(true)
-      setUsername(localStorage.getItem(STORAGE_KEYS.user) || '')
-      setPassword(localStorage.getItem(STORAGE_KEYS.pass) || '')
-    }
-  }, [])
+  const [taskFilters, setTaskFilters] = useState(initialTaskFilters)
+  const [appliedTaskFilters, setAppliedTaskFilters] = useState(initialTaskFilters)
+  const [taskPage, setTaskPage] = useState(1)
+  const [taskItemsPerPage, setTaskItemsPerPage] = useState(10)
+  const [operationalFilters, setOperationalFilters] = useState(initialOperationalFilters)
+  const [appliedOperationalFilters, setAppliedOperationalFilters] = useState(initialOperationalFilters)
 
   useEffect(() => {
     if (!groupsOpen) return
@@ -761,11 +1050,531 @@ function App() {
     )
   }
 
+  const handleTaskFilterChange = (field, value) => {
+    setTaskFilters((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const applyTaskFilters = () => {
+    setAppliedTaskFilters(taskFilters)
+    setTaskPage(1)
+  }
+
+  const clearTaskFilters = () => {
+    setTaskFilters(initialTaskFilters)
+    setAppliedTaskFilters(initialTaskFilters)
+    setTaskPage(1)
+  }
+
+  const selectedTask = tasksRows.find((task) => task.id === selectedTaskId) || null
+
+  const logTaskAction = (task, action) => {
+    const timestamp = getNowBrTimestamp()
+    if (!task) return timestamp
+    setTaskActionLogs((prev) =>
+      [
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          taskId: task.id,
+          taskName: task.subject,
+          action,
+          timestamp,
+        },
+        ...prev,
+      ].slice(0, 20),
+    )
+    return timestamp
+  }
+
+  const registerTaskBaixa = (task, action) => {
+    if (!task) return
+    const timestamp = logTaskAction(task, action)
+    setTasksRows((prev) =>
+      prev.map((item) =>
+        item.id === task.id
+          ? {
+              ...item,
+              baixaAt: timestamp,
+              baixaAction: action,
+              conclusionDate: item.conclusionDate || getNowBrDate(),
+            }
+          : item,
+      ),
+    )
+  }
+
+  const updateTaskField = (field, value) => {
+    if (!selectedTaskId) return
+    setTasksRows((prev) =>
+      prev.map((item) => (item.id === selectedTaskId ? { ...item, [field]: value } : item)),
+    )
+  }
+
+  const updateTaskTaggedDate = (key, value) => {
+    if (!selectedTaskId) return
+    setTasksRows((prev) =>
+      prev.map((item) => {
+        if (item.id !== selectedTaskId) return item
+        const nextDates = [...(item.dates || [])]
+        const entryIndex = nextDates.findIndex((entry) => entry.startsWith(`${key}:`))
+        const nextEntry = `${key}: ${value}`
+        if (entryIndex >= 0) {
+          nextDates[entryIndex] = nextEntry
+        } else {
+          nextDates.push(nextEntry)
+        }
+        return { ...item, dates: nextDates }
+      }),
+    )
+  }
+
+  const openTaskDetail = (taskId) => {
+    setSelectedTaskId(taskId)
+    setTaskEditMode(false)
+    setScreen('task-detail')
+  }
+
+  const handleTaskAttachmentAdd = (event) => {
+    if (!selectedTaskId) return
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+
+    setTasksRows((prev) =>
+      prev.map((item) =>
+        item.id === selectedTaskId
+          ? {
+              ...item,
+              attachments: [
+                ...(item.attachments || []),
+                ...files.map((file, index) => ({
+                  id: `${Date.now()}-${index}-${file.name}`,
+                  name: file.name,
+                  size: file.size,
+                  type: file.type,
+                  file,
+                })),
+              ],
+            }
+          : item,
+      ),
+    )
+
+    event.target.value = ''
+  }
+
+  const downloadAttachment = (attachment) => {
+    if (!attachment?.file) return
+    const url = URL.createObjectURL(attachment.file)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = attachment.name || 'arquivo'
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleTaskDownload = () => {
+    if (!selectedTask?.attachments?.length) return
+    const newestAttachment = selectedTask.attachments[selectedTask.attachments.length - 1]
+    downloadAttachment(newestAttachment)
+  }
+
+  const handleTaskDispense = () => {
+    if (!selectedTask) return
+    registerTaskBaixa(selectedTask, 'Dispensar')
+    setTasksRows((prev) =>
+      prev.map((item) =>
+        item.id === selectedTask.id ? { ...item, status: 'Dispensada', tag: 'gray' } : item,
+      ),
+    )
+  }
+
+  const handleTaskEdit = () => {
+    if (!selectedTask) return
+    if (!taskEditMode) {
+      setTaskEditMode(true)
+      return
+    }
+    registerTaskBaixa(selectedTask, 'Editar')
+    setTaskEditMode(false)
+  }
+
+  const handleTaskDelete = () => {
+    if (!selectedTask) return
+    const shouldDelete = window.confirm(
+      `Deseja excluir a tarefa #${selectedTask.id} (${selectedTask.subject})?`,
+    )
+    if (!shouldDelete) return
+    logTaskAction(selectedTask, 'Excluir')
+    setTasksRows((prev) => prev.filter((item) => item.id !== selectedTask.id))
+    setSelectedTaskId(null)
+    setTaskEditMode(false)
+    setScreen('tasks')
+  }
+
+  const goBackToTasks = () => {
+    setTaskEditMode(false)
+    setScreen('tasks')
+  }
+
+  const taskTypeOptions = ['Solicitação']
+  const taskSubjectOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.subject)))]
+  const taskClientOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.client)))]
+  const taskDepartmentOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.dept)))]
+  const taskStatusOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.status)))]
+  const taskClientStatusOptions = [
+    'Todos',
+    ...Array.from(new Set(tasksRows.map((item) => item.clientStatus))),
+  ]
+  const taskOwnerOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.owner)))]
+
+  const getTaskDateBy = (row, dateBy) => {
+    if (dateBy === 'Meta') return getTaggedReportDate(row.dates, 'M')
+    if (dateBy === 'Vencimento') return getTaggedReportDate(row.dates, 'V')
+    if (dateBy === 'Data da Entrega') return row.deliveryDate
+    return getTaggedReportDate(row.dates, 'A')
+  }
+
+  const filteredReportRows = tasksRows.filter((row) => {
+    const matchesType =
+      appliedTaskFilters.taskType === 'Todos' || appliedTaskFilters.taskType === 'Solicitação'
+    const matchesSubject =
+      appliedTaskFilters.subject === 'Todos' || row.subject === appliedTaskFilters.subject
+    const matchesClient =
+      appliedTaskFilters.client === 'Todos' || row.client === appliedTaskFilters.client
+    const matchesDepartment =
+      appliedTaskFilters.department === 'Todos' || row.dept === appliedTaskFilters.department
+    const matchesStatus =
+      appliedTaskFilters.status === 'Todos' || row.status === appliedTaskFilters.status
+    const matchesClientStatus =
+      appliedTaskFilters.clientStatus === 'Todos' ||
+      row.clientStatus === appliedTaskFilters.clientStatus
+    const matchesOwner = appliedTaskFilters.owner === 'Todos' || row.owner === appliedTaskFilters.owner
+
+    const rowDateIso = parseBrDateToIso(getTaskDateBy(row, appliedTaskFilters.dateBy))
+    const matchesStartDate =
+      !appliedTaskFilters.startDate || (rowDateIso && rowDateIso >= appliedTaskFilters.startDate)
+    const matchesEndDate =
+      !appliedTaskFilters.endDate || (rowDateIso && rowDateIso <= appliedTaskFilters.endDate)
+
+    const query = appliedTaskFilters.query.trim().toLowerCase()
+    const searchableText = [
+      row.subject,
+      row.client,
+      row.cnpj,
+      row.owner,
+      row.authorizer,
+      row.guests,
+      row.status,
+      row.dept,
+      row.clientStatus,
+      row.deliveryDate,
+    ]
+      .join(' ')
+      .toLowerCase()
+    const matchesQuery = !query || searchableText.includes(query)
+
+    return (
+      matchesType &&
+      matchesSubject &&
+      matchesClient &&
+      matchesDepartment &&
+      matchesStatus &&
+      matchesClientStatus &&
+      matchesOwner &&
+      matchesStartDate &&
+      matchesEndDate &&
+      matchesQuery
+    )
+  })
+
+  const taskExportRows = filteredReportRows.map((row) => ({
+    No: row.id,
+    Status: row.status,
+    Departamento: row.dept,
+    Nome: row.subject,
+    Competência: row.competence || '',
+    Cliente: `${row.client} ${row.cnpj}`,
+    'Status do Cliente': row.clientStatus,
+    Ação: getTaggedReportDate(row.dates, 'A'),
+    Meta: getTaggedReportDate(row.dates, 'M'),
+    Vencimento: getTaggedReportDate(row.dates, 'V'),
+    Conclusão: row.conclusionDate || row.deliveryDate,
+    Responsável: row.owner,
+  }))
+
+  const handleTaskExportCsv = () => {
+    if (!taskExportRows.length) return
+    const dateRange = `${formatDateForFile(appliedTaskFilters.startDate)}-${formatDateForFile(appliedTaskFilters.endDate)}`
+    const fileName = `hive-tarefas-${dateRange}.csv`
+    downloadFileFromBlob(getCsvContent(taskExportRows), fileName, 'text/csv;charset=utf-8;')
+  }
+
+  const handleTaskExportXlsx = () => {
+    if (!taskExportRows.length) return
+    const dateRange = `${formatDateForFile(appliedTaskFilters.startDate)}-${formatDateForFile(appliedTaskFilters.endDate)}`
+    const fileName = `hive-tarefas-${dateRange}.xlsx`
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(taskExportRows), 'Tarefas')
+    XLSX.writeFile(workbook, fileName)
+  }
+
+  const handleTaskExportPdf = () => {
+    if (!taskExportRows.length) return
+    const dateRange = `${formatDateForFile(appliedTaskFilters.startDate)}-${formatDateForFile(appliedTaskFilters.endDate)}`
+    const fileName = `hive-tarefas-${dateRange}.pdf`
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+
+    doc.setFontSize(14)
+    doc.text('Hive Tarefas - Relatorio de Tarefas', 40, 34)
+    doc.setFontSize(9)
+    doc.text(
+      `Filtros: Tipo ${appliedTaskFilters.taskType} | Departamento ${appliedTaskFilters.department} | Status ${appliedTaskFilters.status}`,
+      40,
+      52,
+    )
+    doc.text(
+      `Periodo: ${appliedTaskFilters.startDate || 'Todos'} ate ${appliedTaskFilters.endDate || 'Todos'} | Registros: ${taskExportRows.length}`,
+      40,
+      66,
+    )
+
+    autoTable(doc, {
+      startY: 78,
+      head: [
+        [
+          'Nº',
+          'Status',
+          'Departamento',
+          'Nome',
+          'Competência',
+          'Cliente',
+          'Status Cliente',
+          'Ação',
+          'Meta',
+          'Vencimento',
+          'Conclusão',
+          'Responsável',
+        ],
+      ],
+      body: taskExportRows.map((row) => [
+        row.No,
+        row.Status,
+        row.Departamento,
+        row.Nome,
+        row.Competência,
+        row.Cliente,
+        row['Status do Cliente'],
+        row.Ação,
+        row.Meta,
+        row.Vencimento,
+        row.Conclusão,
+        row.Responsável,
+      ]),
+      styles: { fontSize: 8, cellPadding: 4, overflow: 'linebreak' },
+      headStyles: { fillColor: [22, 33, 45] },
+      margin: { left: 24, right: 24, top: 24, bottom: 24 },
+    })
+
+    doc.save(fileName)
+  }
+
+  const taskTotalRows = filteredReportRows.length
+  const taskTotalPages = Math.max(1, Math.ceil(taskTotalRows / taskItemsPerPage))
+  const safeTaskPage = Math.min(taskPage, taskTotalPages)
+  const taskStartIndex = (safeTaskPage - 1) * taskItemsPerPage
+  const paginatedReportRows = filteredReportRows.slice(taskStartIndex, taskStartIndex + taskItemsPerPage)
+  const taskRangeStart = taskTotalRows ? taskStartIndex + 1 : 0
+  const taskRangeEnd = taskTotalRows ? Math.min(taskStartIndex + taskItemsPerPage, taskTotalRows) : 0
+
+  const handleOperationalFilterChange = (field, value) => {
+    setOperationalFilters((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const applyOperationalFilters = () => {
+    setAppliedOperationalFilters(operationalFilters)
+  }
+
+  const operationalDepartments = [
+    'Todos',
+    ...Array.from(new Set(operationalRecords.map((item) => item.department))),
+  ]
+  const operationalObligations = [
+    'Todos',
+    ...Array.from(new Set(operationalRecords.map((item) => item.obligation))),
+  ]
+  const operationalGroups = ['Todos', ...Array.from(new Set(operationalRecords.map((item) => item.groupClient)))]
+  const operationalUsers = ['Todos', ...Array.from(new Set(operationalRecords.map((item) => item.user)))]
+  const operationalTeams = ['Todos', ...Array.from(new Set(operationalRecords.map((item) => item.team)))]
+
+  const getOperationalDateBy = (record, dateBy) => {
+    if (dateBy === 'Meta') return record.metaDate
+    if (dateBy === 'Conclusão') return record.conclusionDate
+    return record.actionDate
+  }
+
+  const filteredOperationalRecords = operationalRecords.filter((record) => {
+    const matchesDepartment =
+      appliedOperationalFilters.department === 'Todos' ||
+      record.department === appliedOperationalFilters.department
+    const matchesObligation =
+      appliedOperationalFilters.obligation === 'Todos' ||
+      record.obligation === appliedOperationalFilters.obligation
+    const matchesGroup =
+      appliedOperationalFilters.groupClient === 'Todos' ||
+      record.groupClient === appliedOperationalFilters.groupClient
+    const matchesUser =
+      appliedOperationalFilters.user === 'Todos' || record.user === appliedOperationalFilters.user
+    const matchesTeam =
+      appliedOperationalFilters.team === 'Todos' || record.team === appliedOperationalFilters.team
+    const matchesClient = record.client
+      .toLowerCase()
+      .includes(appliedOperationalFilters.clientQuery.trim().toLowerCase())
+    const selectedDate = getOperationalDateBy(record, appliedOperationalFilters.dateBy)
+    const matchesInitial =
+      !appliedOperationalFilters.startDate || selectedDate >= appliedOperationalFilters.startDate
+    const matchesFinal = !appliedOperationalFilters.endDate || selectedDate <= appliedOperationalFilters.endDate
+
+    return (
+      matchesDepartment &&
+      matchesObligation &&
+      matchesGroup &&
+      matchesUser &&
+      matchesTeam &&
+      matchesClient &&
+      matchesInitial &&
+      matchesFinal
+    )
+  })
+
+  const operationalActionCounts = sumCategoryCounts(
+    filteredOperationalRecords,
+    'action',
+    operationalActionKeys,
+  )
+  const operationalOverdueCounts = sumCategoryCounts(
+    filteredOperationalRecords,
+    'overdue',
+    operationalOverdueKeys,
+  )
+  const operationalCompletedCounts = sumCategoryCounts(
+    filteredOperationalRecords,
+    'completed',
+    operationalCompletedKeys,
+  )
+  const operationalPendingCounts = sumCategoryCounts(
+    filteredOperationalRecords,
+    'pending',
+    operationalPendingKeys,
+  )
+  const operationalActionTotal = getCountsTotal(operationalActionCounts)
+  const operationalOverdueTotal = getCountsTotal(operationalOverdueCounts)
+  const operationalCompletedTotal = getCountsTotal(operationalCompletedCounts)
+  const operationalPendingTotal = getCountsTotal(operationalPendingCounts)
+  const getShare = (value, total) => (total ? Math.round((value / total) * 100) : 0)
+  const operationalExportRows = filteredOperationalRecords.map((record) => ({
+    Departamento: record.department,
+    Obrigação: record.obligation,
+    Cliente: record.client,
+    'Grupo Cliente': record.groupClient,
+    Usuário: record.user,
+    Time: record.team,
+    'Data Ação': record.actionDate,
+    'Data Meta': record.metaDate,
+    'Data Conclusão': record.conclusionDate,
+    'Ação - A Realizar': record.action['A Realizar'] || 0,
+    'Ação - 3 Dias': record.action['3 Dias'] || 0,
+    'Ação - Hoje': record.action.Hoje || 0,
+    'Ação - Último Dia': record.action['Último Dia'] || 0,
+    'Atrasados - Após Ação': record.overdue['Após Ação'] || 0,
+    'Atrasados - Após Meta': record.overdue['Após Meta'] || 0,
+    'Atrasados - Após Vencimento': record.overdue['Após Vencimento'] || 0,
+    'Concluídos - Concluído': record.completed.Concluído || 0,
+    'Concluídos - Fora Meta': record.completed['Fora Meta'] || 0,
+    'Concluídos - Fora Prazo': record.completed['Fora Prazo'] || 0,
+    'Concluídos - Dispensado': record.completed.Dispensado || 0,
+    'Pendentes - Aguardando': record.pending.Aguardando || 0,
+    'Pendentes - Retificando': record.pending.Retificando || 0,
+  }))
+
+  const getOperationalSummaryRows = (panel, keys, counts, total) =>
+    keys.map((key) => ({
+      Painel: panel,
+      Indicador: key,
+      Percentual: `${getShare(counts[key] || 0, total)}%`,
+      Quantidade: counts[key] || 0,
+    }))
+
+  const handleOperationalExportCsv = () => {
+    if (!operationalExportRows.length) return
+    const dateRange = `${formatDateForFile(appliedOperationalFilters.startDate)}-${formatDateForFile(appliedOperationalFilters.endDate)}`
+    const fileName = `hive-operacional-${dateRange}.csv`
+    downloadFileFromBlob(getCsvContent(operationalExportRows), fileName, 'text/csv;charset=utf-8;')
+  }
+
+  const handleOperationalExportXlsx = () => {
+    if (!operationalExportRows.length) return
+    const dateRange = `${formatDateForFile(appliedOperationalFilters.startDate)}-${formatDateForFile(appliedOperationalFilters.endDate)}`
+    const fileName = `hive-operacional-${dateRange}.xlsx`
+
+    const filtersSheetRows = [
+      {
+        Departamento: appliedOperationalFilters.department,
+        Obrigação: appliedOperationalFilters.obligation,
+        Cliente: appliedOperationalFilters.clientQuery || 'Todos',
+        'Grupo Cliente': appliedOperationalFilters.groupClient,
+        Usuário: appliedOperationalFilters.user,
+        Time: appliedOperationalFilters.team,
+        'Filtrar Data Por': appliedOperationalFilters.dateBy,
+        'Período Inicial': appliedOperationalFilters.startDate,
+        'Período Final': appliedOperationalFilters.endDate,
+        Registros: operationalExportRows.length,
+      },
+    ]
+
+    const summaryRows = [
+      ...getOperationalSummaryRows(
+        'Ação',
+        operationalActionKeys,
+        operationalActionCounts,
+        operationalActionTotal,
+      ),
+      ...getOperationalSummaryRows(
+        'Atrasados',
+        operationalOverdueKeys,
+        operationalOverdueCounts,
+        operationalOverdueTotal,
+      ),
+      ...getOperationalSummaryRows(
+        'Concluídos',
+        operationalCompletedKeys,
+        operationalCompletedCounts,
+        operationalCompletedTotal,
+      ),
+      ...getOperationalSummaryRows(
+        'Pendentes',
+        operationalPendingKeys,
+        operationalPendingCounts,
+        operationalPendingTotal,
+      ),
+    ]
+
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filtersSheetRows), 'Filtros')
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), 'Resumo')
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(operationalExportRows), 'Registros')
+    XLSX.writeFile(workbook, fileName)
+  }
+
   const selectedGroups = Array.isArray(clientForm.grupos) ? clientForm.grupos : []
   const selectedTax = clientForm.tributacao || ''
   const isReadOnly = clientMode === 'view'
   const bulkSelectedGroups = Array.isArray(bulkForm.grupos) ? bulkForm.grupos : []
   const bulkSelectedTax = bulkForm.tributacao || ''
+  const selectedTaskLogs = selectedTask
+    ? taskActionLogs.filter((log) => log.taskId === selectedTask.id)
+    : []
 
   return (
     <div className="app">
@@ -908,6 +1717,8 @@ function App() {
                   key={item}
                   className={`nav-item ${
                     (screen === 'dashboard' && item === 'Visão Geral') ||
+                    (screen === 'operational' && item === 'Visão Geral') ||
+                    ((screen === 'tasks' || screen === 'task-detail') && item === 'Tarefas') ||
                     (screen === 'reports' && item === 'Relatórios') ||
                     (screen === 'clients' && item === 'Clientes')
                       ? 'active'
@@ -917,6 +1728,8 @@ function App() {
                   onClick={() => {
                     if (item === 'Visão Geral') {
                       setScreen('dashboard')
+                    } else if (item === 'Tarefas') {
+                      setScreen('tasks')
                     } else if (item === 'Relatórios') {
                       setScreen('reports')
                     } else if (item === 'Clientes') {
@@ -1042,7 +1855,7 @@ function App() {
                       </div>
                     </div>
                     <button className="link" type="button">
-                      Ver gráfico detalhado →
+                      Ver gráfico detalhado ?
                     </button>
                   </article>
 
@@ -1071,7 +1884,11 @@ function App() {
                       <span>Alertas e andamento por setor</span>
                     </div>
                     <div className="panel-actions">
-                      <button type="button" className="chip tiny">
+                      <button
+                        type="button"
+                        className="chip tiny"
+                        onClick={() => setScreen('operational')}
+                      >
                         Gráfico Operacional
                       </button>
                       <button type="button" className="chip tiny">
@@ -1137,109 +1954,823 @@ function App() {
                   </div>
                 </section>
               </div>
-            ) : screen === 'reports' ? (
+            ) : screen === 'operational' ? (
+              <div className="operational-view">
+                <section className="card operational-wrap">
+                  <header className="operational-title">
+                    <h4>Gráficos &gt; Operacional</h4>
+                    <div className="operational-actions">
+                      <button
+                        type="button"
+                        className="chip small"
+                        onClick={handleOperationalExportCsv}
+                        disabled={!operationalExportRows.length}
+                      >
+                        Exportar CSV
+                      </button>
+                      <button
+                        type="button"
+                        className="chip small primary"
+                        onClick={handleOperationalExportXlsx}
+                        disabled={!operationalExportRows.length}
+                      >
+                        Exportar XLSX
+                      </button>
+                    </div>
+                  </header>
+
+                  <div className="operational-filters">
+                    <label className="operational-field">
+                      <span>Por Departamento:</span>
+                      <select
+                        value={operationalFilters.department}
+                        onChange={(event) =>
+                          handleOperationalFilterChange('department', event.target.value)
+                        }
+                      >
+                        {operationalDepartments.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="operational-field">
+                      <span>Por Obrigações:</span>
+                      <select
+                        value={operationalFilters.obligation}
+                        onChange={(event) =>
+                          handleOperationalFilterChange('obligation', event.target.value)
+                        }
+                      >
+                        {operationalObligations.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="operational-filters">
+                    <label className="operational-field">
+                      <span>Por Cliente:</span>
+                      <div className="operational-input-search">
+                        <input
+                          type="text"
+                          placeholder="Digite e aperte enter para pesquisar..."
+                          value={operationalFilters.clientQuery}
+                          onChange={(event) =>
+                            handleOperationalFilterChange('clientQuery', event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              applyOperationalFilters()
+                            }
+                          }}
+                        />
+                        <button type="button" onClick={applyOperationalFilters} aria-label="Pesquisar">
+                          Buscar
+                        </button>
+                      </div>
+                    </label>
+                    <label className="operational-field">
+                      <span>Por Grupo Cliente:</span>
+                      <select
+                        value={operationalFilters.groupClient}
+                        onChange={(event) =>
+                          handleOperationalFilterChange('groupClient', event.target.value)
+                        }
+                      >
+                        {operationalGroups.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="operational-filters">
+                    <label className="operational-field">
+                      <span>Por Usuário:</span>
+                      <select
+                        value={operationalFilters.user}
+                        onChange={(event) => handleOperationalFilterChange('user', event.target.value)}
+                      >
+                        {operationalUsers.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="operational-field">
+                      <span>Por Time:</span>
+                      <select
+                        value={operationalFilters.team}
+                        onChange={(event) => handleOperationalFilterChange('team', event.target.value)}
+                      >
+                        {operationalTeams.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="operational-filters operational-date-row">
+                    <label className="operational-field">
+                      <span>Por Data:</span>
+                      <select
+                        value={operationalFilters.dateBy}
+                        onChange={(event) => handleOperationalFilterChange('dateBy', event.target.value)}
+                      >
+                        {dateFilterOptions.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="operational-field">
+                      <span>Por Período Inicial:</span>
+                      <input
+                        type="date"
+                        value={operationalFilters.startDate}
+                        onChange={(event) =>
+                          handleOperationalFilterChange('startDate', event.target.value)
+                        }
+                      />
+                    </label>
+                    <label className="operational-field">
+                      <span>Por Período Final:</span>
+                      <input
+                        type="date"
+                        value={operationalFilters.endDate}
+                        onChange={(event) => handleOperationalFilterChange('endDate', event.target.value)}
+                      />
+                    </label>
+                    <button type="button" className="chip primary small operational-search-btn" onClick={applyOperationalFilters}>
+                      Buscar
+                    </button>
+                  </div>
+
+                  <div className="operational-results">
+                    <article className="operational-panel">
+                      <header>
+                        <h5>Ação</h5>
+                        <span>{getHighlightPercent(operationalActionCounts)}%</span>
+                      </header>
+                      <div className="operational-legend">
+                        {operationalActionKeys.map((key, index) => (
+                          <span key={key}>
+                            <i className={`legend-dot legend-${index + 1}`} />
+                            {key}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="operational-table">
+                        <div className="operational-row operational-head">
+                          <span>#</span>
+                          <span>Ação</span>
+                          <span>%</span>
+                          <span>Qtd</span>
+                        </div>
+                        {operationalActionKeys.map((key, index) => (
+                          <div className="operational-row" key={key}>
+                            <span>{index + 1}</span>
+                            <span>{key}</span>
+                            <span>{getShare(operationalActionCounts[key], operationalActionTotal)}%</span>
+                            <span>{operationalActionCounts[key]}</span>
+                          </div>
+                        ))}
+                        <div className="operational-row operational-total">
+                          <span>#</span>
+                          <span>Total</span>
+                          <span>100%</span>
+                          <span>{operationalActionTotal}</span>
+                        </div>
+                      </div>
+                    </article>
+
+                    <article className="operational-panel">
+                      <header>
+                        <h5>Atrasados</h5>
+                        <span>{getHighlightPercent(operationalOverdueCounts)}%</span>
+                      </header>
+                      <div
+                        className="operational-pie"
+                        style={{ '--fill': `${getHighlightPercent(operationalOverdueCounts)}%` }}
+                      />
+                      <div className="operational-legend">
+                        {operationalOverdueKeys.map((key, index) => (
+                          <span key={key}>
+                            <i className={`legend-dot legend-${index + 5}`} />
+                            {key}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="operational-table">
+                        <div className="operational-row operational-head">
+                          <span>#</span>
+                          <span>Atrasados</span>
+                          <span>%</span>
+                          <span>Qtd</span>
+                        </div>
+                        {operationalOverdueKeys.map((key, index) => (
+                          <div className="operational-row" key={key}>
+                            <span>{index + 1}</span>
+                            <span>{key}</span>
+                            <span>{getShare(operationalOverdueCounts[key], operationalOverdueTotal)}%</span>
+                            <span>{operationalOverdueCounts[key]}</span>
+                          </div>
+                        ))}
+                        <div className="operational-row operational-total">
+                          <span>#</span>
+                          <span>Total</span>
+                          <span>100%</span>
+                          <span>{operationalOverdueTotal}</span>
+                        </div>
+                      </div>
+                    </article>
+
+                    <article className="operational-panel">
+                      <header>
+                        <h5>Concluídos</h5>
+                        <span>{getHighlightPercent(operationalCompletedCounts)}%</span>
+                      </header>
+                      <div className="operational-legend">
+                        {operationalCompletedKeys.map((key, index) => (
+                          <span key={key}>
+                            <i className={`legend-dot legend-${index + 8}`} />
+                            {key}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="operational-table">
+                        <div className="operational-row operational-head">
+                          <span>#</span>
+                          <span>Concluídos</span>
+                          <span>%</span>
+                          <span>Qtd</span>
+                        </div>
+                        {operationalCompletedKeys.map((key, index) => (
+                          <div className="operational-row" key={key}>
+                            <span>{index + 1}</span>
+                            <span>{key}</span>
+                            <span>{getShare(operationalCompletedCounts[key], operationalCompletedTotal)}%</span>
+                            <span>{operationalCompletedCounts[key]}</span>
+                          </div>
+                        ))}
+                        <div className="operational-row operational-total">
+                          <span>#</span>
+                          <span>Total</span>
+                          <span>100%</span>
+                          <span>{operationalCompletedTotal}</span>
+                        </div>
+                      </div>
+                    </article>
+
+                    <article className="operational-panel">
+                      <header>
+                        <h5>Pendentes</h5>
+                        <span>{getHighlightPercent(operationalPendingCounts)}%</span>
+                      </header>
+                      <div className="operational-legend">
+                        {operationalPendingKeys.map((key, index) => (
+                          <span key={key}>
+                            <i className={`legend-dot legend-${index + 12}`} />
+                            {key}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="operational-table">
+                        <div className="operational-row operational-head">
+                          <span>#</span>
+                          <span>Pendentes</span>
+                          <span>%</span>
+                          <span>Qtd</span>
+                        </div>
+                        {operationalPendingKeys.map((key, index) => (
+                          <div className="operational-row" key={key}>
+                            <span>{index + 1}</span>
+                            <span>{key}</span>
+                            <span>{getShare(operationalPendingCounts[key], operationalPendingTotal)}%</span>
+                            <span>{operationalPendingCounts[key]}</span>
+                          </div>
+                        ))}
+                        <div className="operational-row operational-total">
+                          <span>#</span>
+                          <span>Total</span>
+                          <span>100%</span>
+                          <span>{operationalPendingTotal}</span>
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+                </section>
+              </div>
+            ) : screen === 'reports' || screen === 'tasks' ? (
               <div className="reports-view">
                 <header className="reports-header">
                   <div>
-                    <h4>Relatórios</h4>
-                    <p>Tarefas • Visão detalhada por cliente e status</p>
+                    <h4>{screen === 'tasks' ? 'Relatórios > Tarefas' : 'Relatórios'}</h4>
+                    <p>
+                      {screen === 'tasks'
+                        ? 'Tarefas cadastradas • visão detalhada por cliente e status'
+                        : 'Tarefas • Visão detalhada por cliente e status'}
+                    </p>
                   </div>
                   <div className="reports-actions">
-                    <button type="button" className="chip tiny">
-                      Exportar
+                    <button
+                      type="button"
+                      className="chip tiny"
+                      onClick={handleTaskExportCsv}
+                      disabled={!taskExportRows.length}
+                    >
+                      CSV
                     </button>
-                    <button type="button" className="chip tiny">
+                    <button
+                      type="button"
+                      className="chip tiny"
+                      onClick={handleTaskExportXlsx}
+                      disabled={!taskExportRows.length}
+                    >
+                      XLSX
+                    </button>
+                    <button
+                      type="button"
+                      className="chip tiny"
+                      onClick={handleTaskExportPdf}
+                      disabled={!taskExportRows.length}
+                    >
+                      PDF
+                    </button>
+                    <button type="button" className="chip tiny" onClick={applyTaskFilters}>
                       Atualizar
                     </button>
                   </div>
                 </header>
 
-                <div className="filters">
-                  {[
-                    'Tipos de tarefas: Solicitação',
-                    'Clientes',
-                    'Data Ação',
-                    'Data Conclusão',
-                    'Data Criação',
-                    'Data Meta',
-                    'Data Vencimento',
-                    'Departamentos: Back Office - Fiscal',
-                    'Grupos',
-                    'Status',
-                    'Status complementar do cliente',
-                  ].map((item) => (
-                    <button key={item} type="button" className="filter-chip">
-                      {item}
-                    </button>
-                  ))}
-                  <button type="button" className="filter-chip add">
-                    + Filtros
-                  </button>
-                  <button type="button" className="chip primary small">
+                <div className="filters task-filters-grid">
+                  <label className="task-filter-field">
+                    <span>Tipos de tarefas</span>
+                    <select
+                      value={taskFilters.taskType}
+                      onChange={(event) => handleTaskFilterChange('taskType', event.target.value)}
+                    >
+                      {taskTypeOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Assunto</span>
+                    <select
+                      value={taskFilters.subject}
+                      onChange={(event) => handleTaskFilterChange('subject', event.target.value)}
+                    >
+                      {taskSubjectOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Clientes</span>
+                    <select
+                      value={taskFilters.client}
+                      onChange={(event) => handleTaskFilterChange('client', event.target.value)}
+                    >
+                      {taskClientOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Departamento</span>
+                    <select
+                      value={taskFilters.department}
+                      onChange={(event) => handleTaskFilterChange('department', event.target.value)}
+                    >
+                      {taskDepartmentOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Status</span>
+                    <select
+                      value={taskFilters.status}
+                      onChange={(event) => handleTaskFilterChange('status', event.target.value)}
+                    >
+                      {taskStatusOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Status do Cliente</span>
+                    <select
+                      value={taskFilters.clientStatus}
+                      onChange={(event) => handleTaskFilterChange('clientStatus', event.target.value)}
+                    >
+                      {taskClientStatusOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Responsável</span>
+                    <select
+                      value={taskFilters.owner}
+                      onChange={(event) => handleTaskFilterChange('owner', event.target.value)}
+                    >
+                      {taskOwnerOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Por Data</span>
+                    <select
+                      value={taskFilters.dateBy}
+                      onChange={(event) => handleTaskFilterChange('dateBy', event.target.value)}
+                    >
+                      {taskDateFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Período Inicial</span>
+                    <input
+                      type="date"
+                      value={taskFilters.startDate}
+                      onChange={(event) => handleTaskFilterChange('startDate', event.target.value)}
+                    />
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Período Final</span>
+                    <input
+                      type="date"
+                      value={taskFilters.endDate}
+                      onChange={(event) => handleTaskFilterChange('endDate', event.target.value)}
+                    />
+                  </label>
+                  <button type="button" className="chip primary small" onClick={applyTaskFilters}>
                     Aplicar
                   </button>
-                  <button type="button" className="chip small">
+                  <button type="button" className="chip small" onClick={clearTaskFilters}>
                     Limpar
                   </button>
                 </div>
 
                 <div className="report-search">
-                  <input type="text" placeholder="O que você está procurando?" />
+                  <input
+                    type="text"
+                    placeholder="O que você está procurando?"
+                    value={taskFilters.query}
+                    onChange={(event) => handleTaskFilterChange('query', event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        applyTaskFilters()
+                      }
+                    }}
+                  />
                   <div className="report-icons">
-                    <button type="button" className="icon-btn" aria-label="Baixar">
-                      ⬇
+                    <button type="button" className="icon-btn" aria-label="Pesquisar" onClick={applyTaskFilters}>
+                      Buscar
                     </button>
-                    <button type="button" className="icon-btn" aria-label="Visualizar">
-                      ◻
+                    <button type="button" className="icon-btn" aria-label="Limpar filtros" onClick={clearTaskFilters}>
+                      Limpar
                     </button>
                   </div>
                 </div>
 
                 <div className="report-table">
                   <div className="report-head">
-                    <span>Nº</span>
+                    <span>No</span>
                     <span>Status</span>
                     <span>Departamento</span>
-                    <span>Assunto</span>
+                    <span>Nome</span>
+                    <span>Competência</span>
                     <span>Cliente</span>
                     <span>Status do Cliente</span>
-                    <span>Datas</span>
+                    <span>Ação</span>
+                    <span>Meta</span>
+                    <span>Vencimento</span>
+                    <span>Conclusão</span>
                     <span>Responsável</span>
-                    <span>Autorizador</span>
-                    <span>Convidados</span>
                   </div>
-                  {reportRows.map((row, index) => (
-                    <div className="report-row" key={row.id} style={{ '--delay': `${index * 0.05}s` }}>
-                      <span>{row.id}</span>
-                      <span className={`status-pill ${row.tag}`}>{row.status}</span>
-                      <span>{row.dept}</span>
-                      <span>{row.subject}</span>
-                      <span>
-                        {row.client}
-                        <small>{row.cnpj}</small>
-                      </span>
-                      <span className="client-status">{row.clientStatus}</span>
-                      <span>
-                        {row.dates.map((date) => (
-                          <small key={date}>{date}</small>
-                        ))}
-                      </span>
-                      <span>{row.owner}</span>
-                      <span>{row.authorizer}</span>
-                      <span>{row.guests}</span>
-                    </div>
-                  ))}
+                  <div className="report-body">
+                    {paginatedReportRows.length ? (
+                      paginatedReportRows.map((row, index) => (
+                        <div
+                          className="report-row clickable"
+                          key={row.id}
+                          style={{ '--delay': `${index * 0.05}s` }}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openTaskDetail(row.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              openTaskDetail(row.id)
+                            }
+                          }}
+                        >
+                          <span>{row.id}</span>
+                          <span className={`status-pill ${row.tag}`} title={row.status}>
+                            {row.status}
+                          </span>
+                          <span title={row.dept}>{row.dept}</span>
+                          <span title={row.subject}>{row.subject}</span>
+                          <span title={row.competence || '-'}>{row.competence || '-'}</span>
+                          <span className="client-cell" title={`${row.client} ${row.cnpj}`}>
+                            {`${row.client} ${row.cnpj}`}
+                          </span>
+                          <span className="client-status">{row.clientStatus}</span>
+                          <span>{getTaggedReportDate(row.dates, 'A')}</span>
+                          <span>{getTaggedReportDate(row.dates, 'M')}</span>
+                          <span>{getTaggedReportDate(row.dates, 'V')}</span>
+                          <span>{row.conclusionDate || row.deliveryDate}</span>
+                          <span title={row.owner}>{row.owner}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="report-row report-empty">
+                        <span>#</span>
+                        <span>Sem resultados</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <footer className="report-footer">
                   <span>Itens por página</span>
-                  <div className="select">10</div>
-                  <span>1 - 10 de 1227</span>
+                  <select
+                    className="select"
+                    value={taskItemsPerPage}
+                    onChange={(event) => {
+                      setTaskItemsPerPage(Number(event.target.value))
+                      setTaskPage(1)
+                    }}
+                  >
+                    {[10, 25, 50].map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                  <span>
+                    {taskTotalRows ? `${taskRangeStart} - ${taskRangeEnd} de ${taskTotalRows}` : '0 - 0 de 0'}
+                  </span>
                   <div className="pager">
-                    <button type="button">◀</button>
-                    <button type="button">▶</button>
+                    <button
+                      type="button"
+                      onClick={() => setTaskPage(Math.max(1, safeTaskPage - 1))}
+                      disabled={safeTaskPage <= 1}
+                    >
+                      {'<'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTaskPage(Math.min(taskTotalPages, safeTaskPage + 1))}
+                      disabled={safeTaskPage >= taskTotalPages || !taskTotalRows}
+                    >
+                      {'>'}
+                    </button>
                   </div>
                 </footer>
+              </div>
+            ) : screen === 'task-detail' ? (
+              <div className="task-detail-view">
+                <header className="task-detail-header card">
+                  <div className="task-detail-title">
+                    <button type="button" className="chip small" onClick={goBackToTasks}>
+                      Voltar para tarefas
+                    </button>
+                    <h4>{selectedTask ? selectedTask.subject : 'Tarefa não encontrada'}</h4>
+                    <p>
+                      {selectedTask
+                        ? `#${selectedTask.id} • ${selectedTask.dept} • ${selectedTask.competence || '-'}`
+                        : 'Selecione uma tarefa na listagem para visualizar os detalhes.'}
+                    </p>
+                  </div>
+                  {selectedTask ? (
+                    <span className={`status-pill ${selectedTask.tag}`} title={selectedTask.status}>
+                      {selectedTask.status}
+                    </span>
+                  ) : null}
+                </header>
+
+                {selectedTask ? (
+                  <div className="task-detail-grid">
+                    <section className="card task-detail-card">
+                      <h5>Informações da tarefa</h5>
+                      <div className="task-detail-fields">
+                        <label className="task-detail-field wide">
+                          <span>Assunto</span>
+                          <input
+                            type="text"
+                            value={selectedTask.subject}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskField('subject', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Competência</span>
+                          <input
+                            type="text"
+                            value={selectedTask.competence || ''}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskField('competence', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Status do Cliente</span>
+                          <select
+                            value={selectedTask.clientStatus}
+                            disabled={!taskEditMode}
+                            onChange={(event) => updateTaskField('clientStatus', event.target.value)}
+                          >
+                            <option>Ativo</option>
+                            <option>Desativado</option>
+                          </select>
+                        </label>
+                        <label className="task-detail-field wide">
+                          <span>Cliente</span>
+                          <input
+                            type="text"
+                            value={selectedTask.client}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskField('client', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>CNPJ/CPF</span>
+                          <input
+                            type="text"
+                            value={selectedTask.cnpj}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskField('cnpj', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Responsável</span>
+                          <input
+                            type="text"
+                            value={selectedTask.owner}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskField('owner', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Ação</span>
+                          <input
+                            type="text"
+                            value={getTaggedReportDate(selectedTask.dates, 'A')}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskTaggedDate('A', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Meta</span>
+                          <input
+                            type="text"
+                            value={getTaggedReportDate(selectedTask.dates, 'M')}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskTaggedDate('M', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Vencimento</span>
+                          <input
+                            type="text"
+                            value={getTaggedReportDate(selectedTask.dates, 'V')}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskTaggedDate('V', event.target.value)}
+                          />
+                        </label>
+                        <label className="task-detail-field">
+                          <span>Data da Entrega</span>
+                          <input
+                            type="text"
+                            value={selectedTask.deliveryDate || ''}
+                            readOnly={!taskEditMode}
+                            onChange={(event) => updateTaskField('deliveryDate', event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      <div className="task-detail-baixa">
+                        <strong>Baixa registrada:</strong>{' '}
+                        {selectedTask.baixaAt
+                          ? `${selectedTask.baixaAction} em ${selectedTask.baixaAt}`
+                          : 'Sem baixa até o momento'}
+                      </div>
+                    </section>
+
+                    <section className="card task-detail-card">
+                      <h5>Anexos e ações</h5>
+                      <label className="task-upload-field">
+                        <span>Anexar arquivo da tarefa</span>
+                        <input type="file" onChange={handleTaskAttachmentAdd} />
+                      </label>
+
+                      <div className="task-attachments">
+                        {selectedTask.attachments?.length ? (
+                          selectedTask.attachments.map((attachment) => (
+                            <div className="task-attachment-row" key={attachment.id}>
+                              <div>
+                                <strong>{attachment.name}</strong>
+                                <small>{formatFileSize(attachment.size)}</small>
+                              </div>
+                              <button
+                                type="button"
+                                className="chip tiny"
+                                onClick={() => downloadAttachment(attachment)}
+                              >
+                                Baixar
+                              </button>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="task-empty-attachments">Nenhum arquivo anexado.</p>
+                        )}
+                      </div>
+
+                      <div className="task-detail-actions">
+                        <button
+                          type="button"
+                          className="chip tiny"
+                          onClick={handleTaskDownload}
+                          disabled={!selectedTask.attachments?.length}
+                        >
+                          Baixar
+                        </button>
+                        <button type="button" className="chip tiny" onClick={handleTaskDispense}>
+                          Dispensar
+                        </button>
+                        <button type="button" className="chip tiny" onClick={handleTaskEdit}>
+                          {taskEditMode ? 'Salvar edição' : 'Editar'}
+                        </button>
+                        <button type="button" className="danger-outline" onClick={handleTaskDelete}>
+                          Excluir
+                        </button>
+                      </div>
+
+                      <div className="task-action-log">
+                        <h6>Histórico da tarefa</h6>
+                        {selectedTaskLogs.length ? (
+                          selectedTaskLogs.map((log) => (
+                            <p key={log.id}>
+                              <strong>{log.action}</strong> em {log.timestamp}
+                            </p>
+                          ))
+                        ) : (
+                          <p>Nenhuma ação de baixa registrada.</p>
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                ) : (
+                  <section className="card task-detail-empty">
+                    <p>A tarefa selecionada não foi encontrada.</p>
+                    <button type="button" className="chip small" onClick={goBackToTasks}>
+                      Voltar para listagem
+                    </button>
+                  </section>
+                )}
               </div>
             ) : screen === 'clients' ? (
               <div className="clients-view">
@@ -2015,4 +3546,7 @@ function App() {
 }
 
 export default App
+
+
+
 
