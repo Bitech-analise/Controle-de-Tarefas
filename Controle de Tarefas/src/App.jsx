@@ -505,32 +505,6 @@ const getTaskDisplayConclusion = (row) => {
   return row.conclusionDate || row.deliveryDate || ''
 }
 
-const isCompletedTaskStatus = (status) => {
-  const normalizedStatus = String(status || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-
-  return ['finalizada', 'concluida', 'dispensada', 'cancelada'].some((keyword) =>
-    normalizedStatus.includes(keyword),
-  )
-}
-
-const getTaskProgressColumnKey = ({
-  todayIso,
-  actionIso,
-  metaIso,
-  dueIso,
-  isCompleted,
-  hasDeliveryDate,
-}) => {
-  if (isCompleted || hasDeliveryDate) return 'review'
-  if (actionIso && todayIso < actionIso) return 'notStarted'
-  if (metaIso && todayIso < metaIso) return 'doing'
-  if (dueIso && todayIso <= dueIso) return 'pending'
-  return 'pending'
-}
-
 const formatCompetenceValue = (value) => {
   if (!value) return ''
   const normalized = String(value).trim().toUpperCase()
@@ -2081,108 +2055,6 @@ function App() {
   const isReadOnly = clientMode === 'view'
   const bulkSelectedGroups = Array.isArray(bulkForm.grupos) ? bulkForm.grupos : []
   const bulkSelectedTax = bulkForm.tributacao || ''
-  const currentMonthLabel = getCompetenceFromDate(getTodayIsoLocal(), 'Mesmo mês')
-  const todayIso = getTodayIsoLocal()
-  const getEmptyProgressBucket = () => ({ notStarted: 0, doing: 0, pending: 0, review: 0 })
-  const overviewMetrics = tasksRows.reduce(
-    (acc, row) => {
-      const displayStatus = getTaskDisplayStatus(row)
-      const actionIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'A'))
-      const metaIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'M'))
-      const dueIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'V'))
-      const deliveryIso = parseBrDateToIso(row.deliveryDate)
-      const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
-      const isCompleted = isCompletedTaskStatus(displayStatus.status)
-      const progressColumn = getTaskProgressColumnKey({
-        todayIso,
-        actionIso,
-        metaIso,
-        dueIso,
-        isCompleted,
-        hasDeliveryDate,
-      })
-
-      if (!isCompleted) {
-        acc.pending += 1
-        acc.progress.open[progressColumn] += 1
-      }
-
-      if (!isCompleted && dueIso && dueIso === todayIso) {
-        acc.dueToday += 1
-        acc.progress.dueToday[progressColumn] += 1
-      }
-
-      if (!isCompleted && metaIso && dueIso && todayIso >= metaIso && todayIso <= dueIso) {
-        acc.subjectToFine += 1
-        acc.progress.attention[progressColumn] += 1
-      }
-
-      if (deliveryIso && dueIso && deliveryIso > dueIso) {
-        acc.generatedFine += 1
-      }
-
-      return acc
-    },
-    {
-      dueToday: 0,
-      subjectToFine: 0,
-      generatedFine: 0,
-      pending: 0,
-      progress: {
-        open: getEmptyProgressBucket(),
-        dueToday: getEmptyProgressBucket(),
-        attention: getEmptyProgressBucket(),
-      },
-    },
-  )
-  const completedTasks = Math.max(0, tasksRows.length - overviewMetrics.pending)
-  const completionPercent = tasksRows.length
-    ? Math.round((completedTasks / tasksRows.length) * 100)
-    : 0
-  const dashboardStats = stats.map((stat) => {
-    const dynamicValueByLabel = {
-      'Vencem Hoje': overviewMetrics.dueToday,
-      'Sujeitas à Multa': overviewMetrics.subjectToFine,
-      'Multas Geradas': overviewMetrics.generatedFine,
-      Pendentes: overviewMetrics.pending,
-    }
-    return {
-      ...stat,
-      value: String(dynamicValueByLabel[stat.label] ?? stat.value),
-    }
-  })
-  const progressRowsData = [
-    {
-      label: 'Abertas',
-      tone: 'amber',
-      values: [
-        overviewMetrics.progress.open.notStarted,
-        overviewMetrics.progress.open.doing,
-        overviewMetrics.progress.open.pending,
-        overviewMetrics.progress.open.review,
-      ],
-    },
-    {
-      label: 'Vencem Hoje',
-      tone: 'rose',
-      values: [
-        overviewMetrics.progress.dueToday.notStarted,
-        overviewMetrics.progress.dueToday.doing,
-        overviewMetrics.progress.dueToday.pending,
-        overviewMetrics.progress.dueToday.review,
-      ],
-    },
-    {
-      label: 'Atenção',
-      tone: 'violet',
-      values: [
-        overviewMetrics.progress.attention.notStarted,
-        overviewMetrics.progress.attention.doing,
-        overviewMetrics.progress.attention.pending,
-        overviewMetrics.progress.attention.review,
-      ],
-    },
-  ]
   const selectedTaskLogs = selectedTask
     ? taskActionLogs.filter((log) => log.taskId === selectedTask.id)
     : []
@@ -2408,7 +2280,7 @@ function App() {
             {screen === 'dashboard' ? (
               <div className="dashboard-view">
                 <section className="stats">
-                  {dashboardStats.map((stat, index) => (
+                  {stats.map((stat, index) => (
                     <article
                       key={stat.label}
                       className={`stat-card tone-${stat.tone}`}
@@ -2437,7 +2309,7 @@ function App() {
                         <span>Pendente</span>
                         <span>Revisão</span>
                       </div>
-                      {progressRowsData.map((row) => (
+                      {progressRows.map((row) => (
                         <div className="progress-row" key={row.label}>
                           <span className={`tag tone-${row.tone}`}>{row.label}</span>
                           {row.values.map((value, idx) => (
@@ -2453,19 +2325,19 @@ function App() {
                   <article className="card performance" style={{ '--delay': '0.16s' }}>
                     <header>
                       <h4>Performance do Mês</h4>
-                      <span>{currentMonthLabel || '-'}</span>
+                      <span>FEV/2026</span>
                     </header>
                     <div className="performance-body">
                       <div className="metric">
-                        <strong>{completedTasks}</strong>
+                        <strong>0</strong>
                         <span>Tarefas Realizadas</span>
                       </div>
                       <div className="donut">
-                        <div className="donut-value">{completionPercent}%</div>
+                        <div className="donut-value">0%</div>
                         <span>Tarefas Concluídas</span>
                       </div>
                       <div className="metric">
-                        <strong>{overviewMetrics.pending}</strong>
+                        <strong>14</strong>
                         <span>Tarefas Restantes</span>
                       </div>
                     </div>
@@ -2474,6 +2346,22 @@ function App() {
                     </button>
                   </article>
 
+                  <article className="card client-view" style={{ '--delay': '0.22s' }}>
+                    <header>
+                      <h4>Visão do Cliente</h4>
+                      <span>Indicadores chave</span>
+                    </header>
+                    <div className="client-cards">
+                      <div className="pill-card">
+                        <p>Aguardando resposta</p>
+                        <strong>0</strong>
+                      </div>
+                      <div className="pill-card muted">
+                        <p>Com impedimento</p>
+                        <strong>0</strong>
+                      </div>
+                    </div>
+                  </article>
                 </section>
 
                 <section className="card control-panel" style={{ '--delay': '0.26s' }}>
