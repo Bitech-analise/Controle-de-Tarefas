@@ -406,7 +406,15 @@ const parseIsoDateToBr = (value) => {
   return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`
 }
 
-const getNowBrDate = () => parseIsoDateToBr(new Date().toISOString().slice(0, 10))
+const getTodayIsoLocal = () => {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const getNowBrDate = () => parseIsoDateToBr(getTodayIsoLocal())
 
 const getNowBrTimestamp = () =>
   new Date().toLocaleString('pt-BR', {
@@ -424,6 +432,107 @@ const formatFileSize = (bytes) => {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const addMonthsToIsoDate = (value, monthsToAdd) => {
+  if (!value) return ''
+  const [yearRaw, monthRaw, dayRaw] = value.split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  const day = Number(dayRaw)
+  if (!year || !month || !day) return ''
+
+  const baseDate = new Date(year, month - 1 + monthsToAdd, 1)
+  const lastDay = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0).getDate()
+  const safeDay = Math.min(day, lastDay)
+  baseDate.setDate(safeDay)
+
+  const nextYear = baseDate.getFullYear()
+  const nextMonth = String(baseDate.getMonth() + 1).padStart(2, '0')
+  const nextDay = String(baseDate.getDate()).padStart(2, '0')
+  return `${nextYear}-${nextMonth}-${nextDay}`
+}
+
+const getCompetenceFromDate = (isoDate, mode) => {
+  if (!isoDate) return ''
+  const [yearRaw, monthRaw] = isoDate.split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  if (!year || !month) return ''
+
+  const date = new Date(year, month - 1, 1)
+  if (mode === 'Mês anterior') {
+    date.setMonth(date.getMonth() - 1)
+  }
+
+  const monthByIndex = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ']
+  return `${monthByIndex[date.getMonth()]}/${date.getFullYear()}`
+}
+
+const getGeneratedTaskStatus = (actionIso, metaIso, dueIso) => {
+  const todayIso = getTodayIsoLocal()
+
+  if (actionIso && actionIso > todayIso) {
+    return { status: 'A Vencer', tag: 'lime' }
+  }
+
+  if (dueIso && dueIso < todayIso) {
+    return { status: 'Vencida', tag: 'purple' }
+  }
+
+  if (metaIso && metaIso < todayIso) {
+    return { status: 'Atenção', tag: 'purple' }
+  }
+
+  return { status: 'Em andamento', tag: 'success' }
+}
+
+const getTaskDisplayStatus = (row) => {
+  const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
+  if (!hasDeliveryDate) {
+    const actionIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'A'))
+    const metaIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'M'))
+    const dueIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'V'))
+    return getGeneratedTaskStatus(actionIso, metaIso, dueIso)
+  }
+
+  return { status: row.status, tag: row.tag }
+}
+
+const getTaskDisplayConclusion = (row) => {
+  const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
+  if (!hasDeliveryDate) return ''
+  return row.conclusionDate || row.deliveryDate || ''
+}
+
+const formatCompetenceValue = (value) => {
+  if (!value) return ''
+  const normalized = String(value).trim().toUpperCase()
+  const monthByNumber = {
+    '01': 'JAN',
+    '02': 'FEV',
+    '03': 'MAR',
+    '04': 'ABR',
+    '05': 'MAI',
+    '06': 'JUN',
+    '07': 'JUL',
+    '08': 'AGO',
+    '09': 'SET',
+    '10': 'OUT',
+    '11': 'NOV',
+    '12': 'DEZ',
+  }
+
+  const numericMatch = normalized.match(/^(\d{2})\/(\d{4})$/)
+  if (numericMatch) {
+    const month = monthByNumber[numericMatch[1]]
+    return month ? `${month}/${numericMatch[2]}` : normalized
+  }
+
+  const abbrMatch = normalized.match(/^([A-Z]{3})\/(\d{4})$/)
+  if (abbrMatch) return `${abbrMatch[1]}/${abbrMatch[2]}`
+
+  return normalized
 }
 
 const getTaggedReportDate = (dates, key) => {
@@ -753,6 +862,44 @@ const emptyClientForm = {
   tributacao: '',
 }
 
+const initialUsers = [
+  {
+    id: 1,
+    nome: 'Administrador',
+    departamento: 'Fiscal',
+    telefone: '(35) 9 9999-0000',
+    email: 'admin@hive.com',
+    senha: 'Admin123',
+  },
+]
+
+const emptyUserForm = {
+  nome: '',
+  departamento: '',
+  telefone: '',
+  email: '',
+  senha: '',
+}
+
+const getEmptySettingsTaskForm = () => {
+  const today = new Date().toISOString().slice(0, 10)
+  return {
+    actionDate: today,
+    metaDate: today,
+    dueDate: today,
+    obligation: '',
+    complement: '',
+    installments: 1,
+    competenceMode: 'Mesmo mês',
+    clientIds: [],
+    includeDisabledClients: false,
+    attachments: [],
+    andamento: '',
+    owner: '',
+    guests: '',
+  }
+}
+
 const CREDENTIALS = {
   user: 'Admin',
   pass: 'Admin123',
@@ -781,7 +928,15 @@ function App() {
   )
   const [error, setError] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [taskCreateOpen, setTaskCreateOpen] = useState(false)
   const [clientOpen, setClientOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState('users')
+  const [users, setUsers] = useState(initialUsers)
+  const [userForm, setUserForm] = useState(emptyUserForm)
+  const [editingUserId, setEditingUserId] = useState(null)
+  const [settingsUserFeedback, setSettingsUserFeedback] = useState('')
+  const [settingsTaskForm, setSettingsTaskForm] = useState(() => getEmptySettingsTaskForm())
+  const [settingsTaskFeedback, setSettingsTaskFeedback] = useState('')
   const [clients, setClients] = useState(initialClients)
   const [tasksRows, setTasksRows] = useState(() =>
     reportRows.map((task) => ({
@@ -789,11 +944,13 @@ function App() {
       attachments: [],
       baixaAt: '',
       baixaAction: '',
+      justification: '',
     })),
   )
   const [selectedTaskId, setSelectedTaskId] = useState(null)
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
+  const [taskActionError, setTaskActionError] = useState('')
   const [clientForm, setClientForm] = useState(emptyClientForm)
   const [clientMode, setClientMode] = useState('create')
   const [editingId, setEditingId] = useState(null)
@@ -884,7 +1041,12 @@ function App() {
 
   const handleLogin = (event) => {
     event.preventDefault()
-    const isValid = username === CREDENTIALS.user && password === CREDENTIALS.pass
+    const normalizedUser = username.trim().toLowerCase()
+    const hasRegisteredUser = users.some(
+      (user) => user.email.trim().toLowerCase() === normalizedUser && user.senha === password,
+    )
+    const hasLegacyAccess = username === CREDENTIALS.user && password === CREDENTIALS.pass
+    const isValid = hasRegisteredUser || hasLegacyAccess
 
     if (!isValid) {
       setError('Usuário ou senha inválidos.')
@@ -1066,6 +1228,7 @@ function App() {
   }
 
   const selectedTask = tasksRows.find((task) => task.id === selectedTaskId) || null
+  const selectedTaskDisplayStatus = selectedTask ? getTaskDisplayStatus(selectedTask) : null
 
   const logTaskAction = (task, action) => {
     const timestamp = getNowBrTimestamp()
@@ -1095,7 +1258,6 @@ function App() {
               ...item,
               baixaAt: timestamp,
               baixaAction: action,
-              conclusionDate: item.conclusionDate || getNowBrDate(),
             }
           : item,
       ),
@@ -1130,6 +1292,7 @@ function App() {
   const openTaskDetail = (taskId) => {
     setSelectedTaskId(taskId)
     setTaskEditMode(false)
+    setTaskActionError('')
     setScreen('task-detail')
   }
 
@@ -1157,6 +1320,7 @@ function App() {
           : item,
       ),
     )
+    setTaskActionError('')
 
     event.target.value = ''
   }
@@ -1174,19 +1338,57 @@ function App() {
   }
 
   const handleTaskDownload = () => {
-    if (!selectedTask?.attachments?.length) return
-    const newestAttachment = selectedTask.attachments[selectedTask.attachments.length - 1]
-    downloadAttachment(newestAttachment)
+    if (!selectedTask) return
+    const hasAttachment = Boolean(selectedTask.attachments?.length)
+    const hasJustification = Boolean((selectedTask.justification || '').trim())
+    if (!hasAttachment && !hasJustification) {
+      setTaskActionError('Para baixar a tarefa, anexe um arquivo ou preencha a justificativa.')
+      return
+    }
+    if (hasAttachment) {
+      const newestAttachment = selectedTask.attachments[selectedTask.attachments.length - 1]
+      downloadAttachment(newestAttachment)
+    }
+    registerTaskBaixa(selectedTask, 'Baixar')
+    setTasksRows((prev) =>
+      prev.map((item) =>
+        item.id === selectedTask.id
+          ? {
+              ...item,
+              deliveryDate: getNowBrDate(),
+              conclusionDate: getNowBrDate(),
+              status: 'Finalizada',
+              tag: 'lime',
+            }
+          : item,
+      ),
+    )
+    setTaskActionError('')
   }
 
   const handleTaskDispense = () => {
     if (!selectedTask) return
+    const hasAttachment = Boolean(selectedTask.attachments?.length)
+    const hasJustification = Boolean((selectedTask.justification || '').trim())
+    if (!hasAttachment && !hasJustification) {
+      setTaskActionError('Para dispensar a tarefa, anexe um arquivo ou preencha a justificativa.')
+      return
+    }
     registerTaskBaixa(selectedTask, 'Dispensar')
     setTasksRows((prev) =>
       prev.map((item) =>
-        item.id === selectedTask.id ? { ...item, status: 'Dispensada', tag: 'gray' } : item,
+        item.id === selectedTask.id
+          ? {
+              ...item,
+              status: 'Dispensada',
+              tag: 'gray',
+              deliveryDate: getNowBrDate(),
+              conclusionDate: getNowBrDate(),
+            }
+          : item,
       ),
     )
+    setTaskActionError('')
   }
 
   const handleTaskEdit = () => {
@@ -1214,6 +1416,240 @@ function App() {
 
   const goBackToTasks = () => {
     setTaskEditMode(false)
+    setTaskActionError('')
+    setScreen('tasks')
+  }
+
+  const handleSettingsUserChange = (field, value) => {
+    setUserForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const clearSettingsUserForm = () => {
+    setEditingUserId(null)
+    setUserForm(emptyUserForm)
+    setSettingsUserFeedback('')
+  }
+
+  const handleSettingsUserSave = (event) => {
+    event.preventDefault()
+    const nome = userForm.nome.trim()
+    const departamento = userForm.departamento.trim()
+    const telefone = userForm.telefone.trim()
+    const email = userForm.email.trim().toLowerCase()
+    const senha = userForm.senha
+
+    if (!nome || !departamento || !email || !senha) {
+      setSettingsUserFeedback('Preencha nome, departamento, e-mail e senha para salvar o usuário.')
+      return
+    }
+
+    const duplicatedEmail = users.some(
+      (user) => user.email.trim().toLowerCase() === email && user.id !== editingUserId,
+    )
+
+    if (duplicatedEmail) {
+      setSettingsUserFeedback('Já existe um usuário com esse e-mail.')
+      return
+    }
+
+    if (editingUserId !== null) {
+      setUsers((prev) =>
+        prev.map((user) =>
+          user.id === editingUserId
+            ? { id: editingUserId, nome, departamento, telefone, email, senha }
+            : user,
+        ),
+      )
+      setSettingsUserFeedback('Usuário atualizado com sucesso.')
+    } else {
+      const nextId = users.reduce((maxId, user) => Math.max(maxId, user.id), 0) + 1
+      setUsers((prev) => [...prev, { id: nextId, nome, departamento, telefone, email, senha }])
+      setSettingsUserFeedback('Usuário cadastrado com sucesso.')
+    }
+
+    setEditingUserId(null)
+    setUserForm(emptyUserForm)
+  }
+
+  const editSettingsUser = (user) => {
+    setEditingUserId(user.id)
+    setUserForm({
+      nome: user.nome || '',
+      departamento: user.departamento || '',
+      telefone: user.telefone || '',
+      email: user.email || '',
+      senha: user.senha || '',
+    })
+    setSettingsUserFeedback('')
+  }
+
+  const removeSettingsUser = (userId) => {
+    const targetUser = users.find((user) => user.id === userId)
+    if (!targetUser) return
+    const canDelete = window.confirm(`Deseja excluir o usuário ${targetUser.email}?`)
+    if (!canDelete) return
+    setUsers((prev) => prev.filter((user) => user.id !== userId))
+    if (editingUserId === userId) {
+      setEditingUserId(null)
+      setUserForm(emptyUserForm)
+    }
+    setSettingsUserFeedback('Usuário excluído com sucesso.')
+  }
+
+  const handleSettingsTaskChange = (field, value) => {
+    setSettingsTaskForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const toggleSettingsTaskClient = (clientId) => {
+    setSettingsTaskForm((prev) => {
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
+      if (current.includes(clientId)) {
+        return { ...prev, clientIds: current.filter((id) => id !== clientId) }
+      }
+      return { ...prev, clientIds: [...current, clientId] }
+    })
+  }
+
+  const handleSettingsTaskAttachments = (event) => {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    setSettingsTaskForm((prev) => ({
+      ...prev,
+      attachments: [...prev.attachments, ...files],
+    }))
+    event.target.value = ''
+  }
+
+  const removeSettingsTaskAttachment = (fileName, fileSize) => {
+    setSettingsTaskForm((prev) => ({
+      ...prev,
+      attachments: prev.attachments.filter(
+        (file) => !(file.name === fileName && file.size === fileSize),
+      ),
+    }))
+  }
+
+  const clearSettingsTaskForm = () => {
+    setSettingsTaskForm(getEmptySettingsTaskForm())
+    setSettingsTaskFeedback('')
+  }
+
+  const handleSettingsTaskSave = (event) => {
+    event.preventDefault()
+
+    const obligation = settingsTaskForm.obligation.trim()
+    const owner = settingsTaskForm.owner.trim()
+    const selectedIds = Array.isArray(settingsTaskForm.clientIds) ? settingsTaskForm.clientIds : []
+    const installments = Number(settingsTaskForm.installments) || 1
+
+    if (!settingsTaskForm.actionDate || !settingsTaskForm.metaDate || !settingsTaskForm.dueDate) {
+      setSettingsTaskFeedback('Preencha Ação, Meta e Vencimento.')
+      return
+    }
+
+    if (!obligation) {
+      setSettingsTaskFeedback('Informe a Obrigação para gerar as tarefas.')
+      return
+    }
+
+    if (!owner) {
+      setSettingsTaskFeedback('Informe o responsável da tarefa.')
+      return
+    }
+
+    if (!settingsTaskForm.andamento.trim()) {
+      setSettingsTaskFeedback('Informe o andamento da tarefa.')
+      return
+    }
+
+    if (!selectedIds.length) {
+      setSettingsTaskFeedback('Selecione pelo menos um cliente para gerar as tarefas.')
+      return
+    }
+
+    const targetClients = clients.filter(
+      (client) =>
+        selectedIds.includes(client.id) &&
+        (settingsTaskForm.includeDisabledClients || client.status !== 'Inativo'),
+    )
+
+    if (!targetClients.length) {
+      setSettingsTaskFeedback('Nenhum cliente disponível para os filtros selecionados.')
+      return
+    }
+
+    const complement = settingsTaskForm.complement.trim()
+    const guests = settingsTaskForm.guests.trim() || 'Não definido'
+    const subject = complement ? `${obligation} - ${complement}` : obligation
+
+    let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, task.id), 0) + 1
+    const generatedRows = []
+
+    targetClients.forEach((client) => {
+      for (let step = 0; step < installments; step += 1) {
+        const actionIso = addMonthsToIsoDate(settingsTaskForm.actionDate, step)
+        const metaIso = addMonthsToIsoDate(settingsTaskForm.metaDate, step)
+        const dueIso = addMonthsToIsoDate(settingsTaskForm.dueDate, step)
+
+        const actionBr = parseIsoDateToBr(actionIso)
+        const metaBr = parseIsoDateToBr(metaIso)
+        const dueBr = parseIsoDateToBr(dueIso)
+        const competence = getCompetenceFromDate(actionIso, settingsTaskForm.competenceMode)
+        const generatedStatus = getGeneratedTaskStatus(actionIso, metaIso, dueIso)
+        const firstGroup =
+          Array.isArray(client.grupos) && client.grupos.length ? client.grupos[0] : 'Fiscal'
+        const dept = firstGroup.startsWith('Back Office') ? firstGroup : `Back Office - ${firstGroup}`
+        const rowId = nextId
+        nextId += 1
+
+        generatedRows.push({
+          id: rowId,
+          status: generatedStatus.status,
+          dept,
+          subject,
+          competence,
+          client: client.nome,
+          cnpj: client.inscricao || `${client.docType} não informado`,
+          clientStatus: client.status === 'Ativo' ? 'Ativo' : 'Desativado',
+          dates: [`A: ${actionBr}`, `M: ${metaBr}`, `V: ${dueBr}`],
+          deliveryDate: '',
+          conclusionDate: '',
+          owner,
+          authorizer: owner,
+          guests,
+          tag: generatedStatus.tag,
+          attachments: settingsTaskForm.attachments.map((file, index) => ({
+            id: `${rowId}-${index}-${file.name}`,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            file,
+          })),
+          baixaAt: '',
+          baixaAction: '',
+          justification: '',
+          generatedBySettings: true,
+          andamento: settingsTaskForm.andamento,
+          competenceMode: settingsTaskForm.competenceMode,
+        })
+      }
+    })
+
+    setTasksRows((prev) => [...generatedRows, ...prev])
+    setSettingsTaskFeedback(
+      `${generatedRows.length} tarefa(s) gerada(s) para ${targetClients.length} cliente(s).`,
+    )
+    setSettingsTaskForm({
+      ...getEmptySettingsTaskForm(),
+      actionDate: settingsTaskForm.actionDate,
+      metaDate: settingsTaskForm.metaDate,
+      dueDate: settingsTaskForm.dueDate,
+      owner: settingsTaskForm.owner,
+    })
+    setTaskFilters(initialTaskFilters)
+    setAppliedTaskFilters(initialTaskFilters)
+    setTaskPage(1)
+    setTaskCreateOpen(false)
     setScreen('tasks')
   }
 
@@ -1221,12 +1657,36 @@ function App() {
   const taskSubjectOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.subject)))]
   const taskClientOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.client)))]
   const taskDepartmentOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.dept)))]
-  const taskStatusOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.status)))]
+  const taskStatusOptions = [
+    'Todos',
+    ...Array.from(new Set(tasksRows.map((item) => getTaskDisplayStatus(item).status))),
+  ]
   const taskClientStatusOptions = [
     'Todos',
     ...Array.from(new Set(tasksRows.map((item) => item.clientStatus))),
   ]
   const taskOwnerOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.owner)))]
+  const settingsTaskObligationOptions = Array.from(
+    new Set(
+      tasksRows
+        .map((task) => task.subject.split(' - ')[0]?.trim())
+        .filter((value) => value && value.length > 0),
+    ),
+  )
+  const settingsTaskClients = clients.filter(
+    (client) => settingsTaskForm.includeDisabledClients || client.status !== 'Inativo',
+  )
+  const settingsOwnerOptions = Array.from(
+    new Set(users.map((user) => user.nome).concat(tasksRows.map((task) => task.owner))),
+  ).filter(Boolean)
+  const settingsCompetencePreview = getCompetenceFromDate(
+    settingsTaskForm.actionDate,
+    settingsTaskForm.competenceMode,
+  )
+  const currentMonthPrefix = (() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })()
 
   const getTaskDateBy = (row, dateBy) => {
     if (dateBy === 'Meta') return getTaggedReportDate(row.dates, 'M')
@@ -1236,6 +1696,7 @@ function App() {
   }
 
   const filteredReportRows = tasksRows.filter((row) => {
+    const displayStatus = getTaskDisplayStatus(row)
     const matchesType =
       appliedTaskFilters.taskType === 'Todos' || appliedTaskFilters.taskType === 'Solicitação'
     const matchesSubject =
@@ -1245,17 +1706,23 @@ function App() {
     const matchesDepartment =
       appliedTaskFilters.department === 'Todos' || row.dept === appliedTaskFilters.department
     const matchesStatus =
-      appliedTaskFilters.status === 'Todos' || row.status === appliedTaskFilters.status
+      appliedTaskFilters.status === 'Todos' || displayStatus.status === appliedTaskFilters.status
     const matchesClientStatus =
       appliedTaskFilters.clientStatus === 'Todos' ||
       row.clientStatus === appliedTaskFilters.clientStatus
     const matchesOwner = appliedTaskFilters.owner === 'Todos' || row.owner === appliedTaskFilters.owner
 
     const rowDateIso = parseBrDateToIso(getTaskDateBy(row, appliedTaskFilters.dateBy))
+    const normalizedStartDate = appliedTaskFilters.startDate.includes('/')
+      ? parseBrDateToIso(appliedTaskFilters.startDate)
+      : appliedTaskFilters.startDate
+    const normalizedEndDate = appliedTaskFilters.endDate.includes('/')
+      ? parseBrDateToIso(appliedTaskFilters.endDate)
+      : appliedTaskFilters.endDate
     const matchesStartDate =
-      !appliedTaskFilters.startDate || (rowDateIso && rowDateIso >= appliedTaskFilters.startDate)
+      !normalizedStartDate || (rowDateIso && rowDateIso >= normalizedStartDate)
     const matchesEndDate =
-      !appliedTaskFilters.endDate || (rowDateIso && rowDateIso <= appliedTaskFilters.endDate)
+      !normalizedEndDate || (rowDateIso && rowDateIso <= normalizedEndDate)
 
     const query = appliedTaskFilters.query.trim().toLowerCase()
     const searchableText = [
@@ -1265,7 +1732,7 @@ function App() {
       row.owner,
       row.authorizer,
       row.guests,
-      row.status,
+      displayStatus.status,
       row.dept,
       row.clientStatus,
       row.deliveryDate,
@@ -1288,20 +1755,33 @@ function App() {
     )
   })
 
-  const taskExportRows = filteredReportRows.map((row) => ({
-    No: row.id,
-    Status: row.status,
-    Departamento: row.dept,
-    Nome: row.subject,
-    Competência: row.competence || '',
-    Cliente: `${row.client} ${row.cnpj}`,
-    'Status do Cliente': row.clientStatus,
-    Ação: getTaggedReportDate(row.dates, 'A'),
-    Meta: getTaggedReportDate(row.dates, 'M'),
-    Vencimento: getTaggedReportDate(row.dates, 'V'),
-    Conclusão: row.conclusionDate || row.deliveryDate,
-    Responsável: row.owner,
-  }))
+  const hasTaskPeriodFilter = Boolean(appliedTaskFilters.startDate || appliedTaskFilters.endDate)
+  const rowsVisibleInTaskPanel =
+    screen === 'tasks' && !hasTaskPeriodFilter
+      ? filteredReportRows.filter(
+          (row) =>
+            !row.generatedBySettings ||
+            parseBrDateToIso(getTaggedReportDate(row.dates, 'A')).startsWith(currentMonthPrefix),
+        )
+      : filteredReportRows
+
+  const taskExportRows = rowsVisibleInTaskPanel.map((row) => {
+    const displayStatus = getTaskDisplayStatus(row)
+    return {
+      No: row.id,
+      Status: displayStatus.status,
+      Departamento: row.dept,
+      Nome: row.subject,
+      Competência: formatCompetenceValue(row.competence) || '',
+      Cliente: `${row.client} ${row.cnpj}`,
+      'Status do Cliente': row.clientStatus,
+      Ação: getTaggedReportDate(row.dates, 'A'),
+      Meta: getTaggedReportDate(row.dates, 'M'),
+      Vencimento: getTaggedReportDate(row.dates, 'V'),
+      Conclusão: getTaskDisplayConclusion(row),
+      Responsável: row.owner,
+    }
+  })
 
   const handleTaskExportCsv = () => {
     if (!taskExportRows.length) return
@@ -1380,11 +1860,14 @@ function App() {
     doc.save(fileName)
   }
 
-  const taskTotalRows = filteredReportRows.length
+  const taskTotalRows = rowsVisibleInTaskPanel.length
   const taskTotalPages = Math.max(1, Math.ceil(taskTotalRows / taskItemsPerPage))
   const safeTaskPage = Math.min(taskPage, taskTotalPages)
   const taskStartIndex = (safeTaskPage - 1) * taskItemsPerPage
-  const paginatedReportRows = filteredReportRows.slice(taskStartIndex, taskStartIndex + taskItemsPerPage)
+  const paginatedReportRows = rowsVisibleInTaskPanel.slice(
+    taskStartIndex,
+    taskStartIndex + taskItemsPerPage,
+  )
   const taskRangeStart = taskTotalRows ? taskStartIndex + 1 : 0
   const taskRangeEnd = taskTotalRows ? Math.min(taskStartIndex + taskItemsPerPage, taskTotalRows) : 0
 
@@ -1603,11 +2086,11 @@ function App() {
 
               <form className="login-form" onSubmit={handleLogin}>
                 <label>
-                  Usuário
+                  Usuário / E-mail
                   <div className="input-wrap">
                     <input
                       type="text"
-                      placeholder="seu.usuario"
+                      placeholder="seu.email@empresa.com"
                       value={username}
                       onChange={(event) => {
                         setUsername(event.target.value)
@@ -1720,7 +2203,8 @@ function App() {
                     (screen === 'operational' && item === 'Visão Geral') ||
                     ((screen === 'tasks' || screen === 'task-detail') && item === 'Tarefas') ||
                     (screen === 'reports' && item === 'Relatórios') ||
-                    (screen === 'clients' && item === 'Clientes')
+                    (screen === 'clients' && item === 'Clientes') ||
+                    (screen === 'settings' && item === 'Configurações')
                       ? 'active'
                       : ''
                   }`}
@@ -1734,6 +2218,9 @@ function App() {
                       setScreen('reports')
                     } else if (item === 'Clientes') {
                       setScreen('clients')
+                    } else if (item === 'Configurações') {
+                      setSettingsTab('users')
+                      setScreen('settings')
                     }
                   }}
                   style={{ '--delay': `${index * 0.05}s` }}
@@ -2484,39 +2971,44 @@ function App() {
                   </div>
                   <div className="report-body">
                     {paginatedReportRows.length ? (
-                      paginatedReportRows.map((row, index) => (
-                        <div
-                          className="report-row clickable"
-                          key={row.id}
-                          style={{ '--delay': `${index * 0.05}s` }}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openTaskDetail(row.id)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault()
-                              openTaskDetail(row.id)
-                            }
-                          }}
-                        >
-                          <span>{row.id}</span>
-                          <span className={`status-pill ${row.tag}`} title={row.status}>
-                            {row.status}
-                          </span>
-                          <span title={row.dept}>{row.dept}</span>
-                          <span title={row.subject}>{row.subject}</span>
-                          <span title={row.competence || '-'}>{row.competence || '-'}</span>
-                          <span className="client-cell" title={`${row.client} ${row.cnpj}`}>
-                            {`${row.client} ${row.cnpj}`}
-                          </span>
-                          <span className="client-status">{row.clientStatus}</span>
-                          <span>{getTaggedReportDate(row.dates, 'A')}</span>
-                          <span>{getTaggedReportDate(row.dates, 'M')}</span>
-                          <span>{getTaggedReportDate(row.dates, 'V')}</span>
-                          <span>{row.conclusionDate || row.deliveryDate}</span>
-                          <span title={row.owner}>{row.owner}</span>
-                        </div>
-                      ))
+                      paginatedReportRows.map((row, index) => {
+                        const displayStatus = getTaskDisplayStatus(row)
+                        return (
+                          <div
+                            className="report-row clickable"
+                            key={row.id}
+                            style={{ '--delay': `${index * 0.05}s` }}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openTaskDetail(row.id)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                openTaskDetail(row.id)
+                              }
+                            }}
+                          >
+                            <span>{row.id}</span>
+                            <span className={`status-pill ${displayStatus.tag}`} title={displayStatus.status}>
+                              {displayStatus.status}
+                            </span>
+                            <span title={row.dept}>{row.dept}</span>
+                            <span title={row.subject}>{row.subject}</span>
+                            <span title={formatCompetenceValue(row.competence) || '-'}>
+                              {formatCompetenceValue(row.competence) || '-'}
+                            </span>
+                            <span className="client-cell" title={`${row.client} ${row.cnpj}`}>
+                              {`${row.client} ${row.cnpj}`}
+                            </span>
+                            <span className="client-status">{row.clientStatus}</span>
+                            <span>{getTaggedReportDate(row.dates, 'A')}</span>
+                            <span>{getTaggedReportDate(row.dates, 'M')}</span>
+                            <span>{getTaggedReportDate(row.dates, 'V')}</span>
+                            <span>{getTaskDisplayConclusion(row)}</span>
+                            <span title={row.owner}>{row.owner}</span>
+                          </div>
+                        )
+                      })
                     ) : (
                       <div className="report-row report-empty">
                         <span>#</span>
@@ -2587,9 +3079,12 @@ function App() {
                         : 'Selecione uma tarefa na listagem para visualizar os detalhes.'}
                     </p>
                   </div>
-                  {selectedTask ? (
-                    <span className={`status-pill ${selectedTask.tag}`} title={selectedTask.status}>
-                      {selectedTask.status}
+                  {selectedTask && selectedTaskDisplayStatus ? (
+                    <span
+                      className={`status-pill ${selectedTaskDisplayStatus.tag}`}
+                      title={selectedTaskDisplayStatus.status}
+                    >
+                      {selectedTaskDisplayStatus.status}
                     </span>
                   ) : null}
                 </header>
@@ -2612,7 +3107,11 @@ function App() {
                           <span>Competência</span>
                           <input
                             type="text"
-                            value={selectedTask.competence || ''}
+                            value={
+                              taskEditMode
+                                ? selectedTask.competence || ''
+                                : formatCompetenceValue(selectedTask.competence)
+                            }
                             readOnly={!taskEditMode}
                             onChange={(event) => updateTaskField('competence', event.target.value)}
                           />
@@ -2734,7 +3233,6 @@ function App() {
                           type="button"
                           className="chip tiny"
                           onClick={handleTaskDownload}
-                          disabled={!selectedTask.attachments?.length}
                         >
                           Baixar
                         </button>
@@ -2761,6 +3259,20 @@ function App() {
                           <p>Nenhuma ação de baixa registrada.</p>
                         )}
                       </div>
+
+                      <label className="task-justification">
+                        <span>Justificativa</span>
+                        <textarea
+                          rows={4}
+                          value={selectedTask.justification || ''}
+                          onChange={(event) => {
+                            updateTaskField('justification', event.target.value)
+                            setTaskActionError('')
+                          }}
+                          placeholder="Preencha a justificativa quando não houver anexo."
+                        />
+                      </label>
+                      {taskActionError ? <p className="task-action-error">{taskActionError}</p> : null}
                     </section>
                   </div>
                 ) : (
@@ -2769,6 +3281,346 @@ function App() {
                     <button type="button" className="chip small" onClick={goBackToTasks}>
                       Voltar para listagem
                     </button>
+                  </section>
+                )}
+              </div>
+            ) : screen === 'settings' ? (
+              <div className="settings-view">
+                <header className="settings-header card">
+                  <div>
+                    <h4>Configurações</h4>
+                    <p>Cadastre usuários com acesso ao painel.</p>
+                  </div>
+                  <div className="settings-tabs">
+                    <button
+                      type="button"
+                      className="active"
+                      onClick={() => {
+                        setSettingsTab('users')
+                      }}
+                    >
+                      Cadastro de Usuários
+                    </button>
+                  </div>
+                </header>
+
+                {settingsTab === 'users' ? (
+                  <section className="card settings-card">
+                    <h5>Cadastro de usuários</h5>
+                    <form className="settings-form-grid" onSubmit={handleSettingsUserSave}>
+                      <label className="settings-field">
+                        <span>Nome</span>
+                        <input
+                          type="text"
+                          value={userForm.nome}
+                          onChange={(event) => handleSettingsUserChange('nome', event.target.value)}
+                          placeholder="Nome do usuário"
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>Departamento</span>
+                        <select
+                          value={userForm.departamento}
+                          onChange={(event) =>
+                            handleSettingsUserChange('departamento', event.target.value)
+                          }
+                        >
+                          <option value="" disabled>
+                            Selecione...
+                          </option>
+                          {groupOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="settings-field">
+                        <span>Telefone</span>
+                        <input
+                          type="text"
+                          value={userForm.telefone}
+                          onChange={(event) => handleSettingsUserChange('telefone', event.target.value)}
+                          placeholder="(00) 9 0000-0000"
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>E-mail (login)</span>
+                        <input
+                          type="email"
+                          value={userForm.email}
+                          onChange={(event) => handleSettingsUserChange('email', event.target.value)}
+                          placeholder="usuario@empresa.com"
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>Senha</span>
+                        <input
+                          type="text"
+                          value={userForm.senha}
+                          onChange={(event) => handleSettingsUserChange('senha', event.target.value)}
+                          placeholder="Senha de acesso"
+                        />
+                      </label>
+                      <div className="settings-actions-row">
+                        <button type="button" className="chip small" onClick={clearSettingsUserForm}>
+                          Limpar
+                        </button>
+                        <button type="submit" className="primary small">
+                          {editingUserId !== null ? 'Salvar alteração' : 'Cadastrar usuário'}
+                        </button>
+                      </div>
+                    </form>
+                    {settingsUserFeedback ? (
+                      <p className="settings-feedback">{settingsUserFeedback}</p>
+                    ) : null}
+
+                    <div className="settings-users-table">
+                      <div className="settings-users-head">
+                        <span>Nome</span>
+                        <span>Departamento</span>
+                        <span>Telefone</span>
+                        <span>E-mail (login)</span>
+                        <span>Senha</span>
+                        <span>Ações</span>
+                      </div>
+                      <div className="settings-users-body">
+                        {users.map((user) => (
+                          <div className="settings-users-row" key={user.id}>
+                            <span title={user.nome}>{user.nome}</span>
+                            <span title={user.departamento || '-'}>{user.departamento || '-'}</span>
+                            <span title={user.telefone || '-'}>{user.telefone || '-'}</span>
+                            <span title={user.email}>{user.email}</span>
+                            <span title={user.senha}>{user.senha}</span>
+                            <span className="settings-users-actions">
+                              <button type="button" className="link-btn" onClick={() => editSettingsUser(user)}>
+                                Editar
+                              </button>
+                              <button
+                                type="button"
+                                className="link-btn danger"
+                                onClick={() => removeSettingsUser(user.id)}
+                              >
+                                Excluir
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+                ) : (
+                  <section className="card settings-card">
+                    <h5>Cadastro de tarefas</h5>
+                    <form className="settings-task-form" onSubmit={handleSettingsTaskSave}>
+                      <div className="settings-form-grid settings-task-dates">
+                        <label className="settings-field">
+                          <span>
+                            Ação <strong className="req">*</strong>
+                          </span>
+                          <input
+                            type="date"
+                            value={settingsTaskForm.actionDate}
+                            onChange={(event) => handleSettingsTaskChange('actionDate', event.target.value)}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>
+                            Meta <strong className="req">*</strong>
+                          </span>
+                          <input
+                            type="date"
+                            value={settingsTaskForm.metaDate}
+                            onChange={(event) => handleSettingsTaskChange('metaDate', event.target.value)}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>
+                            Vencimento <strong className="req">*</strong>
+                          </span>
+                          <input
+                            type="date"
+                            value={settingsTaskForm.dueDate}
+                            onChange={(event) => handleSettingsTaskChange('dueDate', event.target.value)}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="settings-form-grid settings-task-obligation">
+                        <label className="settings-field">
+                          <span>
+                            Obrigação <strong className="req">*</strong>
+                          </span>
+                          <input
+                            list="settings-obligation-options"
+                            type="text"
+                            value={settingsTaskForm.obligation}
+                            onChange={(event) => handleSettingsTaskChange('obligation', event.target.value)}
+                            placeholder="Selecione ou digite"
+                          />
+                          <datalist id="settings-obligation-options">
+                            {settingsTaskObligationOptions.map((option) => (
+                              <option key={option} value={option} />
+                            ))}
+                          </datalist>
+                        </label>
+                        <label className="settings-field">
+                          <span>Complemento</span>
+                          <input
+                            type="text"
+                            value={settingsTaskForm.complement}
+                            onChange={(event) => handleSettingsTaskChange('complement', event.target.value)}
+                            placeholder="Ex.: ISS mensal"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="settings-form-grid settings-task-rules">
+                        <label className="settings-field">
+                          <span>
+                            Parcelas <strong className="req">*</strong>
+                          </span>
+                          <select
+                            value={settingsTaskForm.installments}
+                            onChange={(event) =>
+                              handleSettingsTaskChange('installments', Number(event.target.value))
+                            }
+                          >
+                            {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>
+                            Fato Gerador (Competência) <strong className="req">*</strong>
+                          </span>
+                          <select
+                            value={settingsTaskForm.competenceMode}
+                            onChange={(event) =>
+                              handleSettingsTaskChange('competenceMode', event.target.value)
+                            }
+                          >
+                            <option>Mesmo mês</option>
+                            <option>Mês anterior</option>
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>
+                            Responsável <strong className="req">*</strong>
+                          </span>
+                          <input
+                            list="settings-owner-options"
+                            type="text"
+                            value={settingsTaskForm.owner}
+                            onChange={(event) => handleSettingsTaskChange('owner', event.target.value)}
+                            placeholder="Nome do responsável"
+                          />
+                          <datalist id="settings-owner-options">
+                            {settingsOwnerOptions.map((option) => (
+                              <option key={option} value={option} />
+                            ))}
+                          </datalist>
+                        </label>
+                      </div>
+
+                      <p className="settings-hint">
+                        Competência inicial prevista: <strong>{settingsCompetencePreview || '--/----'}</strong>
+                      </p>
+
+                      <div className="settings-clients-box">
+                        <div className="settings-clients-top">
+                          <span>
+                            Cliente(s) <strong className="req">*</strong>
+                          </span>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={settingsTaskForm.includeDisabledClients}
+                              onChange={(event) =>
+                                handleSettingsTaskChange('includeDisabledClients', event.target.checked)
+                              }
+                            />
+                            Exibir clientes desativados
+                          </label>
+                        </div>
+                        <div className="settings-clients-list">
+                          {settingsTaskClients.length ? (
+                            settingsTaskClients.map((client) => (
+                              <label key={client.id} className="settings-client-item">
+                                <input
+                                  type="checkbox"
+                                  checked={settingsTaskForm.clientIds.includes(client.id)}
+                                  onChange={() => toggleSettingsTaskClient(client.id)}
+                                />
+                                <span>
+                                  {client.nome} ({client.status})
+                                </span>
+                              </label>
+                            ))
+                          ) : (
+                            <p>Nenhum cliente disponível para seleção.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <label className="settings-field">
+                        <span>Enviar arquivos</span>
+                        <input type="file" multiple onChange={handleSettingsTaskAttachments} />
+                      </label>
+                      {settingsTaskForm.attachments.length ? (
+                        <div className="settings-attachments">
+                          {settingsTaskForm.attachments.map((file) => (
+                            <span key={`${file.name}-${file.size}`} className="settings-attachment-pill">
+                              {file.name}
+                              <button
+                                type="button"
+                                onClick={() => removeSettingsTaskAttachment(file.name, file.size)}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      <div className="settings-form-grid settings-task-notes">
+                        <label className="settings-field">
+                          <span>
+                            Andamento <strong className="req">*</strong>
+                          </span>
+                          <textarea
+                            value={settingsTaskForm.andamento}
+                            onChange={(event) => handleSettingsTaskChange('andamento', event.target.value)}
+                            rows={3}
+                            placeholder="Descreva o andamento da tarefa"
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>Convidados</span>
+                          <input
+                            type="text"
+                            value={settingsTaskForm.guests}
+                            onChange={(event) => handleSettingsTaskChange('guests', event.target.value)}
+                            placeholder="Nomes separados por vírgula"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="settings-actions-row">
+                        <button type="button" className="chip small" onClick={clearSettingsTaskForm}>
+                          Cancelar
+                        </button>
+                        <button type="submit" className="primary small">
+                          Confirmar
+                        </button>
+                      </div>
+                    </form>
+                    {settingsTaskFeedback ? (
+                      <p className="settings-feedback">{settingsTaskFeedback}</p>
+                    ) : null}
                   </section>
                 )}
               </div>
@@ -2946,12 +3798,244 @@ function App() {
                     <span className="option-icon" />
                     Novo Cliente
                   </button>
+                  <button
+                    className="create-option"
+                    type="button"
+                    onClick={() => {
+                      clearSettingsTaskForm()
+                      setCreateOpen(false)
+                      setTaskCreateOpen(true)
+                    }}
+                  >
+                    <span className="option-icon" />
+                    Criar Tarefa
+                  </button>
                 </div>
                 <div className="modal-footer">
                   <button className="chip small" type="button" onClick={() => setCreateOpen(false)}>
                     Fechar
                   </button>
                 </div>
+              </div>
+            </div>
+          ) : null}
+
+          {taskCreateOpen ? (
+            <div className="modal-backdrop" onClick={() => setTaskCreateOpen(false)}>
+              <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
+                <header className="modal-header">
+                  <h3>Cadastro de tarefas</h3>
+                  <button className="modal-close" type="button" onClick={() => setTaskCreateOpen(false)}>
+                    ×
+                  </button>
+                </header>
+                <form className="settings-task-form" onSubmit={handleSettingsTaskSave}>
+                  <div className="settings-form-grid settings-task-dates">
+                    <label className="settings-field">
+                      <span>
+                        Ação <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={settingsTaskForm.actionDate}
+                        onChange={(event) => handleSettingsTaskChange('actionDate', event.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Meta <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={settingsTaskForm.metaDate}
+                        onChange={(event) => handleSettingsTaskChange('metaDate', event.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Vencimento <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={settingsTaskForm.dueDate}
+                        onChange={(event) => handleSettingsTaskChange('dueDate', event.target.value)}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="settings-form-grid settings-task-obligation">
+                    <label className="settings-field">
+                      <span>
+                        Obrigação <strong className="req">*</strong>
+                      </span>
+                      <input
+                        list="settings-obligation-options-modal"
+                        type="text"
+                        value={settingsTaskForm.obligation}
+                        onChange={(event) => handleSettingsTaskChange('obligation', event.target.value)}
+                        placeholder="Selecione ou digite"
+                      />
+                      <datalist id="settings-obligation-options-modal">
+                        {settingsTaskObligationOptions.map((option) => (
+                          <option key={option} value={option} />
+                        ))}
+                      </datalist>
+                    </label>
+                    <label className="settings-field">
+                      <span>Complemento</span>
+                      <input
+                        type="text"
+                        value={settingsTaskForm.complement}
+                        onChange={(event) => handleSettingsTaskChange('complement', event.target.value)}
+                        placeholder="Ex.: ISS mensal"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="settings-form-grid settings-task-rules">
+                    <label className="settings-field">
+                      <span>
+                        Parcelas <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={settingsTaskForm.installments}
+                        onChange={(event) =>
+                          handleSettingsTaskChange('installments', Number(event.target.value))
+                        }
+                      >
+                        {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Fato Gerador (Competência) <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={settingsTaskForm.competenceMode}
+                        onChange={(event) =>
+                          handleSettingsTaskChange('competenceMode', event.target.value)
+                        }
+                      >
+                        <option>Mesmo mês</option>
+                        <option>Mês anterior</option>
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Responsável <strong className="req">*</strong>
+                      </span>
+                      <input
+                        list="settings-owner-options-modal"
+                        type="text"
+                        value={settingsTaskForm.owner}
+                        onChange={(event) => handleSettingsTaskChange('owner', event.target.value)}
+                        placeholder="Nome do responsável"
+                      />
+                      <datalist id="settings-owner-options-modal">
+                        {settingsOwnerOptions.map((option) => (
+                          <option key={option} value={option} />
+                        ))}
+                      </datalist>
+                    </label>
+                  </div>
+
+                  <p className="settings-hint">
+                    Competência inicial prevista: <strong>{settingsCompetencePreview || '--/----'}</strong>
+                  </p>
+
+                  <div className="settings-clients-box">
+                    <div className="settings-clients-top">
+                      <span>
+                        Cliente(s) <strong className="req">*</strong>
+                      </span>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={settingsTaskForm.includeDisabledClients}
+                          onChange={(event) =>
+                            handleSettingsTaskChange('includeDisabledClients', event.target.checked)
+                          }
+                        />
+                        Exibir clientes desativados
+                      </label>
+                    </div>
+                    <div className="settings-clients-list">
+                      {settingsTaskClients.length ? (
+                        settingsTaskClients.map((client) => (
+                          <label key={client.id} className="settings-client-item">
+                            <input
+                              type="checkbox"
+                              checked={settingsTaskForm.clientIds.includes(client.id)}
+                              onChange={() => toggleSettingsTaskClient(client.id)}
+                            />
+                            <span>
+                              {client.nome} ({client.status})
+                            </span>
+                          </label>
+                        ))
+                      ) : (
+                        <p>Nenhum cliente disponível para seleção.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <label className="settings-field">
+                    <span>Enviar arquivos</span>
+                    <input type="file" multiple onChange={handleSettingsTaskAttachments} />
+                  </label>
+                  {settingsTaskForm.attachments.length ? (
+                    <div className="settings-attachments">
+                      {settingsTaskForm.attachments.map((file) => (
+                        <span key={`${file.name}-${file.size}`} className="settings-attachment-pill">
+                          {file.name}
+                          <button
+                            type="button"
+                            onClick={() => removeSettingsTaskAttachment(file.name, file.size)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="settings-form-grid settings-task-notes">
+                    <label className="settings-field">
+                      <span>
+                        Andamento <strong className="req">*</strong>
+                      </span>
+                      <textarea
+                        value={settingsTaskForm.andamento}
+                        onChange={(event) => handleSettingsTaskChange('andamento', event.target.value)}
+                        rows={3}
+                        placeholder="Descreva o andamento da tarefa"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Convidados</span>
+                      <input
+                        type="text"
+                        value={settingsTaskForm.guests}
+                        onChange={(event) => handleSettingsTaskChange('guests', event.target.value)}
+                        placeholder="Nomes separados por vírgula"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="settings-actions-row">
+                    <button type="button" className="chip small" onClick={clearSettingsTaskForm}>
+                      Cancelar
+                    </button>
+                    <button type="submit" className="primary small">
+                      Confirmar
+                    </button>
+                  </div>
+                </form>
+                {settingsTaskFeedback ? <p className="settings-feedback">{settingsTaskFeedback}</p> : null}
               </div>
             </div>
           ) : null}
