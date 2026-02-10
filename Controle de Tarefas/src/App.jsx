@@ -351,11 +351,12 @@ const initialOperationalFilters = {
 }
 
 const initialTaskFilters = {
-  taskType: 'Solicitação',
+  taskType: 'Todos',
   subject: 'Todos',
   client: 'Todos',
   department: 'Todos',
   status: 'Todos',
+  statusBucket: 'all',
   clientStatus: 'Todos',
   owner: 'Todos',
   dateBy: 'Ação',
@@ -542,6 +543,12 @@ const getDepartmentLabel = (value) => {
     return text.slice('Backoffice - '.length).trim()
   }
   return text
+}
+
+const normalizeSolicitationDepartment = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return getDepartmentLabel(text)
 }
 
 const formatCompetenceValue = (value) => {
@@ -939,6 +946,31 @@ const getEmptySettingsTaskForm = () => {
   }
 }
 
+const getEmptySolicitationForm = () => {
+  const today = getTodayIsoLocal()
+  return {
+    departamento: '',
+    processo: '',
+    etapa: '',
+    assunto: '',
+    clientIds: [],
+    includeDisabledClients: false,
+    actionDate: today,
+    metaDate: today,
+    dueDate: today,
+    attachments: [],
+    andamento: '',
+    responsavel: '',
+    convidados: '',
+    notifyOpen: false,
+    notifyEnd: false,
+    notifyGuests: false,
+    replicateSubtasks: false,
+    iAmResponsible: false,
+    iAmAuthorizer: false,
+  }
+}
+
 const CREDENTIALS = {
   user: 'Admin',
   pass: 'Admin123',
@@ -968,6 +1000,7 @@ function App() {
   const [error, setError] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [taskCreateOpen, setTaskCreateOpen] = useState(false)
+  const [solicitationOpen, setSolicitationOpen] = useState(false)
   const [clientOpen, setClientOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState('users')
   const [users, setUsers] = useState(initialUsers)
@@ -986,10 +1019,13 @@ function App() {
       justification: '',
     })),
   )
-  const [selectedTaskId, setSelectedTaskId] = useState(null)
+  const [selectedTaskRef, setSelectedTaskRef] = useState(null)
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
   const [taskActionError, setTaskActionError] = useState('')
+  const [solicitationForm, setSolicitationForm] = useState(() => getEmptySolicitationForm())
+  const [solicitationFeedback, setSolicitationFeedback] = useState('')
+  const [solicitationRecords, setSolicitationRecords] = useState([])
   const [clientForm, setClientForm] = useState(emptyClientForm)
   const [clientMode, setClientMode] = useState('create')
   const [editingId, setEditingId] = useState(null)
@@ -1126,6 +1162,18 @@ function App() {
   const openCreateModal = () => {
     setCreateOpen(true)
     setClientOpen(false)
+  }
+
+  const clearSolicitationForm = () => {
+    setSolicitationForm(getEmptySolicitationForm())
+    setSolicitationFeedback('')
+  }
+
+  const openSolicitationModal = () => {
+    clearSolicitationForm()
+    setCreateOpen(false)
+    setTaskCreateOpen(false)
+    setSolicitationOpen(true)
   }
 
   const openClientModal = (mode = 'create', client = null) => {
@@ -1266,17 +1314,81 @@ function App() {
     setTaskPage(1)
   }
 
-  const selectedTask = tasksRows.find((task) => task.id === selectedTaskId) || null
+  const openControlPanelDrilldown = (groupName, departmentName, bucket) => {
+    const taskType = groupName === 'Solicitações' ? 'Solicitação' : 'Tarefa'
+    const nextFilters = {
+      ...initialTaskFilters,
+      taskType,
+      department: departmentName || 'Todos',
+      statusBucket: bucket,
+    }
+    setTaskFilters(nextFilters)
+    setAppliedTaskFilters(nextFilters)
+    setTaskPage(1)
+    setScreen('tasks')
+  }
+
+  const mapSolicitationRecordToReportRow = (record) => {
+    const linkedClient = clients.find((client) => client.id === record.clientId)
+    const clientDocument = linkedClient
+      ? `${linkedClient.docType || ''} ${linkedClient.inscricao || ''}`.trim()
+      : ''
+
+    return {
+      id: record.id,
+      status: record.status || record.etapa || 'Aberta',
+      dept: normalizeSolicitationDepartment(record.departamento),
+      subject: record.assunto || record.processo || 'Solicitação',
+      competence: getCompetenceFromDate(record.actionDate, 'Mesmo mês'),
+      client: record.clientName || linkedClient?.nome || '',
+      cnpj: clientDocument,
+      clientStatus: linkedClient?.status || 'Ativo',
+      dates: [
+        `A: ${parseIsoDateToBr(record.actionDate)}`,
+        `M: ${parseIsoDateToBr(record.metaDate)}`,
+        `V: ${parseIsoDateToBr(record.dueDate)}`,
+      ],
+      deliveryDate: record.deliveryDate || '',
+      conclusionDate: record.conclusionDate || '',
+      owner: record.responsavel || '',
+      authorizer: '',
+      guests: record.convidados || 'Não definido',
+      tag: record.tag || 'success',
+      generatedBySettings: false,
+      taskType: 'Solicitação',
+      reportSource: 'solicitation',
+      reportKey: `solicitation-${record.id}`,
+      attachments: record.attachments || [],
+      baixaAt: record.baixaAt || '',
+      baixaAction: record.baixaAction || '',
+      justification: record.justification || '',
+    }
+  }
+
+  const selectedTask = selectedTaskRef
+    ? selectedTaskRef.source === 'solicitation'
+      ? (() => {
+          const record = solicitationRecords.find((item) => item.id === selectedTaskRef.id)
+          return record ? mapSolicitationRecordToReportRow(record) : null
+        })()
+      : (() => {
+          const task = tasksRows.find((item) => item.id === selectedTaskRef.id)
+          if (!task) return null
+          return { ...task, reportSource: 'task', reportKey: `task-${task.id}`, taskType: 'Tarefa' }
+        })()
+    : null
   const selectedTaskDisplayStatus = selectedTask ? getTaskDisplayStatus(selectedTask) : null
 
   const logTaskAction = (task, action) => {
     const timestamp = getNowBrTimestamp()
     if (!task) return timestamp
+    const source = task.reportSource || 'task'
     setTaskActionLogs((prev) =>
       [
         {
           id: `${Date.now()}-${Math.random()}`,
           taskId: task.id,
+          taskSource: source,
           taskName: task.subject,
           action,
           timestamp,
@@ -1290,6 +1402,21 @@ function App() {
   const registerTaskBaixa = (task, action) => {
     if (!task) return
     const timestamp = logTaskAction(task, action)
+    if (task.reportSource === 'solicitation') {
+      setSolicitationRecords((prev) =>
+        prev.map((item) =>
+          item.id === task.id
+            ? {
+                ...item,
+                baixaAt: timestamp,
+                baixaAction: action,
+              }
+            : item,
+        ),
+      )
+      return
+    }
+
     setTasksRows((prev) =>
       prev.map((item) =>
         item.id === task.id
@@ -1304,17 +1431,59 @@ function App() {
   }
 
   const updateTaskField = (field, value) => {
-    if (!selectedTaskId) return
+    if (!selectedTaskRef) return
+    if (selectedTaskRef.source === 'solicitation') {
+      const fieldMap = {
+        subject: 'assunto',
+        owner: 'responsavel',
+        justification: 'justification',
+        deliveryDate: 'deliveryDate',
+        conclusionDate: 'conclusionDate',
+        status: 'status',
+        tag: 'tag',
+      }
+      const mappedField = fieldMap[field] || field
+      setSolicitationRecords((prev) =>
+        prev.map((item) =>
+          item.id === selectedTaskRef.id
+            ? {
+                ...item,
+                [mappedField]: value,
+              }
+            : item,
+        ),
+      )
+      return
+    }
+
     setTasksRows((prev) =>
-      prev.map((item) => (item.id === selectedTaskId ? { ...item, [field]: value } : item)),
+      prev.map((item) => (item.id === selectedTaskRef.id ? { ...item, [field]: value } : item)),
     )
   }
 
   const updateTaskTaggedDate = (key, value) => {
-    if (!selectedTaskId) return
+    if (!selectedTaskRef) return
+    if (selectedTaskRef.source === 'solicitation') {
+      const isoValue = value.includes('/') ? parseBrDateToIso(value) : value
+      const keyMap = { A: 'actionDate', M: 'metaDate', V: 'dueDate' }
+      const mappedKey = keyMap[key]
+      if (!mappedKey) return
+      setSolicitationRecords((prev) =>
+        prev.map((item) =>
+          item.id === selectedTaskRef.id
+            ? {
+                ...item,
+                [mappedKey]: isoValue,
+              }
+            : item,
+        ),
+      )
+      return
+    }
+
     setTasksRows((prev) =>
       prev.map((item) => {
-        if (item.id !== selectedTaskId) return item
+        if (item.id !== selectedTaskRef.id) return item
         const nextDates = [...(item.dates || [])]
         const entryIndex = nextDates.findIndex((entry) => entry.startsWith(`${key}:`))
         const nextEntry = `${key}: ${value}`
@@ -1328,37 +1497,48 @@ function App() {
     )
   }
 
-  const openTaskDetail = (taskId) => {
-    setSelectedTaskId(taskId)
+  const openTaskDetail = (taskId, source = 'task') => {
+    setSelectedTaskRef({ id: taskId, source })
     setTaskEditMode(false)
     setTaskActionError('')
     setScreen('task-detail')
   }
 
   const handleTaskAttachmentAdd = (event) => {
-    if (!selectedTaskId) return
+    if (!selectedTaskRef) return
     const files = Array.from(event.target.files || [])
     if (!files.length) return
 
-    setTasksRows((prev) =>
-      prev.map((item) =>
-        item.id === selectedTaskId
-          ? {
-              ...item,
-              attachments: [
-                ...(item.attachments || []),
-                ...files.map((file, index) => ({
-                  id: `${Date.now()}-${index}-${file.name}`,
-                  name: file.name,
-                  size: file.size,
-                  type: file.type,
-                  file,
-                })),
-              ],
-            }
-          : item,
-      ),
-    )
+    const mappedFiles = files.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      file,
+    }))
+    if (selectedTaskRef.source === 'solicitation') {
+      setSolicitationRecords((prev) =>
+        prev.map((item) =>
+          item.id === selectedTaskRef.id
+            ? {
+                ...item,
+                attachments: [...(item.attachments || []), ...mappedFiles],
+              }
+            : item,
+        ),
+      )
+    } else {
+      setTasksRows((prev) =>
+        prev.map((item) =>
+          item.id === selectedTaskRef.id
+            ? {
+                ...item,
+                attachments: [...(item.attachments || []), ...mappedFiles],
+              }
+            : item,
+        ),
+      )
+    }
     setTaskActionError('')
 
     event.target.value = ''
@@ -1378,10 +1558,11 @@ function App() {
 
   const handleTaskDownload = () => {
     if (!selectedTask) return
+    const entity = selectedTask.reportSource === 'solicitation' ? 'solicitação' : 'tarefa'
     const hasAttachment = Boolean(selectedTask.attachments?.length)
     const hasJustification = Boolean((selectedTask.justification || '').trim())
     if (!hasAttachment && !hasJustification) {
-      setTaskActionError('Para baixar a tarefa, anexe um arquivo ou preencha a justificativa.')
+      setTaskActionError(`Para baixar a ${entity}, anexe um arquivo ou preencha a justificativa.`)
       return
     }
     if (hasAttachment) {
@@ -1389,44 +1570,79 @@ function App() {
       downloadAttachment(newestAttachment)
     }
     registerTaskBaixa(selectedTask, 'Baixar')
-    setTasksRows((prev) =>
-      prev.map((item) =>
-        item.id === selectedTask.id
-          ? {
-              ...item,
-              deliveryDate: getNowBrDate(),
-              conclusionDate: getNowBrDate(),
-              status: 'Finalizada',
-              tag: 'lime',
-            }
-          : item,
-      ),
-    )
+    if (selectedTask.reportSource === 'solicitation') {
+      setSolicitationRecords((prev) =>
+        prev.map((item) =>
+          item.id === selectedTask.id
+            ? {
+                ...item,
+                deliveryDate: getNowBrDate(),
+                conclusionDate: getNowBrDate(),
+                status: 'Finalizada',
+                etapa: 'Concluída',
+                tag: 'lime',
+              }
+            : item,
+        ),
+      )
+    } else {
+      setTasksRows((prev) =>
+        prev.map((item) =>
+          item.id === selectedTask.id
+            ? {
+                ...item,
+                deliveryDate: getNowBrDate(),
+                conclusionDate: getNowBrDate(),
+                status: 'Finalizada',
+                tag: 'lime',
+              }
+            : item,
+        ),
+      )
+    }
     setTaskActionError('')
   }
 
   const handleTaskDispense = () => {
     if (!selectedTask) return
+    const entity = selectedTask.reportSource === 'solicitation' ? 'solicitação' : 'tarefa'
     const hasAttachment = Boolean(selectedTask.attachments?.length)
     const hasJustification = Boolean((selectedTask.justification || '').trim())
     if (!hasAttachment && !hasJustification) {
-      setTaskActionError('Para dispensar a tarefa, anexe um arquivo ou preencha a justificativa.')
+      setTaskActionError(`Para dispensar a ${entity}, anexe um arquivo ou preencha a justificativa.`)
       return
     }
     registerTaskBaixa(selectedTask, 'Dispensar')
-    setTasksRows((prev) =>
-      prev.map((item) =>
-        item.id === selectedTask.id
-          ? {
-              ...item,
-              status: 'Dispensada',
-              tag: 'gray',
-              deliveryDate: getNowBrDate(),
-              conclusionDate: getNowBrDate(),
-            }
-          : item,
-      ),
-    )
+    if (selectedTask.reportSource === 'solicitation') {
+      setSolicitationRecords((prev) =>
+        prev.map((item) =>
+          item.id === selectedTask.id
+            ? {
+                ...item,
+                status: 'Dispensada',
+                etapa: 'Dispensada',
+                tag: 'gray',
+                deliveryDate: getNowBrDate(),
+                conclusionDate: getNowBrDate(),
+              }
+            : item,
+        ),
+      )
+    } else {
+      setTasksRows((prev) =>
+        prev.map((item) =>
+          item.id === selectedTask.id
+            ? {
+                ...item,
+                status: 'Dispensada',
+                tag: 'gray',
+                deliveryDate: getNowBrDate(),
+                conclusionDate: getNowBrDate(),
+              }
+            : item,
+        ),
+      )
+    }
     setTaskActionError('')
   }
 
@@ -1442,13 +1658,18 @@ function App() {
 
   const handleTaskDelete = () => {
     if (!selectedTask) return
+    const entity = selectedTask.reportSource === 'solicitation' ? 'solicitação' : 'tarefa'
     const shouldDelete = window.confirm(
-      `Deseja excluir a tarefa #${selectedTask.id} (${selectedTask.subject})?`,
+      `Deseja excluir a ${entity} #${selectedTask.id} (${selectedTask.subject})?`,
     )
     if (!shouldDelete) return
     logTaskAction(selectedTask, 'Excluir')
-    setTasksRows((prev) => prev.filter((item) => item.id !== selectedTask.id))
-    setSelectedTaskId(null)
+    if (selectedTask.reportSource === 'solicitation') {
+      setSolicitationRecords((prev) => prev.filter((item) => item.id !== selectedTask.id))
+    } else {
+      setTasksRows((prev) => prev.filter((item) => item.id !== selectedTask.id))
+    }
+    setSelectedTaskRef(null)
     setTaskEditMode(false)
     setScreen('tasks')
   }
@@ -1537,6 +1758,39 @@ function App() {
 
   const handleSettingsTaskChange = (field, value) => {
     setSettingsTaskForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleSolicitationChange = (field, value) => {
+    setSolicitationForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const toggleSolicitationClient = (clientId) => {
+    setSolicitationForm((prev) => {
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
+      if (current.includes(clientId)) {
+        return { ...prev, clientIds: current.filter((id) => id !== clientId) }
+      }
+      return { ...prev, clientIds: [...current, clientId] }
+    })
+  }
+
+  const handleSolicitationAttachments = (event) => {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    setSolicitationForm((prev) => ({
+      ...prev,
+      attachments: [...prev.attachments, ...files],
+    }))
+    event.target.value = ''
+  }
+
+  const removeSolicitationAttachment = (fileName, fileSize) => {
+    setSolicitationForm((prev) => ({
+      ...prev,
+      attachments: prev.attachments.filter(
+        (file) => !(file.name === fileName && file.size === fileSize),
+      ),
+    }))
   }
 
   const toggleSettingsTaskClient = (clientId) => {
@@ -1692,19 +1946,142 @@ function App() {
     setScreen('tasks')
   }
 
-  const taskTypeOptions = ['Solicitação']
-  const taskSubjectOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.subject)))]
-  const taskClientOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.client)))]
-  const taskDepartmentOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.dept)))]
+  const handleSolicitationSave = (event) => {
+    event.preventDefault()
+
+    const departamento = normalizeSolicitationDepartment(solicitationForm.departamento)
+    const assunto = solicitationForm.assunto.trim()
+    const andamento = solicitationForm.andamento.trim()
+    const responsavel = solicitationForm.responsavel.trim()
+    const selectedIds = Array.isArray(solicitationForm.clientIds) ? solicitationForm.clientIds : []
+
+    if (!departamento) {
+      setSolicitationFeedback('Informe o departamento da solicitação.')
+      return
+    }
+
+    if (!assunto) {
+      setSolicitationFeedback('Informe o assunto da solicitação.')
+      return
+    }
+
+    if (!selectedIds.length) {
+      setSolicitationFeedback('Selecione pelo menos um cliente para salvar a solicitação.')
+      return
+    }
+
+    if (!solicitationForm.actionDate || !solicitationForm.metaDate || !solicitationForm.dueDate) {
+      setSolicitationFeedback('Preencha Ação, Meta e Prazo.')
+      return
+    }
+
+    if (!andamento) {
+      setSolicitationFeedback('Informe o andamento da solicitação.')
+      return
+    }
+
+    if (!responsavel) {
+      setSolicitationFeedback('Informe o responsável da solicitação.')
+      return
+    }
+
+    const targetClients = clients.filter(
+      (client) =>
+        selectedIds.includes(client.id) &&
+        (solicitationForm.includeDisabledClients || client.status !== 'Inativo'),
+    )
+
+    if (!targetClients.length) {
+      setSolicitationFeedback('Nenhum cliente disponível para os filtros selecionados.')
+      return
+    }
+
+    let nextId = solicitationRecords.reduce((maxId, record) => Math.max(maxId, record.id), 0) + 1
+    const newRecords = targetClients.map((client) => {
+      const record = {
+        id: nextId,
+        departamento,
+        processo: solicitationForm.processo.trim(),
+        etapa: solicitationForm.etapa.trim() || 'Aberta',
+        assunto,
+        clientId: client.id,
+        clientName: client.nome,
+        actionDate: solicitationForm.actionDate,
+        metaDate: solicitationForm.metaDate,
+        dueDate: solicitationForm.dueDate,
+        andamento,
+        responsavel,
+        convidados: solicitationForm.convidados.trim(),
+        attachments: solicitationForm.attachments.map((file, index) => ({
+          id: `${nextId}-${index}-${file.name}`,
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          file,
+        })),
+        notifyOpen: solicitationForm.notifyOpen,
+        notifyEnd: solicitationForm.notifyEnd,
+        notifyGuests: solicitationForm.notifyGuests,
+        replicateSubtasks: solicitationForm.replicateSubtasks,
+        iAmResponsible: solicitationForm.iAmResponsible,
+        iAmAuthorizer: solicitationForm.iAmAuthorizer,
+        status: '',
+        tag: 'success',
+        deliveryDate: '',
+        conclusionDate: '',
+        baixaAt: '',
+        baixaAction: '',
+        justification: '',
+        createdAt: getNowBrTimestamp(),
+      }
+      nextId += 1
+      return record
+    })
+
+    setSolicitationRecords((prev) => [...newRecords, ...prev])
+    clearSolicitationForm()
+    setSolicitationOpen(false)
+    setScreen('dashboard')
+  }
+
+  const reportTaskRows = tasksRows.map((task) => ({
+    ...task,
+    taskType: 'Tarefa',
+    reportSource: 'task',
+    reportKey: `task-${task.id}`,
+  }))
+  const reportSolicitationRows = solicitationRecords.map((record) =>
+    mapSolicitationRecordToReportRow(record),
+  )
+  const taskReportRows = [...reportTaskRows, ...reportSolicitationRows]
+
+  const taskTypeOptions = ['Todos', 'Tarefa', 'Solicitação']
+  const taskSubjectOptions = [
+    'Todos',
+    ...Array.from(new Set(taskReportRows.map((item) => item.subject).filter(Boolean))),
+  ]
+  const taskClientOptions = [
+    'Todos',
+    ...Array.from(new Set(taskReportRows.map((item) => item.client).filter(Boolean))),
+  ]
+  const taskDepartmentOptions = [
+    'Todos',
+    ...Array.from(
+      new Set(taskReportRows.map((item) => getDepartmentLabel(item.dept)).filter(Boolean)),
+    ),
+  ]
   const taskStatusOptions = [
     'Todos',
-    ...Array.from(new Set(tasksRows.map((item) => getTaskDisplayStatus(item).status))),
+    ...Array.from(new Set(taskReportRows.map((item) => getTaskDisplayStatus(item).status))),
   ]
   const taskClientStatusOptions = [
     'Todos',
-    ...Array.from(new Set(tasksRows.map((item) => item.clientStatus))),
+    ...Array.from(new Set(taskReportRows.map((item) => item.clientStatus).filter(Boolean))),
   ]
-  const taskOwnerOptions = ['Todos', ...Array.from(new Set(tasksRows.map((item) => item.owner)))]
+  const taskOwnerOptions = [
+    'Todos',
+    ...Array.from(new Set(taskReportRows.map((item) => item.owner).filter(Boolean))),
+  ]
   const settingsTaskObligationOptions = Array.from(
     new Set(
       tasksRows
@@ -1734,18 +2111,40 @@ function App() {
     return getTaggedReportDate(row.dates, 'A')
   }
 
-  const filteredReportRows = tasksRows.filter((row) => {
+  const reportTodayIso = getTodayIsoLocal()
+  const filteredReportRows = taskReportRows.filter((row) => {
     const displayStatus = getTaskDisplayStatus(row)
+    const actionIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'A'))
+    const metaIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'M'))
+    const dueIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'V'))
+    const isCompleted = isCompletedTaskStatus(displayStatus.status)
     const matchesType =
-      appliedTaskFilters.taskType === 'Todos' || appliedTaskFilters.taskType === 'Solicitação'
+      appliedTaskFilters.taskType === 'Todos' || row.taskType === appliedTaskFilters.taskType
     const matchesSubject =
       appliedTaskFilters.subject === 'Todos' || row.subject === appliedTaskFilters.subject
     const matchesClient =
       appliedTaskFilters.client === 'Todos' || row.client === appliedTaskFilters.client
     const matchesDepartment =
-      appliedTaskFilters.department === 'Todos' || row.dept === appliedTaskFilters.department
+      appliedTaskFilters.department === 'Todos' ||
+      getDepartmentLabel(row.dept) === getDepartmentLabel(appliedTaskFilters.department)
     const matchesStatus =
       appliedTaskFilters.status === 'Todos' || displayStatus.status === appliedTaskFilters.status
+    const statusBucket = appliedTaskFilters.statusBucket || 'all'
+    const matchesStatusBucket =
+      statusBucket === 'all' ||
+      (statusBucket === 'done' && isCompleted) ||
+      (statusBucket === 'pending' && !isCompleted) ||
+      (statusBucket === 'attention' &&
+        !isCompleted &&
+        metaIso &&
+        dueIso &&
+        reportTodayIso >= metaIso &&
+        reportTodayIso <= dueIso) ||
+      (statusBucket === 'action' &&
+        !isCompleted &&
+        actionIso &&
+        reportTodayIso >= actionIso &&
+        (!metaIso || reportTodayIso < metaIso))
     const matchesClientStatus =
       appliedTaskFilters.clientStatus === 'Todos' ||
       row.clientStatus === appliedTaskFilters.clientStatus
@@ -1775,6 +2174,7 @@ function App() {
       row.dept,
       row.clientStatus,
       row.deliveryDate,
+      row.taskType,
     ]
       .join(' ')
       .toLowerCase()
@@ -1786,6 +2186,7 @@ function App() {
       matchesClient &&
       matchesDepartment &&
       matchesStatus &&
+      matchesStatusBucket &&
       matchesClientStatus &&
       matchesOwner &&
       matchesStartDate &&
@@ -1799,6 +2200,7 @@ function App() {
     screen === 'tasks' && !hasTaskPeriodFilter
       ? filteredReportRows.filter(
           (row) =>
+            row.reportSource !== 'task' ||
             !row.generatedBySettings ||
             parseBrDateToIso(getTaggedReportDate(row.dates, 'A')).startsWith(currentMonthPrefix),
         )
@@ -2253,14 +2655,99 @@ function App() {
   const obligationsRowsDynamic = Array.from(obligationsByDepartment.values()).sort((a, b) =>
     a.name.localeCompare(b.name, 'pt-BR'),
   )
-  const controlRowsData = controlRows.map((group) =>
-    group.group === 'Obrigações'
-      ? { ...group, items: obligationsRowsDynamic.length ? obligationsRowsDynamic : group.items }
-      : group,
+  const solicitationDepartmentOptions = Array.from(
+    new Set(
+      [
+        ...departmentsInSystem.map((department) => normalizeSolicitationDepartment(department)),
+        ...users.map((user) => normalizeSolicitationDepartment(user.departamento)),
+        ...clients.flatMap((client) =>
+          (Array.isArray(client.grupos) ? client.grupos : []).map((group) =>
+            normalizeSolicitationDepartment(group),
+          ),
+        ),
+        ...solicitationRecords.map((record) => normalizeSolicitationDepartment(record.departamento)),
+      ].filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  const solicitationProcessOptions = Array.from(
+    new Set(
+      solicitationRecords
+        .map((record) => String(record.processo || '').trim())
+        .filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
+  const solicitationStageOptions = Array.from(
+    new Set(['Aberta', 'Em andamento', 'Concluída', ...solicitationRecords.map((record) => record.etapa)]),
   )
+  const solicitationClients = clients.filter(
+    (client) => solicitationForm.includeDisabledClients || client.status !== 'Inativo',
+  )
+  const solicitationsByDepartment = new Map(
+    departmentsInSystem.map((department) => [
+      department,
+      { name: department, action: 0, alert: 0, pending: 0, done: 0 },
+    ]),
+  )
+  solicitationRecords.forEach((record) => {
+    const department =
+      getDepartmentLabel(normalizeSolicitationDepartment(record.departamento)) || 'Sem departamento'
+    if (!solicitationsByDepartment.has(department)) {
+      solicitationsByDepartment.set(department, {
+        name: department,
+        action: 0,
+        alert: 0,
+        pending: 0,
+        done: 0,
+      })
+    }
+
+    const current = solicitationsByDepartment.get(department)
+    if (!current) return
+
+    const doneByStage = isCompletedTaskStatus(record.etapa)
+    if (doneByStage) {
+      current.done += 1
+      return
+    }
+
+    current.pending += 1
+
+    const actionIso = record.actionDate || ''
+    const metaIso = record.metaDate || ''
+    const dueIso = record.dueDate || ''
+    if (metaIso && dueIso && todayIso >= metaIso && todayIso <= dueIso) {
+      current.alert += 1
+      return
+    }
+
+    if (actionIso && todayIso >= actionIso && (!metaIso || todayIso < metaIso)) {
+      current.action += 1
+    }
+  })
+  const solicitationItems = Array.from(solicitationsByDepartment.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, 'pt-BR'),
+  )
+  const controlRowsData = controlRows.map((group) => {
+    if (group.group === 'Obrigações') {
+      return { ...group, items: obligationsRowsDynamic.length ? obligationsRowsDynamic : group.items }
+    }
+    if (group.group === 'Solicitações') {
+      return { ...group, items: solicitationItems.length ? solicitationItems : group.items }
+    }
+    return group
+  })
   const selectedTaskLogs = selectedTask
-    ? taskActionLogs.filter((log) => log.taskId === selectedTask.id)
+    ? taskActionLogs.filter(
+        (log) =>
+          log.taskId === selectedTask.id &&
+          (log.taskSource || 'task') === (selectedTask.reportSource || 'task'),
+      )
     : []
+  const isSelectedSolicitation = selectedTask?.reportSource === 'solicitation'
+  const selectedEntityLabel = isSelectedSolicitation ? 'Solicitação' : 'Tarefa'
+  const selectedEntityLabelLower = isSelectedSolicitation ? 'solicitação' : 'tarefa'
+  const isSolicitationReportMode =
+    (screen === 'tasks' || screen === 'reports') && appliedTaskFilters.taskType === 'Solicitação'
 
   return (
     <div className="app">
@@ -2585,48 +3072,42 @@ function App() {
                       {group.items.map((item) => (
                         <div className="control-row" key={item.name}>
                           <span>{item.name}</span>
-                          <span className="counter">{item.action}</span>
-                          <span className={`counter tone-${item.alert ? 'violet' : 'soft'}`}>{item.alert}</span>
-                          <span className={`counter tone-${item.pending ? 'sand' : 'soft'}`}>{item.pending}</span>
-                          <span className={`counter tone-${item.done ? 'green' : 'soft'}`}>{item.done}</span>
+                          <button
+                            type="button"
+                            className="counter control-counter-btn"
+                            onClick={() => openControlPanelDrilldown(group.group, item.name, 'action')}
+                          >
+                            {item.action}
+                          </button>
+                          <button
+                            type="button"
+                            className={`counter tone-${item.alert ? 'violet' : 'soft'} control-counter-btn`}
+                            onClick={() =>
+                              openControlPanelDrilldown(group.group, item.name, 'attention')
+                            }
+                          >
+                            {item.alert}
+                          </button>
+                          <button
+                            type="button"
+                            className={`counter tone-${item.pending ? 'sand' : 'soft'} control-counter-btn`}
+                            onClick={() => openControlPanelDrilldown(group.group, item.name, 'pending')}
+                          >
+                            {item.pending}
+                          </button>
+                          <button
+                            type="button"
+                            className={`counter tone-${item.done ? 'green' : 'soft'} control-counter-btn`}
+                            onClick={() => openControlPanelDrilldown(group.group, item.name, 'done')}
+                          >
+                            {item.done}
+                          </button>
                         </div>
                       ))}
                     </div>
                   ))}
                 </section>
 
-                <section className="card features" style={{ '--delay': '0.3s' }}>
-                  <header>
-                    <h4>Funcionalidades que aceleram seu escritório</h4>
-                    <span>Automatize o relacionamento com seus clientes</span>
-                  </header>
-                  <div className="feature-grid">
-                    <div>
-                      <h5>Baixa em lote de tarefas</h5>
-                      <p>Otimize e mude o jeito antigo de dar baixa nas atividades com um clique.</p>
-                    </div>
-                    <div>
-                      <h5>Validação de documentos</h5>
-                      <p>Envie o documento certo para o cliente certo 100% das vezes.</p>
-                    </div>
-                    <div>
-                      <h5>Envio automático de e-mails</h5>
-                      <p>Reenvio inteligente de anexos que não foram abertos.</p>
-                    </div>
-                    <div>
-                      <h5>Recibo de abertura</h5>
-                      <p>Dados embasam ações do time e decisões da empresa.</p>
-                    </div>
-                    <div>
-                      <h5>Alertas de prazos</h5>
-                      <p>Notificações personalizadas para prazos importantes.</p>
-                    </div>
-                    <div>
-                      <h5>Relacionamento por e-mail</h5>
-                      <p>Recursos de notificação, recibo de leitura e acompanhamento.</p>
-                    </div>
-                  </div>
-                </section>
               </div>
             ) : screen === 'operational' ? (
               <div className="operational-view">
@@ -2951,10 +3432,18 @@ function App() {
               <div className="reports-view">
                 <header className="reports-header">
                   <div>
-                    <h4>{screen === 'tasks' ? 'Relatórios > Tarefas' : 'Relatórios'}</h4>
+                    <h4>
+                      {screen === 'tasks'
+                        ? isSolicitationReportMode
+                          ? 'Relatórios > Solicitações'
+                          : 'Relatórios > Tarefas'
+                        : 'Relatórios'}
+                    </h4>
                     <p>
                       {screen === 'tasks'
-                        ? 'Tarefas cadastradas • visão detalhada por cliente e status'
+                        ? isSolicitationReportMode
+                          ? 'Solicitações cadastradas • visão detalhada por cliente e status'
+                          : 'Tarefas cadastradas • visão detalhada por cliente e status'
                         : 'Tarefas • Visão detalhada por cliente e status'}
                     </p>
                   </div>
@@ -3163,15 +3652,15 @@ function App() {
                         return (
                           <div
                             className="report-row clickable"
-                            key={row.id}
+                            key={row.reportKey || `${row.reportSource}-${row.id}`}
                             style={{ '--delay': `${index * 0.05}s` }}
                             role="button"
                             tabIndex={0}
-                            onClick={() => openTaskDetail(row.id)}
+                            onClick={() => openTaskDetail(row.id, row.reportSource || 'task')}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter' || event.key === ' ') {
                                 event.preventDefault()
-                                openTaskDetail(row.id)
+                                openTaskDetail(row.id, row.reportSource || 'task')
                               }
                             }}
                           >
@@ -3259,7 +3748,7 @@ function App() {
                     <button type="button" className="chip small" onClick={goBackToTasks}>
                       Voltar para tarefas
                     </button>
-                    <h4>{selectedTask ? selectedTask.subject : 'Tarefa não encontrada'}</h4>
+                    <h4>{selectedTask ? selectedTask.subject : `${selectedEntityLabel} não encontrada`}</h4>
                     <p>
                       {selectedTask
                         ? `#${selectedTask.id} • ${selectedTask.dept} • ${selectedTask.competence || '-'}`
@@ -3279,7 +3768,9 @@ function App() {
                 {selectedTask ? (
                   <div className="task-detail-grid">
                     <section className="card task-detail-card">
-                      <h5>Informações da tarefa</h5>
+                      <h5>
+                        {isSelectedSolicitation ? 'Informações da Solicitação' : 'Informações da tarefa'}
+                      </h5>
                       <div className="task-detail-fields">
                         <label className="task-detail-field wide">
                           <span>Assunto</span>
@@ -3389,7 +3880,11 @@ function App() {
                     <section className="card task-detail-card">
                       <h5>Anexos e ações</h5>
                       <label className="task-upload-field">
-                        <span>Anexar arquivo da tarefa</span>
+                        <span>
+                          {isSelectedSolicitation
+                            ? 'Anexar arquivo da solicitação'
+                            : 'Anexar arquivo da tarefa'}
+                        </span>
                         <input type="file" onChange={handleTaskAttachmentAdd} />
                       </label>
 
@@ -3435,7 +3930,9 @@ function App() {
                       </div>
 
                       <div className="task-action-log">
-                        <h6>Histórico da tarefa</h6>
+                        <h6>
+                          {isSelectedSolicitation ? 'Histórico da solicitação' : 'Histórico da tarefa'}
+                        </h6>
                         {selectedTaskLogs.length ? (
                           selectedTaskLogs.map((log) => (
                             <p key={log.id}>
@@ -3464,7 +3961,7 @@ function App() {
                   </div>
                 ) : (
                   <section className="card task-detail-empty">
-                    <p>A tarefa selecionada não foi encontrada.</p>
+                    <p>{`A ${selectedEntityLabelLower} selecionada não foi encontrada.`}</p>
                     <button type="button" className="chip small" onClick={goBackToTasks}>
                       Voltar para listagem
                     </button>
@@ -3961,7 +4458,7 @@ function App() {
                     <span className="option-icon" />
                     Obrigação Esporádica
                   </button>
-                  <button className="create-option" type="button">
+                  <button className="create-option" type="button" onClick={openSolicitationModal}>
                     <span className="option-icon" />
                     Nova Solicitação
                   </button>
@@ -4223,6 +4720,294 @@ function App() {
                   </div>
                 </form>
                 {settingsTaskFeedback ? <p className="settings-feedback">{settingsTaskFeedback}</p> : null}
+              </div>
+            </div>
+          ) : null}
+
+          {solicitationOpen ? (
+            <div
+              className="modal-backdrop"
+              onClick={() => {
+                setSolicitationOpen(false)
+                clearSolicitationForm()
+              }}
+            >
+              <div className="modal-card wide solicitation-modal" onClick={(event) => event.stopPropagation()}>
+                <header className="modal-header">
+                  <h3>Nova Solicitação</h3>
+                  <button
+                    className="modal-close"
+                    type="button"
+                    onClick={() => {
+                      setSolicitationOpen(false)
+                      clearSolicitationForm()
+                    }}
+                  >
+                    ×
+                  </button>
+                </header>
+
+                <form className="settings-task-form solicitation-form" onSubmit={handleSolicitationSave}>
+                  <div className="settings-form-grid solicitation-top-grid">
+                    <label className="settings-field">
+                      <span>
+                        Departamento <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={solicitationForm.departamento}
+                        onChange={(event) => handleSolicitationChange('departamento', event.target.value)}
+                      >
+                        <option value="">Selecione...</option>
+                        {solicitationDepartmentOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>Processo</span>
+                      <input
+                        list={solicitationProcessOptions.length ? 'solicitation-process-options' : undefined}
+                        type="text"
+                        value={solicitationForm.processo}
+                        onChange={(event) => handleSolicitationChange('processo', event.target.value)}
+                        autoComplete="off"
+                        placeholder=""
+                      />
+                      <datalist id="solicitation-process-options">
+                        {solicitationProcessOptions.map((option) => (
+                          <option key={option} value={option} />
+                        ))}
+                      </datalist>
+                    </label>
+                    <label className="settings-field">
+                      <span>Etapa</span>
+                      <select
+                        value={solicitationForm.etapa}
+                        onChange={(event) => handleSolicitationChange('etapa', event.target.value)}
+                      >
+                        <option value="">Selecione...</option>
+                        {solicitationStageOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field solicitation-subject-field">
+                      <span>
+                        Assunto <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="text"
+                        value={solicitationForm.assunto}
+                        onChange={(event) => handleSolicitationChange('assunto', event.target.value)}
+                        placeholder="Descreva a nova solicitação"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="settings-clients-box">
+                    <div className="settings-clients-top">
+                      <span>
+                        Cliente(s) <strong className="req">*</strong>
+                      </span>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={solicitationForm.includeDisabledClients}
+                          onChange={(event) =>
+                            handleSolicitationChange('includeDisabledClients', event.target.checked)
+                          }
+                        />
+                        Exibir clientes desativados
+                      </label>
+                    </div>
+                    <div className="settings-clients-list">
+                      {solicitationClients.length ? (
+                        solicitationClients.map((client) => (
+                          <label key={client.id} className="settings-client-item">
+                            <input
+                              type="checkbox"
+                              checked={solicitationForm.clientIds.includes(client.id)}
+                              onChange={() => toggleSolicitationClient(client.id)}
+                            />
+                            <span>
+                              {client.nome} ({client.status})
+                            </span>
+                          </label>
+                        ))
+                      ) : (
+                        <p>Nenhum cliente disponível para seleção.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="settings-form-grid solicitation-dates-grid">
+                    <label className="settings-field">
+                      <span>
+                        Ação <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={solicitationForm.actionDate}
+                        onChange={(event) => handleSolicitationChange('actionDate', event.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Meta <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={solicitationForm.metaDate}
+                        onChange={(event) => handleSolicitationChange('metaDate', event.target.value)}
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Prazo <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={solicitationForm.dueDate}
+                        onChange={(event) => handleSolicitationChange('dueDate', event.target.value)}
+                      />
+                    </label>
+                  </div>
+
+                  <label className="settings-field">
+                    <span>Enviar arquivos</span>
+                    <input type="file" multiple onChange={handleSolicitationAttachments} />
+                  </label>
+                  {solicitationForm.attachments.length ? (
+                    <div className="settings-attachments">
+                      {solicitationForm.attachments.map((file) => (
+                        <span key={`${file.name}-${file.size}`} className="settings-attachment-pill">
+                          {file.name}
+                          <button
+                            type="button"
+                            onClick={() => removeSolicitationAttachment(file.name, file.size)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <label className="settings-field">
+                    <span>
+                      Andamento <strong className="req">*</strong>
+                    </span>
+                    <textarea
+                      rows={4}
+                      value={solicitationForm.andamento}
+                      onChange={(event) => handleSolicitationChange('andamento', event.target.value)}
+                      placeholder="Descreva o andamento da solicitação."
+                    />
+                  </label>
+
+                  <div className="settings-form-grid solicitation-people-grid">
+                    <label className="settings-field">
+                      <span>
+                        Responsável <strong className="req">*</strong>
+                      </span>
+                      <input
+                        list="solicitation-owner-options"
+                        type="text"
+                        value={solicitationForm.responsavel}
+                        onChange={(event) => handleSolicitationChange('responsavel', event.target.value)}
+                        placeholder="Selecione..."
+                      />
+                      <datalist id="solicitation-owner-options">
+                        {settingsOwnerOptions.map((option) => (
+                          <option key={option} value={option} />
+                        ))}
+                      </datalist>
+                    </label>
+                    <label className="settings-field">
+                      <span>Convidados</span>
+                      <input
+                        type="text"
+                        value={solicitationForm.convidados}
+                        onChange={(event) => handleSolicitationChange('convidados', event.target.value)}
+                        placeholder="Selecione..."
+                      />
+                    </label>
+                  </div>
+
+                  <div className="solicitation-checks-grid">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={solicitationForm.iAmResponsible}
+                        onChange={(event) => handleSolicitationChange('iAmResponsible', event.target.checked)}
+                      />
+                      Sou o responsável
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={solicitationForm.notifyGuests}
+                        onChange={(event) => handleSolicitationChange('notifyGuests', event.target.checked)}
+                      />
+                      Notificar convidados por e-mail
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={solicitationForm.notifyOpen}
+                        onChange={(event) => handleSolicitationChange('notifyOpen', event.target.checked)}
+                      />
+                      Notificar ao abrir
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={solicitationForm.notifyEnd}
+                        onChange={(event) => handleSolicitationChange('notifyEnd', event.target.checked)}
+                      />
+                      Notificar ao finalizar
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={solicitationForm.replicateSubtasks}
+                        onChange={(event) =>
+                          handleSolicitationChange('replicateSubtasks', event.target.checked)
+                        }
+                      />
+                      Replicar para subatendimentos
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={solicitationForm.iAmAuthorizer}
+                        onChange={(event) => handleSolicitationChange('iAmAuthorizer', event.target.checked)}
+                      />
+                      Sou o autorizador
+                    </label>
+                  </div>
+
+                  <div className="settings-actions-row">
+                    <button
+                      type="button"
+                      className="chip small"
+                      onClick={() => {
+                        setSolicitationOpen(false)
+                        clearSolicitationForm()
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button type="submit" className="primary small">
+                      Confirmar
+                    </button>
+                  </div>
+                </form>
+                {solicitationFeedback ? <p className="settings-feedback">{solicitationFeedback}</p> : null}
               </div>
             </div>
           ) : null}
