@@ -1026,6 +1026,7 @@ function App() {
   const [solicitationForm, setSolicitationForm] = useState(() => getEmptySolicitationForm())
   const [solicitationFeedback, setSolicitationFeedback] = useState('')
   const [solicitationRecords, setSolicitationRecords] = useState([])
+  const [solicitationClientSearch, setSolicitationClientSearch] = useState('')
   const [clientForm, setClientForm] = useState(emptyClientForm)
   const [clientMode, setClientMode] = useState('create')
   const [editingId, setEditingId] = useState(null)
@@ -1166,6 +1167,7 @@ function App() {
 
   const clearSolicitationForm = () => {
     setSolicitationForm(getEmptySolicitationForm())
+    setSolicitationClientSearch('')
     setSolicitationFeedback('')
   }
 
@@ -1791,6 +1793,17 @@ function App() {
         (file) => !(file.name === fileName && file.size === fileSize),
       ),
     }))
+  }
+
+  const addSolicitationClientBySearch = (clientId) => {
+    setSolicitationForm((prev) => {
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
+      if (current.includes(clientId)) {
+        return prev
+      }
+      return { ...prev, clientIds: [...current, clientId] }
+    })
+    setSolicitationClientSearch('')
   }
 
   const toggleSettingsTaskClient = (clientId) => {
@@ -2554,6 +2567,7 @@ function App() {
   const completionPercent = tasksRows.length
     ? Math.round((completedTasks / tasksRows.length) * 100)
     : 0
+  const safeCompletionPercent = Math.min(100, Math.max(0, completionPercent))
   const dashboardStats = stats.map((stat) => {
     const dynamicValueByLabel = {
       'Vencem Hoje': overviewMetrics.dueToday,
@@ -2682,6 +2696,17 @@ function App() {
   const solicitationClients = clients.filter(
     (client) => solicitationForm.includeDisabledClients || client.status !== 'Inativo',
   )
+  const solicitationClientSearchTerm = solicitationClientSearch.trim().toLowerCase()
+  const solicitationClientSearchResults = solicitationClientSearchTerm
+    ? solicitationClients
+        .filter((client) =>
+          [client.nome, client.apelido, client.inscricao, client.email]
+            .join(' ')
+            .toLowerCase()
+            .includes(solicitationClientSearchTerm),
+        )
+        .slice(0, 8)
+    : []
   const solicitationsByDepartment = new Map(
     departmentsInSystem.map((department) => [
       department,
@@ -2879,9 +2904,7 @@ function App() {
             <nav className="nav">
               {[
                 'Visão Geral',
-                'Agenda',
                 'Tarefas',
-                'Kanban',
                 'Relatórios',
                 'Clientes',
                 'Configurações',
@@ -3018,22 +3041,33 @@ function App() {
                       <span>{currentMonthLabel || '-'}</span>
                     </header>
                     <div className="performance-body">
-                      <div className="metric">
+                      <div className="metric metric-left">
                         <strong>{completedTasks}</strong>
                         <span>Tarefas Realizadas</span>
                       </div>
-                      <div className="donut">
-                        <div className="donut-value">{completionPercent}%</div>
-                        <span>Tarefas Concluídas</span>
+                      <div className="speedometer-wrap">
+                        <span className="speedometer-title">Tarefas Concluídas</span>
+                        <div
+                          className="speedometer"
+                          style={{
+                            '--completed-angle': `${safeCompletionPercent * 1.8}deg`,
+                            '--needle-angle': `${safeCompletionPercent * 1.8 - 90}deg`,
+                          }}
+                        >
+                          <div className="speedometer-arc" />
+                          <div className="speedometer-inner" />
+                          <div className="speedometer-needle" />
+                          <div className="speedometer-pin" />
+                          <div className="speedometer-center">
+                            <div className="speedometer-value">{safeCompletionPercent}%</div>
+                          </div>
+                        </div>
                       </div>
-                      <div className="metric">
+                      <div className="metric metric-right">
                         <strong>{overviewMetrics.pending}</strong>
                         <span>Tarefas Restantes</span>
                       </div>
                     </div>
-                    <button className="link" type="button">
-                      Ver gráfico detalhado ?
-                    </button>
                   </article>
 
                 </section>
@@ -4781,7 +4815,7 @@ function App() {
                         ))}
                       </datalist>
                     </label>
-                    <label className="settings-field">
+                    <label className="settings-field solicitation-stage-field">
                       <span>Etapa</span>
                       <select
                         value={solicitationForm.etapa}
@@ -4805,6 +4839,39 @@ function App() {
                         onChange={(event) => handleSolicitationChange('assunto', event.target.value)}
                         placeholder="Descreva a nova solicitação"
                       />
+                    </label>
+                    <label className="settings-field solicitation-client-search-field">
+                      <span>Pesquisar Clientes</span>
+                      <input
+                        type="text"
+                        value={solicitationClientSearch}
+                        onChange={(event) => setSolicitationClientSearch(event.target.value)}
+                        placeholder="Digite para buscar e selecionar"
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && solicitationClientSearchResults.length) {
+                            event.preventDefault()
+                            addSolicitationClientBySearch(solicitationClientSearchResults[0].id)
+                          }
+                        }}
+                      />
+                      {solicitationClientSearchResults.length ? (
+                        <div className="solicitation-search-results">
+                          {solicitationClientSearchResults.map((client) => {
+                            const isSelected = solicitationForm.clientIds.includes(client.id)
+                            return (
+                              <button
+                                key={client.id}
+                                type="button"
+                                className={`solicitation-search-option ${isSelected ? 'selected' : ''}`}
+                                onClick={() => addSolicitationClientBySearch(client.id)}
+                              >
+                                <span>{client.nome}</span>
+                                <small>{client.inscricao || client.email || client.status}</small>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : null}
                     </label>
                   </div>
 
