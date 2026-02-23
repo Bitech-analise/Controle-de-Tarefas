@@ -435,6 +435,45 @@ const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+const formatCnpjValue = (value) => {
+  const digits = String(value || '')
+    .replace(/\D/g, '')
+    .slice(0, 14)
+  if (!digits) return ''
+  if (digits.length <= 2) return digits
+  if (digits.length <= 5) return `${digits.slice(0, 2)}.${digits.slice(2)}`
+  if (digits.length <= 8) return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5)}`
+  if (digits.length <= 12) {
+    return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8)}`
+  }
+  return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`
+}
+
+const formatCpfValue = (value) => {
+  const digits = String(value || '')
+    .replace(/\D/g, '')
+    .slice(0, 11)
+  if (!digits) return ''
+  if (digits.length <= 3) return digits
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`
+  if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`
+}
+
+const formatClientInscricaoByDocType = (value, docType) => {
+  if (docType === 'CNPJ') return formatCnpjValue(value)
+  if (docType === 'CPF') return formatCpfValue(value)
+  return value
+}
+
+const formatCepValue = (value) => {
+  const digits = String(value || '')
+    .replace(/\D/g, '')
+    .slice(0, 8)
+  if (digits.length <= 5) return digits
+  return `${digits.slice(0, 5)}-${digits.slice(5)}`
+}
+
 const addMonthsToIsoDate = (value, monthsToAdd) => {
   if (!value) return ''
   const [yearRaw, monthRaw, dayRaw] = value.split('-')
@@ -888,6 +927,7 @@ const initialClients = [
 const emptyClientForm = {
   docType: '',
   inscricao: '',
+  cep: '',
   nome: '',
   tipo: 'Fixo',
   apelido: '',
@@ -1009,16 +1049,8 @@ function App() {
   const [settingsUserFeedback, setSettingsUserFeedback] = useState('')
   const [settingsTaskForm, setSettingsTaskForm] = useState(() => getEmptySettingsTaskForm())
   const [settingsTaskFeedback, setSettingsTaskFeedback] = useState('')
-  const [clients, setClients] = useState(initialClients)
-  const [tasksRows, setTasksRows] = useState(() =>
-    reportRows.map((task) => ({
-      ...task,
-      attachments: [],
-      baixaAt: '',
-      baixaAction: '',
-      justification: '',
-    })),
-  )
+  const [clients, setClients] = useState([])
+  const [tasksRows, setTasksRows] = useState([])
   const [selectedTaskRef, setSelectedTaskRef] = useState(null)
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
@@ -1027,6 +1059,8 @@ function App() {
   const [solicitationFeedback, setSolicitationFeedback] = useState('')
   const [solicitationRecords, setSolicitationRecords] = useState([])
   const [solicitationClientSearch, setSolicitationClientSearch] = useState('')
+  const [clientCepLookupLoading, setClientCepLookupLoading] = useState(false)
+  const [clientCepLookupMessage, setClientCepLookupMessage] = useState('')
   const [clientForm, setClientForm] = useState(emptyClientForm)
   const [clientMode, setClientMode] = useState('create')
   const [editingId, setEditingId] = useState(null)
@@ -1182,6 +1216,8 @@ function App() {
     setClientMode(mode)
     setEditingId(client ? client.id : null)
     setClientForm(client ? { ...client } : { ...emptyClientForm })
+    setClientCepLookupLoading(false)
+    setClientCepLookupMessage('')
     setGroupsOpen(false)
     setTaxOpen(false)
     setClientOpen(true)
@@ -1196,7 +1232,71 @@ function App() {
   }
 
   const handleClientChange = (field, value) => {
-    setClientForm((prev) => ({ ...prev, [field]: value }))
+    setClientForm((prev) => {
+      if (field === 'docType') {
+        return {
+          ...prev,
+          docType: value,
+          inscricao: formatClientInscricaoByDocType(prev.inscricao, value),
+        }
+      }
+      if (field === 'inscricao') {
+        return {
+          ...prev,
+          inscricao: formatClientInscricaoByDocType(value, prev.docType),
+        }
+      }
+      if (field === 'cep') {
+        return {
+          ...prev,
+          cep: formatCepValue(value),
+        }
+      }
+      return { ...prev, [field]: value }
+    })
+  }
+
+  const handleClientCepBlur = async (rawValue) => {
+    if (clientMode === 'view') return
+    const cepDigits = String(rawValue ?? clientForm.cep ?? '').replace(/\D/g, '')
+    if (!cepDigits) {
+      setClientCepLookupMessage('')
+      return
+    }
+    if (cepDigits.length !== 8) {
+      setClientCepLookupMessage('CEP inválido. Use 8 números.')
+      return
+    }
+
+    setClientCepLookupLoading(true)
+    setClientCepLookupMessage('Consultando CEP...')
+
+    try {
+      const response = await fetch(`https://viacep.com.br/ws/${cepDigits}/json/`)
+      if (!response.ok) {
+        throw new Error('Falha ao consultar CEP')
+      }
+
+      const data = await response.json()
+      if (data.erro) {
+        setClientCepLookupMessage('CEP não encontrado.')
+        return
+      }
+
+      setClientForm((prev) => ({
+        ...prev,
+        cep: formatCepValue(cepDigits),
+        endereco: data.logradouro || prev.endereco || '',
+        bairro: data.bairro || prev.bairro || '',
+        municipio: data.localidade || prev.municipio || '',
+        uf: data.uf || prev.uf || '',
+      }))
+      setClientCepLookupMessage('Endereço preenchido pelo CEP.')
+    } catch {
+      setClientCepLookupMessage('Não foi possível consultar o CEP agora.')
+    } finally {
+      setClientCepLookupLoading(false)
+    }
   }
 
   const toggleGroup = (group) => {
@@ -5125,9 +5225,17 @@ function App() {
                       <label>Inscrição</label>
                       <input
                         type="text"
-                        placeholder=""
+                        placeholder={
+                          clientForm.docType === 'CNPJ'
+                            ? '00.000.000/0000-00'
+                            : clientForm.docType === 'CPF'
+                              ? '000.000.000-00'
+                              : ''
+                        }
                         value={clientForm.inscricao}
                         onChange={(event) => handleClientChange('inscricao', event.target.value)}
+                        inputMode={clientForm.docType === 'CNPJ' || clientForm.docType === 'CPF' ? 'numeric' : 'text'}
+                        maxLength={clientForm.docType === 'CNPJ' ? 18 : clientForm.docType === 'CPF' ? 14 : undefined}
                         readOnly={isReadOnly}
                       />
                     </div>
@@ -5355,6 +5463,24 @@ function App() {
                   </div>
                   <div className="form-grid address">
                     <div className="field">
+                      <label>CEP</label>
+                      <input
+                        type="text"
+                        placeholder="00000-000"
+                        value={clientForm.cep || ''}
+                        onChange={(event) => {
+                          handleClientChange('cep', event.target.value)
+                          if (clientCepLookupMessage) {
+                            setClientCepLookupMessage('')
+                          }
+                        }}
+                        onBlur={(event) => handleClientCepBlur(event.target.value)}
+                        inputMode="numeric"
+                        maxLength={9}
+                        readOnly={isReadOnly}
+                      />
+                    </div>
+                    <div className="field">
                       <label>Endereço</label>
                       <input
                         type="text"
@@ -5375,6 +5501,11 @@ function App() {
                       />
                     </div>
                   </div>
+                  {clientCepLookupMessage ? (
+                    <p className={`client-cep-feedback ${clientCepLookupLoading ? 'loading' : ''}`}>
+                      {clientCepLookupMessage}
+                    </p>
+                  ) : null}
                   <div className="form-grid location">
                     <div className="field">
                       <label>Bairro</label>
