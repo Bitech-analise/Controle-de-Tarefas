@@ -339,7 +339,7 @@
 .dashboard {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 104px minmax(0, 1fr);
   background: var(--panel-bg);
 }
 
@@ -373,12 +373,17 @@
   display: grid;
   gap: 10px;
   width: 100%;
+  justify-items: start;
 }
 
 .nav-item {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   place-items: center;
+  width: 74px;
+  min-height: 64px;
+  box-sizing: border-box;
+  justify-self: start;
   padding: 10px 6px;
   background: transparent;
   border: none;
@@ -391,12 +396,32 @@
   animation-delay: var(--delay);
 }
 
+.nav-item > span:last-child {
+  display: block;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  line-height: 1.05;
+  font-size: 9px;
+  letter-spacing: 0;
+}
+
 .nav-item .nav-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: #1b252a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.nav-item .nav-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .nav-item.active {
@@ -412,6 +437,9 @@
   color: #9aa7ad;
   font-size: 11px;
   cursor: pointer;
+  width: 74px;
+  align-self: flex-start;
+  text-align: center;
 }
 
 .main {

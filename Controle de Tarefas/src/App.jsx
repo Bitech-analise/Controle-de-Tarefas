@@ -1022,6 +1022,50 @@ const STORAGE_KEYS = {
   pass: 'hive-password',
 }
 
+const renderSidebarIcon = (label) => {
+  switch (label) {
+    case 'Visão Geral':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+          <circle cx="12" cy="12" r="2.6" />
+        </svg>
+      )
+    case 'Tarefas':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 7h10M9 12h10M9 17h10" />
+          <path d="M4 7.5l1.4 1.4L7.8 6.5M4 12.5l1.4 1.4 2.4-2.4M4 17.5l1.4 1.4 2.4-2.4" />
+        </svg>
+      )
+    case 'Relatórios':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 4h6" />
+          <path d="M9 2h6v3H9z" />
+          <path d="M7 5h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
+          <path d="M8.5 11h7M8.5 15h7M8.5 19h4" />
+        </svg>
+      )
+    case 'Clientes':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7.5 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16.5 11a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" />
+          <path d="M2.8 20a4.8 4.8 0 0 1 9.4 0M12.6 20a4.1 4.1 0 0 1 8 0" />
+        </svg>
+      )
+    case 'Configurações':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 8.5A3.5 3.5 0 1 0 12 15.5A3.5 3.5 0 1 0 12 8.5Z" />
+          <path d="M19 12a7 7 0 0 0-.06-.9l2-1.55-2-3.46-2.4.8a7.7 7.7 0 0 0-1.56-.9L14.5 3h-5l-.48 2.99c-.55.22-1.08.52-1.56.9l-2.4-.8-2 3.46 2 1.55a7 7 0 0 0 0 1.8l-2 1.55 2 3.46 2.4-.8c.48.38 1.01.68 1.56.9L9.5 21h5l.48-2.99c.55-.22 1.08-.52 1.56-.9l2.4.8 2-3.46-2-1.55c.04-.3.06-.6.06-.9z" />
+        </svg>
+      )
+    default:
+      return null
+  }
+}
+
 function App() {
   const [screen, setScreen] = useState('login')
   const [remember, setRemember] = useState(
@@ -3038,7 +3082,7 @@ function App() {
                   }}
                   style={{ '--delay': `${index * 0.05}s` }}
                 >
-                  <span className="nav-icon" />
+                  <span className="nav-icon">{renderSidebarIcon(item)}</span>
                   <span>{item}</span>
                 </button>
               ))}
