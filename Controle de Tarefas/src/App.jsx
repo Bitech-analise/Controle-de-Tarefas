@@ -5532,6 +5532,7 @@ function App() {
                   <div className="report-head">
                     <span>No</span>
                     <span>Status</span>
+                    <span>Tipo</span>
                     <span>Departamento</span>
                     <span>Nome</span>
                     <span>Competência</span>
@@ -5566,6 +5567,9 @@ function App() {
                             <span className={`status-pill ${displayStatus.tag}`} title={displayStatus.status}>
                               {displayStatus.status}
                             </span>
+                            <span title={row.taskType || (row.reportSource === 'solicitation' ? 'Solicitação' : 'Tarefa')}>
+                              {row.taskType || (row.reportSource === 'solicitation' ? 'Solicitação' : 'Tarefa')}
+                            </span>
                             <span title={getDepartmentLabel(row.dept)}>{getDepartmentLabel(row.dept)}</span>
                             <span title={row.subject}>{row.subject}</span>
                             <span title={formatCompetenceValue(row.competence) || '-'}>
@@ -5587,6 +5591,7 @@ function App() {
                       <div className="report-row report-empty">
                         <span>#</span>
                         <span>Sem resultados</span>
+                        <span>-</span>
                         <span>-</span>
                         <span>-</span>
                         <span>-</span>

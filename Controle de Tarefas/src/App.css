@@ -2223,7 +2223,7 @@ select:disabled {
 .report-head,
 .report-row {
   display: grid;
-  grid-template-columns: 26px 154px 108px minmax(180px, 1.35fr) 82px minmax(138px, 1fr) 96px 64px 64px 72px 72px 96px;
+  grid-template-columns: 26px 132px 82px 98px minmax(168px, 1.3fr) 74px minmax(128px, 1fr) 92px 58px 58px 66px 66px 90px;
   gap: 6px;
   padding: 11px 14px;
   align-items: start;
@@ -2977,7 +2977,7 @@ select:disabled {
 
   .report-head,
   .report-row {
-    grid-template-columns: 24px 138px 92px minmax(150px, 1.2fr) 74px minmax(116px, 1fr) 88px 58px 58px 66px 66px 88px;
+    grid-template-columns: 24px 124px 72px 84px minmax(140px, 1.2fr) 66px minmax(106px, 1fr) 80px 54px 54px 60px 60px 82px;
   }
 
   .operational-results {
