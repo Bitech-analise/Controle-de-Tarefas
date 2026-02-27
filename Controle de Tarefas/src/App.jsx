@@ -200,6 +200,44 @@ const reportRows = [
 
 const groupOptions = ['Dep. Pessoal', 'Fiscal', 'Contábil', 'Sucesso do Cliente']
 const taxOptions = ['Simples Nacional', 'Lucro Real', 'Lucro Presumido', 'MEI']
+const clientChecklistOptions = [
+  'Iss',
+  'Difal',
+  'Sub. Tributária',
+  'Emite Nfse',
+  'Compra fora do Estado',
+  'Parcelamentos',
+]
+const brazilUfOptions = [
+  'Todos',
+  'AC',
+  'AL',
+  'AP',
+  'AM',
+  'BA',
+  'CE',
+  'DF',
+  'ES',
+  'GO',
+  'MA',
+  'MT',
+  'MS',
+  'MG',
+  'PA',
+  'PB',
+  'PR',
+  'PE',
+  'PI',
+  'RJ',
+  'RN',
+  'RS',
+  'RO',
+  'RR',
+  'SC',
+  'SP',
+  'SE',
+  'TO',
+]
 const dateFilterOptions = ['Ação', 'Meta', 'Conclusão']
 const taskDateFilterOptions = ['Ação', 'Meta', 'Vencimento', 'Data da Entrega']
 const operationalActionKeys = ['A Realizar', '3 Dias', 'Hoje', 'Último Dia']
@@ -365,6 +403,28 @@ const initialTaskFilters = {
   query: '',
 }
 
+const initialClientTableFilters = {
+  status: 'Todos',
+  grupo: 'Todos',
+  visibilidade: 'Todos',
+  uf: 'Todos',
+  tributacao: 'Todos',
+  docType: 'Todos',
+  query: '',
+}
+
+const initialTaskBlueprintFilters = {
+  obligation: 'Todos',
+  uf: 'Todos',
+  tributacao: 'Todos',
+  installments: 'Todos',
+  competence: 'Todos',
+  dateBy: 'Cadastro',
+  startDate: '',
+  endDate: '',
+  query: '',
+}
+
 const sumCategoryCounts = (records, categoryField, keys) =>
   keys.reduce((acc, key) => {
     acc[key] = records.reduce((total, row) => total + (row[categoryField]?.[key] || 0), 0)
@@ -416,6 +476,23 @@ const getTodayIsoLocal = () => {
 }
 
 const getNowBrDate = () => parseIsoDateToBr(getTodayIsoLocal())
+
+const getMonthStartIso = (isoDate) => {
+  if (!isoDate) return ''
+  const [year, month] = String(isoDate).split('-')
+  if (!year || !month) return ''
+  return `${year}-${month}-01`
+}
+
+const getMonthEndIso = (isoDate) => {
+  if (!isoDate) return ''
+  const [yearRaw, monthRaw] = String(isoDate).split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  if (!year || !month) return ''
+  const lastDay = new Date(year, month, 0).getDate()
+  return `${yearRaw}-${monthRaw}-${String(lastDay).padStart(2, '0')}`
+}
 
 const getNowBrTimestamp = () =>
   new Date().toLocaleString('pt-BR', {
@@ -543,6 +620,39 @@ const getTaskDisplayConclusion = (row) => {
   const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
   if (!hasDeliveryDate) return ''
   return row.conclusionDate || row.deliveryDate || ''
+}
+
+const getMonthIndexFromIso = (value) => {
+  if (!value) return null
+  const [yearRaw, monthRaw] = String(value).split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  if (!year || !month) return null
+  return year * 12 + (month - 1)
+}
+
+const getYearMonthOffset = (baseIso, targetIso) => {
+  const baseIndex = getMonthIndexFromIso(baseIso)
+  const targetIndex = getMonthIndexFromIso(targetIso)
+  if (baseIndex === null || targetIndex === null) return 0
+  return targetIndex - baseIndex
+}
+
+const getDayOfMonthFromIso = (value) => {
+  if (!value) return 1
+  const day = Number(String(value).split('-')[2])
+  if (!day) return 1
+  return day
+}
+
+const buildIsoDateFromMonthIndexAndDay = (monthIndex, day) => {
+  if (typeof monthIndex !== 'number' || Number.isNaN(monthIndex)) return ''
+  const year = Math.floor(monthIndex / 12)
+  const monthIndexZeroBased = monthIndex % 12
+  const lastDay = new Date(year, monthIndexZeroBased + 1, 0).getDate()
+  const safeDay = Math.min(Math.max(Number(day) || 1, 1), lastDay)
+  const month = String(monthIndexZeroBased + 1).padStart(2, '0')
+  return `${year}-${month}-${String(safeDay).padStart(2, '0')}`
 }
 
 const isCompletedTaskStatus = (status) => {
@@ -946,6 +1056,7 @@ const emptyClientForm = {
   municipio: '',
   uf: '',
   tributacao: '',
+  checklist: [],
 }
 
 const initialUsers = [
@@ -977,12 +1088,24 @@ const getEmptySettingsTaskForm = () => {
     complement: '',
     installments: 1,
     competenceMode: 'Mesmo mês',
+    departmentScope: '',
+    ufScope: 'Todos',
+    tributacaoScopes: [],
     clientIds: [],
     includeDisabledClients: false,
     attachments: [],
     andamento: '',
     owner: '',
     guests: '',
+  }
+}
+
+const getEmptyClientTaskGenerateForm = () => {
+  const today = getTodayIsoLocal()
+  return {
+    startDate: getMonthStartIso(today),
+    endDate: getMonthEndIso(today),
+    blueprintIds: [],
   }
 }
 
@@ -1086,6 +1209,10 @@ function App() {
   const [taskCreateOpen, setTaskCreateOpen] = useState(false)
   const [solicitationOpen, setSolicitationOpen] = useState(false)
   const [clientOpen, setClientOpen] = useState(false)
+  const [clientTaskGenerateOpen, setClientTaskGenerateOpen] = useState(false)
+  const [clientTaskGenerateClient, setClientTaskGenerateClient] = useState(null)
+  const [clientTaskGenerateForm, setClientTaskGenerateForm] = useState(() => getEmptyClientTaskGenerateForm())
+  const [clientTaskGenerateFeedback, setClientTaskGenerateFeedback] = useState('')
   const [settingsTab, setSettingsTab] = useState('users')
   const [users, setUsers] = useState(initialUsers)
   const [userForm, setUserForm] = useState(emptyUserForm)
@@ -1095,6 +1222,8 @@ function App() {
   const [settingsTaskFeedback, setSettingsTaskFeedback] = useState('')
   const [clients, setClients] = useState([])
   const [tasksRows, setTasksRows] = useState([])
+  const [taskBlueprints, setTaskBlueprints] = useState([])
+  const [editingTaskBlueprintId, setEditingTaskBlueprintId] = useState(null)
   const [selectedTaskRef, setSelectedTaskRef] = useState(null)
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
@@ -1114,6 +1243,10 @@ function App() {
   const groupsRef = useRef(null)
   const [taxOpen, setTaxOpen] = useState(false)
   const taxRef = useRef(null)
+  const [checklistOpen, setChecklistOpen] = useState(false)
+  const checklistRef = useRef(null)
+  const [settingsTaskTaxOpen, setSettingsTaskTaxOpen] = useState(false)
+  const settingsTaskTaxRef = useRef(null)
   const [selectedClientIds, setSelectedClientIds] = useState([])
   const selectAllRef = useRef(null)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1129,6 +1262,10 @@ function App() {
   const bulkTaxRef = useRef(null)
   const [taskFilters, setTaskFilters] = useState(initialTaskFilters)
   const [appliedTaskFilters, setAppliedTaskFilters] = useState(initialTaskFilters)
+  const [clientTableFilters, setClientTableFilters] = useState(initialClientTableFilters)
+  const [appliedClientTableFilters, setAppliedClientTableFilters] = useState(initialClientTableFilters)
+  const [taskBlueprintFilters, setTaskBlueprintFilters] = useState(initialTaskBlueprintFilters)
+  const [appliedTaskBlueprintFilters, setAppliedTaskBlueprintFilters] = useState(initialTaskBlueprintFilters)
   const [taskPage, setTaskPage] = useState(1)
   const [taskItemsPerPage, setTaskItemsPerPage] = useState(10)
   const [operationalFilters, setOperationalFilters] = useState(initialOperationalFilters)
@@ -1161,6 +1298,19 @@ function App() {
   }, [taxOpen])
 
   useEffect(() => {
+    if (!checklistOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (checklistRef.current && !checklistRef.current.contains(event.target)) {
+        setChecklistOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [checklistOpen])
+
+  useEffect(() => {
     if (!bulkGroupsOpen) return
 
     const handleOutsideClick = (event) => {
@@ -1185,6 +1335,19 @@ function App() {
     document.addEventListener('mousedown', handleOutsideClick)
     return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [bulkTaxOpen])
+
+  useEffect(() => {
+    if (!settingsTaskTaxOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (settingsTaskTaxRef.current && !settingsTaskTaxRef.current.contains(event.target)) {
+        setSettingsTaskTaxOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [settingsTaskTaxOpen])
 
   useEffect(() => {
     if (!selectAllRef.current) return
@@ -1264,6 +1427,7 @@ function App() {
     setClientCepLookupMessage('')
     setGroupsOpen(false)
     setTaxOpen(false)
+    setChecklistOpen(false)
     setClientOpen(true)
     setCreateOpen(false)
   }
@@ -1353,6 +1517,25 @@ function App() {
     })
   }
 
+  const toggleClientChecklist = (item) => {
+    setClientForm((prev) => {
+      const current = Array.isArray(prev.checklist) ? prev.checklist : []
+      const nextChecklist = current.includes(item)
+        ? current.filter((entry) => entry !== item)
+        : [...current, item]
+
+      if (clientMode === 'view' && editingId !== null) {
+        setClients((prevClients) =>
+          prevClients.map((client) =>
+            client.id === editingId ? { ...client, checklist: nextChecklist } : client,
+          ),
+        )
+      }
+
+      return { ...prev, checklist: nextChecklist }
+    })
+  }
+
   const handleBulkChange = (field, value) => {
     setBulkForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -1380,6 +1563,7 @@ function App() {
     setClientOpen(false)
     setGroupsOpen(false)
     setTaxOpen(false)
+    setChecklistOpen(false)
     setEditingId(null)
     setClientMode('create')
     setClientForm({ ...emptyClientForm })
@@ -1403,6 +1587,294 @@ function App() {
     setBulkGroupsOpen(false)
     setBulkTaxOpen(false)
     setBulkForm({ status: '', visibilidade: '', grupos: [], tributacao: '' })
+  }
+
+  const getMatchingTaskBlueprintsForClient = (client) => {
+    if (!client) return []
+    const clientUf = String(client.uf || '').trim().toUpperCase()
+    const clientTaxation = String(client.tributacao || '').trim()
+    const clientGroups = Array.isArray(client.grupos)
+      ? client.grupos.map((group) => String(group || '').trim()).filter(Boolean)
+      : []
+
+    return taskBlueprints.filter((blueprint) => {
+      const blueprintUf = String(blueprint.ufScope || 'Todos').trim().toUpperCase()
+      const blueprintDepartment = String(blueprint.departmentScope || '').trim()
+      const blueprintTaxations = (
+        Array.isArray(blueprint.tributacaoScopes)
+          ? blueprint.tributacaoScopes
+          : blueprint.tributacaoScope
+            ? [blueprint.tributacaoScope]
+            : []
+      )
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+
+      const matchesUf = blueprintUf === 'TODOS' || (clientUf && blueprintUf === clientUf)
+      const matchesTaxation = !blueprintTaxations.length || blueprintTaxations.includes(clientTaxation)
+      const matchesDepartment = !blueprintDepartment || clientGroups.includes(blueprintDepartment)
+      return matchesUf && matchesTaxation && matchesDepartment
+    })
+  }
+
+  const buildTaskDuplicateKey = ({
+    subject,
+    clientName,
+    clientDocument,
+    department,
+    competence,
+    actionDate,
+    metaDate,
+    dueDate,
+  }) =>
+    [
+      subject,
+      clientName,
+      clientDocument,
+      getDepartmentLabel(department),
+      competence,
+      actionDate,
+      metaDate,
+      dueDate,
+    ].join('|')
+
+  const closeClientTaskGenerateModal = () => {
+    setClientTaskGenerateOpen(false)
+    setClientTaskGenerateClient(null)
+    setClientTaskGenerateForm(getEmptyClientTaskGenerateForm())
+    setClientTaskGenerateFeedback('')
+  }
+
+  const handleClientTaskGenerateFormChange = (field, value) => {
+    setClientTaskGenerateForm((prev) => ({ ...prev, [field]: value }))
+    if (clientTaskGenerateFeedback) {
+      setClientTaskGenerateFeedback('')
+    }
+  }
+
+  const toggleClientTaskGenerateBlueprint = (blueprintId) => {
+    setClientTaskGenerateForm((prev) => {
+      const current = Array.isArray(prev.blueprintIds) ? prev.blueprintIds : []
+      const nextIds = current.includes(blueprintId)
+        ? current.filter((id) => id !== blueprintId)
+        : [...current, blueprintId]
+      return { ...prev, blueprintIds: nextIds }
+    })
+    if (clientTaskGenerateFeedback) {
+      setClientTaskGenerateFeedback('')
+    }
+  }
+
+  const toggleClientTaskGenerateAllBlueprints = () => {
+    const availableIds = clientTaskGenerateAvailableBlueprints.map((blueprint) => blueprint.id)
+    setClientTaskGenerateForm((prev) => ({
+      ...prev,
+      blueprintIds:
+        availableIds.length &&
+        availableIds.every((blueprintId) => (prev.blueprintIds || []).includes(blueprintId))
+          ? []
+          : availableIds,
+    }))
+    if (clientTaskGenerateFeedback) {
+      setClientTaskGenerateFeedback('')
+    }
+  }
+
+  const generateTasksForClient = (client) => {
+    if (!client) return
+    const matchedBlueprints = getMatchingTaskBlueprintsForClient(client)
+    const defaults = getEmptyClientTaskGenerateForm()
+
+    setClientTaskGenerateClient(client)
+    setClientTaskGenerateForm({
+      ...defaults,
+      blueprintIds: matchedBlueprints.map((blueprint) => blueprint.id),
+    })
+    setClientTaskGenerateFeedback('')
+    setClientTaskGenerateOpen(true)
+  }
+
+  const confirmClientTaskGeneration = () => {
+    const client = clientTaskGenerateClient
+    if (!client) return
+
+    if (!clientTaskGenerateForm.startDate || !clientTaskGenerateForm.endDate) {
+      setClientTaskGenerateFeedback('Informe a data inicial e a data final.')
+      return
+    }
+
+    if (clientTaskGenerateForm.startDate > clientTaskGenerateForm.endDate) {
+      setClientTaskGenerateFeedback('A data final deve ser maior ou igual à data inicial.')
+      return
+    }
+
+    const matchedBlueprints = getMatchingTaskBlueprintsForClient(client)
+    if (!matchedBlueprints.length) {
+      setClientTaskGenerateFeedback(
+        `Nenhuma tarefa cadastrada compatível com UF/Tributação/Departamento do cliente "${client.nome}" foi encontrada.`,
+      )
+      return
+    }
+
+    const selectedBlueprintIds = Array.isArray(clientTaskGenerateForm.blueprintIds)
+      ? clientTaskGenerateForm.blueprintIds
+      : []
+    const selectedBlueprints = matchedBlueprints.filter((blueprint) =>
+      selectedBlueprintIds.includes(blueprint.id),
+    )
+
+    if (!selectedBlueprints.length) {
+      setClientTaskGenerateFeedback('Selecione ao menos uma tarefa para gerar.')
+      return
+    }
+
+    const startMonthIndex = getMonthIndexFromIso(clientTaskGenerateForm.startDate)
+    const endMonthIndex = getMonthIndexFromIso(clientTaskGenerateForm.endDate)
+    if (startMonthIndex === null || endMonthIndex === null) {
+      setClientTaskGenerateFeedback('Período inválido para geração.')
+      return
+    }
+
+    const monthsCount = endMonthIndex - startMonthIndex + 1
+    if (monthsCount <= 0) {
+      setClientTaskGenerateFeedback('Período inválido para geração.')
+      return
+    }
+
+    const loggedOwner =
+      users.find((user) => user.email.trim().toLowerCase() === username.trim().toLowerCase())?.nome ||
+      username ||
+      'Não definido'
+    const owner = String(client.contato || '').trim() || String(loggedOwner).trim() || 'Não definido'
+
+    const existingKeys = new Set(
+      tasksRows.map((row) =>
+        buildTaskDuplicateKey({
+          subject: row.subject,
+          clientName: row.client,
+          clientDocument: row.cnpj,
+          department: row.dept,
+          competence: row.competence,
+          actionDate: getTaggedReportDate(row.dates, 'A'),
+          metaDate: getTaggedReportDate(row.dates, 'M'),
+          dueDate: getTaggedReportDate(row.dates, 'V'),
+        }),
+      ),
+    )
+
+    let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, task.id), 0) + 1
+    let skippedDuplicates = 0
+    const generatedRows = []
+
+    selectedBlueprints.forEach((blueprint) => {
+      const obligation = String(blueprint.obligation || '').trim()
+      const complement = String(blueprint.complement || '').trim()
+      const subject =
+        String(blueprint.subject || '').trim() ||
+        (complement ? `${obligation} - ${complement}` : obligation)
+      const guests =
+        String(blueprint.guests || '').trim() && String(blueprint.guests || '').trim() !== 'Não definido'
+          ? String(blueprint.guests || '').trim()
+          : 'Não definido'
+
+      const blueprintDepartment = String(blueprint.departmentScope || '').trim()
+      const clientGroups = Array.isArray(client.grupos)
+        ? client.grupos.map((group) => String(group || '').trim()).filter(Boolean)
+        : []
+      const dept = blueprintDepartment || clientGroups[0] || 'Fiscal'
+
+      const actionDay = getDayOfMonthFromIso(blueprint.actionDate)
+      const metaDay = getDayOfMonthFromIso(blueprint.metaDate)
+      const dueDay = getDayOfMonthFromIso(blueprint.dueDate)
+      const metaMonthOffset = getYearMonthOffset(blueprint.actionDate, blueprint.metaDate)
+      const dueMonthOffset = getYearMonthOffset(blueprint.actionDate, blueprint.dueDate)
+
+      for (let step = 0; step < monthsCount; step += 1) {
+        const actionMonthIndex = startMonthIndex + step
+        const actionIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex, actionDay)
+        const metaIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex + metaMonthOffset, metaDay)
+        const dueIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex + dueMonthOffset, dueDay)
+
+        const actionBr = parseIsoDateToBr(actionIso)
+        const metaBr = parseIsoDateToBr(metaIso)
+        const dueBr = parseIsoDateToBr(dueIso)
+        const competence = getCompetenceFromDate(actionIso, blueprint.competenceMode || 'Mesmo mês')
+        const duplicateKey = buildTaskDuplicateKey({
+          subject,
+          clientName: client.nome,
+          clientDocument: client.inscricao || `${client.docType || 'Documento'} não informado`,
+          department: dept,
+          competence,
+          actionDate: actionBr,
+          metaDate: metaBr,
+          dueDate: dueBr,
+        })
+
+        if (existingKeys.has(duplicateKey)) {
+          skippedDuplicates += 1
+          continue
+        }
+
+        existingKeys.add(duplicateKey)
+
+        const generatedStatus = getGeneratedTaskStatus(actionIso, metaIso, dueIso)
+        const rowId = nextId
+        nextId += 1
+
+        generatedRows.push({
+          id: rowId,
+          status: generatedStatus.status,
+          dept,
+          subject,
+          competence,
+          client: client.nome,
+          cnpj: client.inscricao || `${client.docType || 'Documento'} não informado`,
+          clientStatus: client.status === 'Ativo' ? 'Ativo' : 'Desativado',
+          dates: [`A: ${actionBr}`, `M: ${metaBr}`, `V: ${dueBr}`],
+          deliveryDate: '',
+          conclusionDate: '',
+          owner,
+          authorizer: owner,
+          guests,
+          tag: generatedStatus.tag,
+          attachments: [],
+          baixaAt: '',
+          baixaAction: '',
+          justification: '',
+          generatedBySettings: true,
+          andamento: blueprint.andamento || '',
+          competenceMode: blueprint.competenceMode || 'Mesmo mês',
+          departmentScope: blueprintDepartment || '',
+          ufScope: blueprint.ufScope || 'Todos',
+          tributacaoScopes: Array.isArray(blueprint.tributacaoScopes)
+            ? blueprint.tributacaoScopes
+            : blueprint.tributacaoScope
+              ? [blueprint.tributacaoScope]
+              : [],
+          blueprintId: blueprint.id,
+          clientId: client.id,
+        })
+      }
+    })
+
+    if (!generatedRows.length) {
+      setClientTaskGenerateFeedback(
+        skippedDuplicates
+          ? 'Nenhuma nova tarefa foi gerada. As tarefas selecionadas já existem para esse período.'
+          : 'Nenhuma tarefa foi gerada para os critérios selecionados.',
+      )
+      return
+    }
+
+    setTasksRows((prev) => [...generatedRows, ...prev])
+    setTaskFilters(initialTaskFilters)
+    setAppliedTaskFilters(initialTaskFilters)
+    setTaskPage(1)
+    closeClientTaskGenerateModal()
+
+    window.alert(
+      `${generatedRows.length} tarefa(s) gerada(s) para ${client.nome}.${skippedDuplicates ? ` ${skippedDuplicates} já existiam.` : ''}`,
+    )
   }
 
   const requestDelete = (client) => {
@@ -1432,11 +1904,16 @@ function App() {
   }
 
   const toggleSelectAll = () => {
-    if (selectedClientIds.length === clients.length) {
-      setSelectedClientIds([])
-    } else {
-      setSelectedClientIds(clients.map((client) => client.id))
+    const visibleClientIds = filteredClients.map((client) => client.id)
+    if (!visibleClientIds.length) return
+
+    const allVisibleSelected = visibleClientIds.every((id) => selectedClientIds.includes(id))
+    if (allVisibleSelected) {
+      setSelectedClientIds((prev) => prev.filter((id) => !visibleClientIds.includes(id)))
+      return
     }
+
+    setSelectedClientIds((prev) => Array.from(new Set([...prev, ...visibleClientIds])))
   }
 
   const toggleSelectClient = (clientId) => {
@@ -1458,6 +1935,32 @@ function App() {
     setTaskFilters(initialTaskFilters)
     setAppliedTaskFilters(initialTaskFilters)
     setTaskPage(1)
+  }
+
+  const handleClientTableFilterChange = (field, value) => {
+    setClientTableFilters((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const applyClientTableFilters = () => {
+    setAppliedClientTableFilters(clientTableFilters)
+  }
+
+  const clearClientTableFilters = () => {
+    setClientTableFilters(initialClientTableFilters)
+    setAppliedClientTableFilters(initialClientTableFilters)
+  }
+
+  const handleTaskBlueprintFilterChange = (field, value) => {
+    setTaskBlueprintFilters((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const applyTaskBlueprintFilters = () => {
+    setAppliedTaskBlueprintFilters(taskBlueprintFilters)
+  }
+
+  const clearTaskBlueprintFilters = () => {
+    setTaskBlueprintFilters(initialTaskBlueprintFilters)
+    setAppliedTaskBlueprintFilters(initialTaskBlueprintFilters)
   }
 
   const openControlPanelDrilldown = (groupName, departmentName, bucket) => {
@@ -1906,6 +2409,16 @@ function App() {
     setSettingsTaskForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  const toggleSettingsTaskTaxation = (taxation) => {
+    setSettingsTaskForm((prev) => {
+      const current = Array.isArray(prev.tributacaoScopes) ? prev.tributacaoScopes : []
+      if (current.includes(taxation)) {
+        return { ...prev, tributacaoScopes: current.filter((item) => item !== taxation) }
+      }
+      return { ...prev, tributacaoScopes: [...current, taxation] }
+    })
+  }
+
   const handleSolicitationChange = (field, value) => {
     setSolicitationForm((prev) => ({ ...prev, [field]: value }))
   }
@@ -1980,16 +2493,64 @@ function App() {
   }
 
   const clearSettingsTaskForm = () => {
+    setEditingTaskBlueprintId(null)
+    setSettingsTaskTaxOpen(false)
     setSettingsTaskForm(getEmptySettingsTaskForm())
     setSettingsTaskFeedback('')
+  }
+
+  const editTaskBlueprint = (blueprint) => {
+    if (!blueprint) return
+    setEditingTaskBlueprintId(blueprint.id)
+    setSettingsTaskFeedback('')
+    setSettingsTaskForm({
+      ...getEmptySettingsTaskForm(),
+      actionDate: blueprint.actionDate || getTodayIsoLocal(),
+      metaDate: blueprint.metaDate || getTodayIsoLocal(),
+      dueDate: blueprint.dueDate || getTodayIsoLocal(),
+      obligation: blueprint.obligation || '',
+      complement: blueprint.complement || '',
+      installments: Number(blueprint.installments) || 1,
+      competenceMode: blueprint.competenceMode || 'Mesmo mês',
+      departmentScope: blueprint.departmentScope || '',
+      ufScope: blueprint.ufScope || 'Todos',
+      tributacaoScopes: Array.isArray(blueprint.tributacaoScopes)
+        ? blueprint.tributacaoScopes
+        : blueprint.tributacaoScope
+          ? [blueprint.tributacaoScope]
+          : [],
+      includeDisabledClients: false,
+      attachments: [],
+      andamento: blueprint.andamento || '',
+      guests: blueprint.guests && blueprint.guests !== 'Não definido' ? blueprint.guests : '',
+    })
+    setSettingsTaskTaxOpen(false)
+    setCreateOpen(false)
+    setTaskCreateOpen(true)
+  }
+
+  const deleteTaskBlueprint = (blueprintId) => {
+    const blueprint = taskBlueprints.find((item) => item.id === blueprintId)
+    if (!blueprint) return
+    const canDelete = window.confirm(
+      `Tem certeza que deseja excluir o cadastro da tarefa "${blueprint.subject || blueprint.obligation}"?`,
+    )
+    if (!canDelete) return
+    setTaskBlueprints((prev) => prev.filter((item) => item.id !== blueprintId))
+    if (editingTaskBlueprintId === blueprintId) {
+      clearSettingsTaskForm()
+    }
   }
 
   const handleSettingsTaskSave = (event) => {
     event.preventDefault()
 
     const obligation = settingsTaskForm.obligation.trim()
-    const owner = settingsTaskForm.owner.trim()
-    const selectedIds = Array.isArray(settingsTaskForm.clientIds) ? settingsTaskForm.clientIds : []
+    const loggedOwner =
+      users.find((user) => user.email.trim().toLowerCase() === username.trim().toLowerCase())?.nome ||
+      username ||
+      'Não definido'
+    const owner = String(loggedOwner).trim() || 'Não definido'
     const installments = Number(settingsTaskForm.installments) || 1
 
     if (!settingsTaskForm.actionDate || !settingsTaskForm.metaDate || !settingsTaskForm.dueDate) {
@@ -2002,8 +2563,8 @@ function App() {
       return
     }
 
-    if (!owner) {
-      setSettingsTaskFeedback('Informe o responsável da tarefa.')
+    if (!String(settingsTaskForm.departmentScope || '').trim()) {
+      setSettingsTaskFeedback('Selecione o Departamento da tarefa.')
       return
     }
 
@@ -2012,25 +2573,78 @@ function App() {
       return
     }
 
-    if (!selectedIds.length) {
-      setSettingsTaskFeedback('Selecione pelo menos um cliente para gerar as tarefas.')
-      return
-    }
-
-    const targetClients = clients.filter(
-      (client) =>
-        selectedIds.includes(client.id) &&
-        (settingsTaskForm.includeDisabledClients || client.status !== 'Inativo'),
+    const selectedDepartment = String(settingsTaskForm.departmentScope || '').trim()
+    const selectedUf = (settingsTaskForm.ufScope || 'Todos').trim().toUpperCase()
+    const selectedTaxations = (
+      Array.isArray(settingsTaskForm.tributacaoScopes)
+        ? settingsTaskForm.tributacaoScopes
+        : settingsTaskForm.tributacaoScope
+          ? [settingsTaskForm.tributacaoScope]
+          : []
     )
-
-    if (!targetClients.length) {
-      setSettingsTaskFeedback('Nenhum cliente disponível para os filtros selecionados.')
-      return
-    }
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    const targetClients = settingsTaskClients.filter((client) => {
+      const clientUf = String(client.uf || '').trim().toUpperCase()
+      const clientTaxation = String(client.tributacao || '').trim()
+      const clientGroups = Array.isArray(client.grupos)
+        ? client.grupos.map((group) => String(group || '').trim())
+        : []
+      const matchesUf = selectedUf === 'TODOS' || clientUf === selectedUf
+      const matchesTaxation = !selectedTaxations.length || selectedTaxations.includes(clientTaxation)
+      const matchesDepartment = clientGroups.includes(selectedDepartment)
+      return matchesUf && matchesTaxation && matchesDepartment
+    })
 
     const complement = settingsTaskForm.complement.trim()
     const guests = settingsTaskForm.guests.trim() || 'Não definido'
     const subject = complement ? `${obligation} - ${complement}` : obligation
+    const ufScope = settingsTaskForm.ufScope || 'Todos'
+    const tributacaoScopes = selectedTaxations
+    const saveTaskBlueprint = (generatedCount, matchedClientsCount) => {
+      setTaskBlueprints((prev) => {
+        const payload = {
+          id: editingTaskBlueprintId || `${Date.now()}-${Math.random()}`,
+          obligation,
+          complement,
+          subject,
+          installments,
+          competenceMode: settingsTaskForm.competenceMode,
+          departmentScope: selectedDepartment,
+          actionDate: settingsTaskForm.actionDate,
+          metaDate: settingsTaskForm.metaDate,
+          dueDate: settingsTaskForm.dueDate,
+          ufScope,
+          tributacaoScopes,
+          andamento: settingsTaskForm.andamento,
+          guests,
+          createdAt:
+            prev.find((item) => item.id === editingTaskBlueprintId)?.createdAt || getNowBrTimestamp(),
+          generatedCount,
+          matchedClientsCount,
+        }
+        if (editingTaskBlueprintId) {
+          return prev.map((item) => (item.id === editingTaskBlueprintId ? payload : item))
+        }
+        return [payload, ...prev]
+      })
+    }
+
+    if (!targetClients.length) {
+      saveTaskBlueprint(0, 0)
+      setSettingsTaskFeedback(
+        'Cadastro salvo como modelo. Nenhum cliente compatível foi encontrado agora.',
+      )
+      setSettingsTaskForm({
+        ...getEmptySettingsTaskForm(),
+        actionDate: settingsTaskForm.actionDate,
+        metaDate: settingsTaskForm.metaDate,
+        dueDate: settingsTaskForm.dueDate,
+      })
+      setEditingTaskBlueprintId(null)
+      setTaskCreateOpen(false)
+      return
+    }
 
     let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, task.id), 0) + 1
     const generatedRows = []
@@ -2046,9 +2660,7 @@ function App() {
         const dueBr = parseIsoDateToBr(dueIso)
         const competence = getCompetenceFromDate(actionIso, settingsTaskForm.competenceMode)
         const generatedStatus = getGeneratedTaskStatus(actionIso, metaIso, dueIso)
-        const firstGroup =
-          Array.isArray(client.grupos) && client.grupos.length ? client.grupos[0] : 'Fiscal'
-        const dept = firstGroup.startsWith('Back Office') ? firstGroup : `Back Office - ${firstGroup}`
+        const dept = selectedDepartment
         const rowId = nextId
         nextId += 1
 
@@ -2081,10 +2693,14 @@ function App() {
           generatedBySettings: true,
           andamento: settingsTaskForm.andamento,
           competenceMode: settingsTaskForm.competenceMode,
+          departmentScope: selectedDepartment,
+          ufScope,
+          tributacaoScopes,
         })
       }
     })
 
+    saveTaskBlueprint(generatedRows.length, targetClients.length)
     setTasksRows((prev) => [...generatedRows, ...prev])
     setSettingsTaskFeedback(
       `${generatedRows.length} tarefa(s) gerada(s) para ${targetClients.length} cliente(s).`,
@@ -2094,8 +2710,8 @@ function App() {
       actionDate: settingsTaskForm.actionDate,
       metaDate: settingsTaskForm.metaDate,
       dueDate: settingsTaskForm.dueDate,
-      owner: settingsTaskForm.owner,
     })
+    setEditingTaskBlueprintId(null)
     setTaskFilters(initialTaskFilters)
     setAppliedTaskFilters(initialTaskFilters)
     setTaskPage(1)
@@ -2241,20 +2857,216 @@ function App() {
   ]
   const settingsTaskObligationOptions = Array.from(
     new Set(
-      tasksRows
-        .map((task) => task.subject.split(' - ')[0]?.trim())
-        .filter((value) => value && value.length > 0),
+      [
+        ...taskBlueprints.map((template) => String(template.obligation || '').trim()),
+        ...tasksRows.map((task) => task.subject.split(' - ')[0]?.trim()),
+      ].filter((value) => value && value.length > 0),
     ),
   )
   const settingsTaskClients = clients.filter(
     (client) => settingsTaskForm.includeDisabledClients || client.status !== 'Inativo',
   )
+  const clientTaxationOptions = Array.from(
+    new Set(clients.map((client) => (client.tributacao || '').trim()).filter(Boolean)),
+  )
+  const settingsTaskTaxationOptions = (clientTaxationOptions.length
+    ? clientTaxationOptions
+    : taxOptions
+  ).filter(Boolean)
+  const selectedSettingsTaskTaxations = Array.isArray(settingsTaskForm.tributacaoScopes)
+    ? settingsTaskForm.tributacaoScopes
+    : settingsTaskForm.tributacaoScope
+      ? [settingsTaskForm.tributacaoScope]
+      : []
   const settingsOwnerOptions = Array.from(
     new Set(users.map((user) => user.nome).concat(tasksRows.map((task) => task.owner))),
   ).filter(Boolean)
   const settingsCompetencePreview = getCompetenceFromDate(
     settingsTaskForm.actionDate,
     settingsTaskForm.competenceMode,
+  )
+  const taskBlueprintRows = taskBlueprints.map((template) => ({
+    ...template,
+    ufLabel: template.ufScope || 'Todos',
+    tributacaoLabel: (
+      Array.isArray(template.tributacaoScopes)
+        ? template.tributacaoScopes
+        : template.tributacaoScope
+          ? [template.tributacaoScope]
+          : []
+    )
+      .filter(Boolean)
+      .join(', ') || 'Todas',
+    actionDateBr: parseIsoDateToBr(template.actionDate),
+    metaDateBr: parseIsoDateToBr(template.metaDate),
+    dueDateBr: parseIsoDateToBr(template.dueDate),
+    competencePreview: getCompetenceFromDate(template.actionDate, template.competenceMode),
+  }))
+  const taskBlueprintDateFilterOptions = ['Cadastro', 'Ação', 'Meta', 'Vencimento']
+  const taskBlueprintObligationOptions = [
+    'Todos',
+    ...Array.from(
+      new Set(taskBlueprintRows.map((row) => String(row.subject || row.obligation || '').trim()).filter(Boolean)),
+    ),
+  ]
+  const taskBlueprintUfOptions = [
+    'Todos',
+    ...Array.from(new Set(taskBlueprintRows.map((row) => String(row.ufLabel || '').trim()).filter(Boolean))),
+  ]
+  const taskBlueprintTaxationOptions = [
+    'Todos',
+    ...Array.from(
+      new Set(
+        taskBlueprintRows.flatMap((row) =>
+          (
+            Array.isArray(row.tributacaoScopes)
+              ? row.tributacaoScopes
+              : row.tributacaoScope
+                ? [row.tributacaoScope]
+                : []
+          )
+            .map((item) => String(item || '').trim())
+            .filter(Boolean),
+        ),
+      ),
+    ),
+  ]
+  const taskBlueprintInstallmentOptions = [
+    'Todos',
+    ...Array.from(new Set(taskBlueprintRows.map((row) => String(row.installments || '')).filter(Boolean))),
+  ]
+  const taskBlueprintCompetenceOptions = [
+    'Todos',
+    ...Array.from(new Set(taskBlueprintRows.map((row) => row.competencePreview).filter(Boolean))),
+  ]
+  const getTaskBlueprintDateIso = (row, dateBy) => {
+    if (dateBy === 'Ação') return row.actionDate || ''
+    if (dateBy === 'Meta') return row.metaDate || ''
+    if (dateBy === 'Vencimento') return row.dueDate || ''
+    const createdBr = String(row.createdAt || '').split(',')[0]?.trim()
+    return parseBrDateToIso(createdBr)
+  }
+  const filteredTaskBlueprintRows = taskBlueprintRows.filter((row) => {
+    const obligationLabel = String(row.subject || row.obligation || '').trim()
+    const ufLabel = String(row.ufLabel || '').trim()
+    const rowTaxations = (
+      Array.isArray(row.tributacaoScopes)
+        ? row.tributacaoScopes
+        : row.tributacaoScope
+          ? [row.tributacaoScope]
+          : []
+    )
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    const installments = String(row.installments || '')
+    const competence = row.competencePreview || ''
+    const matchesObligation =
+      appliedTaskBlueprintFilters.obligation === 'Todos' ||
+      obligationLabel === appliedTaskBlueprintFilters.obligation
+    const matchesUf =
+      appliedTaskBlueprintFilters.uf === 'Todos' || ufLabel === appliedTaskBlueprintFilters.uf
+    const matchesTaxation =
+      appliedTaskBlueprintFilters.tributacao === 'Todos' ||
+      rowTaxations.includes(appliedTaskBlueprintFilters.tributacao)
+    const matchesInstallments =
+      appliedTaskBlueprintFilters.installments === 'Todos' ||
+      installments === appliedTaskBlueprintFilters.installments
+    const matchesCompetence =
+      appliedTaskBlueprintFilters.competence === 'Todos' ||
+      competence === appliedTaskBlueprintFilters.competence
+
+    const rowDateIso = getTaskBlueprintDateIso(row, appliedTaskBlueprintFilters.dateBy)
+    const matchesStartDate =
+      !appliedTaskBlueprintFilters.startDate ||
+      (rowDateIso && rowDateIso >= appliedTaskBlueprintFilters.startDate)
+    const matchesEndDate =
+      !appliedTaskBlueprintFilters.endDate ||
+      (rowDateIso && rowDateIso <= appliedTaskBlueprintFilters.endDate)
+
+    const query = appliedTaskBlueprintFilters.query.trim().toLowerCase()
+    const searchableText = [
+      obligationLabel,
+      ufLabel,
+      row.tributacaoLabel,
+      installments,
+      competence,
+      row.actionDateBr,
+      row.metaDateBr,
+      row.dueDateBr,
+      row.createdAt,
+    ]
+      .join(' ')
+      .toLowerCase()
+    const matchesQuery = !query || searchableText.includes(query)
+
+    return (
+      matchesObligation &&
+      matchesUf &&
+      matchesTaxation &&
+      matchesInstallments &&
+      matchesCompetence &&
+      matchesStartDate &&
+      matchesEndDate &&
+      matchesQuery
+    )
+  })
+  const taskBlueprintsPanel = (
+    <section className="settings-task-blueprints">
+      <div className="settings-task-blueprints-head">
+        <div>
+          <h6>Tarefas Cadastradas</h6>
+          <p>Lista de cadastros para acompanhar o que já foi configurado.</p>
+        </div>
+        <span>{filteredTaskBlueprintRows.length} registro(s)</span>
+      </div>
+      <div className="settings-task-blueprints-table">
+        <div className="settings-task-blueprints-grid settings-task-blueprints-grid-head">
+          <span>Obrigação</span>
+          <span>UF</span>
+          <span>Tributação</span>
+          <span>Parcelas</span>
+          <span>Competência</span>
+          <span>Ação</span>
+          <span>Meta</span>
+          <span>Vencimento</span>
+          <span>Cadastro</span>
+          <span>Ações</span>
+        </div>
+        <div className="settings-task-blueprints-body">
+          {filteredTaskBlueprintRows.length ? (
+            filteredTaskBlueprintRows.map((row) => (
+              <div className="settings-task-blueprints-grid" key={row.id}>
+                <span title={row.subject || row.obligation}>{row.subject || row.obligation}</span>
+                <span title={row.ufLabel}>{row.ufLabel}</span>
+                <span title={row.tributacaoLabel}>{row.tributacaoLabel}</span>
+                <span title={String(row.installments)}>{row.installments}</span>
+                <span title={row.competencePreview}>{row.competencePreview}</span>
+                <span title={row.actionDateBr}>{row.actionDateBr}</span>
+                <span title={row.metaDateBr}>{row.metaDateBr}</span>
+                <span title={row.dueDateBr}>{row.dueDateBr}</span>
+                <span title={row.createdAt}>{row.createdAt}</span>
+                <span className="settings-task-blueprints-actions">
+                  <button type="button" className="link-btn" onClick={() => editTaskBlueprint(row)}>
+                    Editar
+                  </button>
+                  <button
+                    type="button"
+                    className="link-btn danger"
+                    onClick={() => deleteTaskBlueprint(row.id)}
+                  >
+                    Excluir
+                  </button>
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="settings-task-blueprints-empty">
+              Nenhuma tarefa cadastrada encontrada para os filtros informados.
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
   )
   const currentMonthPrefix = (() => {
     const now = new Date()
@@ -2353,22 +3165,19 @@ function App() {
   })
 
   const hasTaskPeriodFilter = Boolean(appliedTaskFilters.startDate || appliedTaskFilters.endDate)
-  const rowsVisibleInTaskPanel =
-    screen === 'tasks' && !hasTaskPeriodFilter
-      ? filteredReportRows.filter(
-          (row) =>
-            row.reportSource !== 'task' ||
-            !row.generatedBySettings ||
-            parseBrDateToIso(getTaggedReportDate(row.dates, 'A')).startsWith(currentMonthPrefix),
-        )
-      : filteredReportRows
+  const rowsVisibleInTaskPanel = hasTaskPeriodFilter
+    ? filteredReportRows
+    : filteredReportRows.filter((row) => {
+        const rowDateIso = parseBrDateToIso(getTaskDateBy(row, appliedTaskFilters.dateBy))
+        return Boolean(rowDateIso && rowDateIso.startsWith(currentMonthPrefix))
+      })
 
   const taskExportRows = rowsVisibleInTaskPanel.map((row) => {
     const displayStatus = getTaskDisplayStatus(row)
     return {
       No: row.id,
       Status: displayStatus.status,
-      Departamento: row.dept,
+      Departamento: getDepartmentLabel(row.dept),
       Nome: row.subject,
       Competência: formatCompetenceValue(row.competence) || '',
       Cliente: `${row.client} ${row.cnpj}`,
@@ -2649,10 +3458,102 @@ function App() {
   }
 
   const selectedGroups = Array.isArray(clientForm.grupos) ? clientForm.grupos : []
+  const selectedChecklist = Array.isArray(clientForm.checklist) ? clientForm.checklist : []
   const selectedTax = clientForm.tributacao || ''
   const isReadOnly = clientMode === 'view'
   const bulkSelectedGroups = Array.isArray(bulkForm.grupos) ? bulkForm.grupos : []
   const bulkSelectedTax = bulkForm.tributacao || ''
+  const clientStatusFilterOptions = [
+    'Todos',
+    ...Array.from(new Set(clients.map((client) => String(client.status || '').trim()).filter(Boolean))),
+  ]
+  const clientGroupFilterOptions = [
+    'Todos',
+    ...Array.from(
+      new Set(
+        clients.flatMap((client) =>
+          (Array.isArray(client.grupos) ? client.grupos : [])
+            .map((group) => String(group || '').trim())
+            .filter(Boolean),
+        ),
+      ),
+    ),
+  ]
+  const clientVisibilityFilterOptions = [
+    'Todos',
+    ...Array.from(new Set(clients.map((client) => String(client.visibilidade || '').trim()).filter(Boolean))),
+  ]
+  const clientUfFilterOptions = [
+    'Todos',
+    ...Array.from(new Set(clients.map((client) => String(client.uf || '').trim().toUpperCase()).filter(Boolean))),
+  ]
+  const clientTaxationFilterOptions = [
+    'Todos',
+    ...Array.from(new Set(clients.map((client) => String(client.tributacao || '').trim()).filter(Boolean))),
+  ]
+  const clientDocTypeFilterOptions = [
+    'Todos',
+    ...Array.from(new Set(clients.map((client) => String(client.docType || '').trim()).filter(Boolean))),
+  ]
+  const filteredClients = clients.filter((client) => {
+    const matchesStatus =
+      appliedClientTableFilters.status === 'Todos' || client.status === appliedClientTableFilters.status
+    const matchesGroup =
+      appliedClientTableFilters.grupo === 'Todos' ||
+      (Array.isArray(client.grupos) ? client.grupos : []).includes(appliedClientTableFilters.grupo)
+    const matchesVisibility =
+      appliedClientTableFilters.visibilidade === 'Todos' ||
+      client.visibilidade === appliedClientTableFilters.visibilidade
+    const matchesUf =
+      appliedClientTableFilters.uf === 'Todos' ||
+      String(client.uf || '').trim().toUpperCase() === appliedClientTableFilters.uf
+    const matchesTaxation =
+      appliedClientTableFilters.tributacao === 'Todos' ||
+      String(client.tributacao || '').trim() === appliedClientTableFilters.tributacao
+    const matchesDocType =
+      appliedClientTableFilters.docType === 'Todos' ||
+      String(client.docType || '').trim() === appliedClientTableFilters.docType
+
+    const query = appliedClientTableFilters.query.trim().toLowerCase()
+    const searchableText = [
+      client.nome,
+      client.apelido,
+      client.docType,
+      client.inscricao,
+      client.status,
+      client.contato,
+      client.telefone,
+      client.email,
+      Array.isArray(client.grupos) ? client.grupos.join(' ') : '',
+      client.visibilidade,
+      client.uf,
+      client.tributacao,
+    ]
+      .join(' ')
+      .toLowerCase()
+    const matchesQuery = !query || searchableText.includes(query)
+
+    return (
+      matchesStatus &&
+      matchesGroup &&
+      matchesVisibility &&
+      matchesUf &&
+      matchesTaxation &&
+      matchesDocType &&
+      matchesQuery
+    )
+  })
+  const clientTaskGenerateAvailableBlueprints = clientTaskGenerateClient
+    ? getMatchingTaskBlueprintsForClient(clientTaskGenerateClient)
+    : []
+  const clientTaskGenerateSelectedIds = Array.isArray(clientTaskGenerateForm.blueprintIds)
+    ? clientTaskGenerateForm.blueprintIds
+    : []
+  const clientTaskGenerateAllSelected =
+    clientTaskGenerateAvailableBlueprints.length > 0 &&
+    clientTaskGenerateAvailableBlueprints.every((blueprint) =>
+      clientTaskGenerateSelectedIds.includes(blueprint.id),
+    )
   const currentMonthLabel = getCompetenceFromDate(getTodayIsoLocal(), 'Mesmo mês')
   const todayIso = getTodayIsoLocal()
   const getEmptyProgressBucket = () => ({ notStarted: 0, doing: 0, pending: 0, review: 0 })
@@ -3650,165 +4551,343 @@ function App() {
                     >
                       PDF
                     </button>
-                    <button type="button" className="chip tiny" onClick={applyTaskFilters}>
+                    <button
+                      type="button"
+                      className="chip tiny"
+                      onClick={screen === 'tasks' ? applyTaskBlueprintFilters : applyTaskFilters}
+                    >
                       Atualizar
                     </button>
                   </div>
                 </header>
 
-                <div className="filters task-filters-grid">
-                  <label className="task-filter-field">
-                    <span>Tipos de tarefas</span>
-                    <select
-                      value={taskFilters.taskType}
-                      onChange={(event) => handleTaskFilterChange('taskType', event.target.value)}
-                    >
-                      {taskTypeOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Assunto</span>
-                    <select
-                      value={taskFilters.subject}
-                      onChange={(event) => handleTaskFilterChange('subject', event.target.value)}
-                    >
-                      {taskSubjectOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Clientes</span>
-                    <select
-                      value={taskFilters.client}
-                      onChange={(event) => handleTaskFilterChange('client', event.target.value)}
-                    >
-                      {taskClientOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Departamento</span>
-                    <select
-                      value={taskFilters.department}
-                      onChange={(event) => handleTaskFilterChange('department', event.target.value)}
-                    >
-                      {taskDepartmentOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Status</span>
-                    <select
-                      value={taskFilters.status}
-                      onChange={(event) => handleTaskFilterChange('status', event.target.value)}
-                    >
-                      {taskStatusOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Status do Cliente</span>
-                    <select
-                      value={taskFilters.clientStatus}
-                      onChange={(event) => handleTaskFilterChange('clientStatus', event.target.value)}
-                    >
-                      {taskClientStatusOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Responsável</span>
-                    <select
-                      value={taskFilters.owner}
-                      onChange={(event) => handleTaskFilterChange('owner', event.target.value)}
-                    >
-                      {taskOwnerOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Por Data</span>
-                    <select
-                      value={taskFilters.dateBy}
-                      onChange={(event) => handleTaskFilterChange('dateBy', event.target.value)}
-                    >
-                      {taskDateFilterOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Período Inicial</span>
-                    <input
-                      type="date"
-                      value={taskFilters.startDate}
-                      onChange={(event) => handleTaskFilterChange('startDate', event.target.value)}
-                    />
-                  </label>
-                  <label className="task-filter-field">
-                    <span>Período Final</span>
-                    <input
-                      type="date"
-                      value={taskFilters.endDate}
-                      onChange={(event) => handleTaskFilterChange('endDate', event.target.value)}
-                    />
-                  </label>
-                  <button type="button" className="chip primary small" onClick={applyTaskFilters}>
-                    Aplicar
-                  </button>
-                  <button type="button" className="chip small" onClick={clearTaskFilters}>
-                    Limpar
-                  </button>
-                </div>
+                {screen === 'tasks' ? (
+                  <>
+                    <div className="filters task-filters-grid">
+                      <label className="task-filter-field">
+                        <span>Obrigação</span>
+                        <select
+                          value={taskBlueprintFilters.obligation}
+                          onChange={(event) =>
+                            handleTaskBlueprintFilterChange('obligation', event.target.value)
+                          }
+                        >
+                          {taskBlueprintObligationOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>UF</span>
+                        <select
+                          value={taskBlueprintFilters.uf}
+                          onChange={(event) => handleTaskBlueprintFilterChange('uf', event.target.value)}
+                        >
+                          {taskBlueprintUfOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Tributação</span>
+                        <select
+                          value={taskBlueprintFilters.tributacao}
+                          onChange={(event) =>
+                            handleTaskBlueprintFilterChange('tributacao', event.target.value)
+                          }
+                        >
+                          {taskBlueprintTaxationOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Parcelas</span>
+                        <select
+                          value={taskBlueprintFilters.installments}
+                          onChange={(event) =>
+                            handleTaskBlueprintFilterChange('installments', event.target.value)
+                          }
+                        >
+                          {taskBlueprintInstallmentOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Competência</span>
+                        <select
+                          value={taskBlueprintFilters.competence}
+                          onChange={(event) =>
+                            handleTaskBlueprintFilterChange('competence', event.target.value)
+                          }
+                        >
+                          {taskBlueprintCompetenceOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Por Data</span>
+                        <select
+                          value={taskBlueprintFilters.dateBy}
+                          onChange={(event) => handleTaskBlueprintFilterChange('dateBy', event.target.value)}
+                        >
+                          {taskBlueprintDateFilterOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Período Inicial</span>
+                        <input
+                          type="date"
+                          value={taskBlueprintFilters.startDate}
+                          onChange={(event) =>
+                            handleTaskBlueprintFilterChange('startDate', event.target.value)
+                          }
+                        />
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Período Final</span>
+                        <input
+                          type="date"
+                          value={taskBlueprintFilters.endDate}
+                          onChange={(event) =>
+                            handleTaskBlueprintFilterChange('endDate', event.target.value)
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="chip primary small"
+                        onClick={applyTaskBlueprintFilters}
+                      >
+                        Aplicar
+                      </button>
+                      <button type="button" className="chip small" onClick={clearTaskBlueprintFilters}>
+                        Limpar
+                      </button>
+                    </div>
 
-                <div className="report-search">
-                  <input
-                    type="text"
-                    placeholder="O que você está procurando?"
-                    value={taskFilters.query}
-                    onChange={(event) => handleTaskFilterChange('query', event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        applyTaskFilters()
-                      }
-                    }}
-                  />
-                  <div className="report-icons">
-                    <button type="button" className="icon-btn" aria-label="Pesquisar" onClick={applyTaskFilters}>
-                      Buscar
-                    </button>
-                    <button type="button" className="icon-btn" aria-label="Limpar filtros" onClick={clearTaskFilters}>
-                      Limpar
-                    </button>
-                  </div>
-                </div>
+                    <div className="report-search">
+                      <input
+                        type="text"
+                        placeholder="Buscar por obrigação, UF, tributação, competência..."
+                        value={taskBlueprintFilters.query}
+                        onChange={(event) =>
+                          handleTaskBlueprintFilterChange('query', event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            applyTaskBlueprintFilters()
+                          }
+                        }}
+                      />
+                      <div className="report-icons">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label="Pesquisar"
+                          onClick={applyTaskBlueprintFilters}
+                        >
+                          Buscar
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label="Limpar filtros"
+                          onClick={clearTaskBlueprintFilters}
+                        >
+                          Limpar
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="filters task-filters-grid">
+                      <label className="task-filter-field">
+                        <span>Tipos de tarefas</span>
+                        <select
+                          value={taskFilters.taskType}
+                          onChange={(event) => handleTaskFilterChange('taskType', event.target.value)}
+                        >
+                          {taskTypeOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Assunto</span>
+                        <select
+                          value={taskFilters.subject}
+                          onChange={(event) => handleTaskFilterChange('subject', event.target.value)}
+                        >
+                          {taskSubjectOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Clientes</span>
+                        <select
+                          value={taskFilters.client}
+                          onChange={(event) => handleTaskFilterChange('client', event.target.value)}
+                        >
+                          {taskClientOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Departamento</span>
+                        <select
+                          value={taskFilters.department}
+                          onChange={(event) => handleTaskFilterChange('department', event.target.value)}
+                        >
+                          {taskDepartmentOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Status</span>
+                        <select
+                          value={taskFilters.status}
+                          onChange={(event) => handleTaskFilterChange('status', event.target.value)}
+                        >
+                          {taskStatusOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Status do Cliente</span>
+                        <select
+                          value={taskFilters.clientStatus}
+                          onChange={(event) => handleTaskFilterChange('clientStatus', event.target.value)}
+                        >
+                          {taskClientStatusOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Responsável</span>
+                        <select
+                          value={taskFilters.owner}
+                          onChange={(event) => handleTaskFilterChange('owner', event.target.value)}
+                        >
+                          {taskOwnerOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Por Data</span>
+                        <select
+                          value={taskFilters.dateBy}
+                          onChange={(event) => handleTaskFilterChange('dateBy', event.target.value)}
+                        >
+                          {taskDateFilterOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Período Inicial</span>
+                        <input
+                          type="date"
+                          value={taskFilters.startDate}
+                          onChange={(event) => handleTaskFilterChange('startDate', event.target.value)}
+                        />
+                      </label>
+                      <label className="task-filter-field">
+                        <span>Período Final</span>
+                        <input
+                          type="date"
+                          value={taskFilters.endDate}
+                          onChange={(event) => handleTaskFilterChange('endDate', event.target.value)}
+                        />
+                      </label>
+                      <button type="button" className="chip primary small" onClick={applyTaskFilters}>
+                        Aplicar
+                      </button>
+                      <button type="button" className="chip small" onClick={clearTaskFilters}>
+                        Limpar
+                      </button>
+                    </div>
 
-                <div className="report-table">
+                    <div className="report-search">
+                      <input
+                        type="text"
+                        placeholder="O que você está procurando?"
+                        value={taskFilters.query}
+                        onChange={(event) => handleTaskFilterChange('query', event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            applyTaskFilters()
+                          }
+                        }}
+                      />
+                      <div className="report-icons">
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label="Pesquisar"
+                          onClick={applyTaskFilters}
+                        >
+                          Buscar
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label="Limpar filtros"
+                          onClick={clearTaskFilters}
+                        >
+                          Limpar
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {screen === 'tasks' && taskBlueprintRows.length ? taskBlueprintsPanel : null}
+
+                {screen === 'reports' ? (
+                  <>
+                    <div className="report-table">
                   <div className="report-head">
                     <span>No</span>
                     <span>Status</span>
@@ -3846,7 +4925,7 @@ function App() {
                             <span className={`status-pill ${displayStatus.tag}`} title={displayStatus.status}>
                               {displayStatus.status}
                             </span>
-                            <span title={row.dept}>{row.dept}</span>
+                            <span title={getDepartmentLabel(row.dept)}>{getDepartmentLabel(row.dept)}</span>
                             <span title={row.subject}>{row.subject}</span>
                             <span title={formatCompetenceValue(row.competence) || '-'}>
                               {formatCompetenceValue(row.competence) || '-'}
@@ -3880,9 +4959,9 @@ function App() {
                       </div>
                     )}
                   </div>
-                </div>
+                    </div>
 
-                <footer className="report-footer">
+                    <footer className="report-footer">
                   <span>Itens por página</span>
                   <select
                     className="select"
@@ -3917,7 +4996,9 @@ function App() {
                       {'>'}
                     </button>
                   </div>
-                </footer>
+                    </footer>
+                  </>
+                ) : null}
               </div>
             ) : screen === 'task-detail' ? (
               <div className="task-detail-view">
@@ -4371,20 +5452,95 @@ function App() {
                         </label>
                         <label className="settings-field">
                           <span>
-                            Responsável <strong className="req">*</strong>
+                            Departamento <strong className="req">*</strong>
                           </span>
-                          <input
-                            list="settings-owner-options"
-                            type="text"
-                            value={settingsTaskForm.owner}
-                            onChange={(event) => handleSettingsTaskChange('owner', event.target.value)}
-                            placeholder="Nome do responsável"
-                          />
-                          <datalist id="settings-owner-options">
-                            {settingsOwnerOptions.map((option) => (
-                              <option key={option} value={option} />
+                          <select
+                            value={settingsTaskForm.departmentScope}
+                            onChange={(event) =>
+                              handleSettingsTaskChange('departmentScope', event.target.value)
+                            }
+                          >
+                            <option value="" disabled>
+                              Selecione...
+                            </option>
+                            {groupOptions.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
                             ))}
-                          </datalist>
+                          </select>
+                        </label>
+                      </div>
+
+                      <div className="settings-form-grid settings-task-scope">
+                        <label className="settings-field">
+                          <span>UF</span>
+                          <select
+                            value={settingsTaskForm.ufScope}
+                            onChange={(event) => handleSettingsTaskChange('ufScope', event.target.value)}
+                          >
+                            {brazilUfOptions.map((uf) => (
+                              <option key={uf} value={uf}>
+                                {uf}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>Tributação</span>
+                          <div className="multi-select" ref={settingsTaskTaxRef}>
+                            <div
+                              className={`multi-trigger ${settingsTaskTaxOpen ? 'open' : ''}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => setSettingsTaskTaxOpen((prev) => !prev)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  setSettingsTaskTaxOpen((prev) => !prev)
+                                }
+                              }}
+                            >
+                              {selectedSettingsTaskTaxations.length ? (
+                                <div className="multi-tags">
+                                  {selectedSettingsTaskTaxations.map((taxation) => (
+                                    <span className="tag-pill" key={taxation}>
+                                      {taxation}
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          toggleSettingsTaskTaxation(taxation)
+                                        }}
+                                      >
+                                        ×
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="placeholder">Selecione...</span>
+                              )}
+                              <span className="caret" />
+                            </div>
+                            {settingsTaskTaxOpen ? (
+                              <div className="multi-menu">
+                                {settingsTaskTaxationOptions.map((option) => (
+                                  <button
+                                    type="button"
+                                    className={`multi-option ${
+                                      selectedSettingsTaskTaxations.includes(option) ? 'selected' : ''
+                                    }`}
+                                    key={option}
+                                    onClick={() => toggleSettingsTaskTaxation(option)}
+                                  >
+                                    <span className="check" />
+                                    {option}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                         </label>
                       </div>
 
@@ -4392,40 +5548,17 @@ function App() {
                         Competência inicial prevista: <strong>{settingsCompetencePreview || '--/----'}</strong>
                       </p>
 
-                      <div className="settings-clients-box">
-                        <div className="settings-clients-top">
-                          <span>
-                            Cliente(s) <strong className="req">*</strong>
-                          </span>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={settingsTaskForm.includeDisabledClients}
-                              onChange={(event) =>
-                                handleSettingsTaskChange('includeDisabledClients', event.target.checked)
-                              }
-                            />
-                            Exibir clientes desativados
-                          </label>
-                        </div>
-                        <div className="settings-clients-list">
-                          {settingsTaskClients.length ? (
-                            settingsTaskClients.map((client) => (
-                              <label key={client.id} className="settings-client-item">
-                                <input
-                                  type="checkbox"
-                                  checked={settingsTaskForm.clientIds.includes(client.id)}
-                                  onChange={() => toggleSettingsTaskClient(client.id)}
-                                />
-                                <span>
-                                  {client.nome} ({client.status})
-                                </span>
-                              </label>
-                            ))
-                          ) : (
-                            <p>Nenhum cliente disponível para seleção.</p>
-                          )}
-                        </div>
+                      <div className="settings-inline-toggle">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={settingsTaskForm.includeDisabledClients}
+                            onChange={(event) =>
+                              handleSettingsTaskChange('includeDisabledClients', event.target.checked)
+                            }
+                          />
+                          Exibir clientes desativados
+                        </label>
                       </div>
 
                       <label className="settings-field">
@@ -4504,14 +5637,142 @@ function App() {
                   </div>
                 </header>
 
+                <div className="filters task-filters-grid">
+                  <label className="task-filter-field">
+                    <span>Status</span>
+                    <select
+                      value={clientTableFilters.status}
+                      onChange={(event) => handleClientTableFilterChange('status', event.target.value)}
+                    >
+                      {clientStatusFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Grupo</span>
+                    <select
+                      value={clientTableFilters.grupo}
+                      onChange={(event) => handleClientTableFilterChange('grupo', event.target.value)}
+                    >
+                      {clientGroupFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Visibilidade</span>
+                    <select
+                      value={clientTableFilters.visibilidade}
+                      onChange={(event) =>
+                        handleClientTableFilterChange('visibilidade', event.target.value)
+                      }
+                    >
+                      {clientVisibilityFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>UF</span>
+                    <select
+                      value={clientTableFilters.uf}
+                      onChange={(event) => handleClientTableFilterChange('uf', event.target.value)}
+                    >
+                      {clientUfFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Tributação</span>
+                    <select
+                      value={clientTableFilters.tributacao}
+                      onChange={(event) =>
+                        handleClientTableFilterChange('tributacao', event.target.value)
+                      }
+                    >
+                      {clientTaxationFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="task-filter-field">
+                    <span>Documento</span>
+                    <select
+                      value={clientTableFilters.docType}
+                      onChange={(event) => handleClientTableFilterChange('docType', event.target.value)}
+                    >
+                      {clientDocTypeFilterOptions.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" className="chip primary small" onClick={applyClientTableFilters}>
+                    Aplicar
+                  </button>
+                  <button type="button" className="chip small" onClick={clearClientTableFilters}>
+                    Limpar
+                  </button>
+                </div>
+
+                <div className="report-search">
+                  <input
+                    type="text"
+                    placeholder="Buscar por nome, apelido, documento, contato, telefone, e-mail..."
+                    value={clientTableFilters.query}
+                    onChange={(event) => handleClientTableFilterChange('query', event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        applyClientTableFilters()
+                      }
+                    }}
+                  />
+                  <div className="report-icons">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Pesquisar"
+                      onClick={applyClientTableFilters}
+                    >
+                      Buscar
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Limpar filtros"
+                      onClick={clearClientTableFilters}
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+
                 <div className="client-table card">
                   <div className="client-select-all">
                     <label>
                       <input
                         type="checkbox"
                         ref={selectAllRef}
-                        checked={clients.length > 0 && selectedClientIds.length === clients.length}
+                        checked={
+                          filteredClients.length > 0 &&
+                          filteredClients.every((client) => selectedClientIds.includes(client.id))
+                        }
                         onChange={toggleSelectAll}
+                        disabled={!filteredClients.length}
                       />
                       Selecionar todos
                     </label>
@@ -4548,7 +5809,8 @@ function App() {
                     <span>Ações</span>
                   </div>
                   <div className="client-rows">
-                    {clients.map((client) => (
+                    {filteredClients.length ? (
+                      filteredClients.map((client) => (
                       <div className="client-row" key={client.id}>
                         <span>
                           <input
@@ -4576,6 +5838,17 @@ function App() {
                         </span>
                         <span>{client.visibilidade}</span>
                         <span className="row-actions">
+                          <button
+                            type="button"
+                            className="link-btn icon generate"
+                            onClick={() => generateTasksForClient(client)}
+                            aria-label="Gerar tarefas"
+                            title="Gerar tarefas"
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" />
+                            </svg>
+                          </button>
                           <button
                             type="button"
                             className="link-btn eye"
@@ -4615,7 +5888,22 @@ function App() {
                           </button>
                         </span>
                       </div>
-                    ))}
+                      ))
+                    ) : (
+                      <div className="client-row client-row-empty">
+                        <span>#</span>
+                        <span>Sem clientes para os filtros aplicados</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                        <span>-</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4788,20 +6076,95 @@ function App() {
                     </label>
                     <label className="settings-field">
                       <span>
-                        Responsável <strong className="req">*</strong>
+                        Departamento <strong className="req">*</strong>
                       </span>
-                      <input
-                        list="settings-owner-options-modal"
-                        type="text"
-                        value={settingsTaskForm.owner}
-                        onChange={(event) => handleSettingsTaskChange('owner', event.target.value)}
-                        placeholder="Nome do responsável"
-                      />
-                      <datalist id="settings-owner-options-modal">
-                        {settingsOwnerOptions.map((option) => (
-                          <option key={option} value={option} />
+                      <select
+                        value={settingsTaskForm.departmentScope}
+                        onChange={(event) =>
+                          handleSettingsTaskChange('departmentScope', event.target.value)
+                        }
+                      >
+                        <option value="" disabled>
+                          Selecione...
+                        </option>
+                        {groupOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
                         ))}
-                      </datalist>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="settings-form-grid settings-task-scope">
+                    <label className="settings-field">
+                      <span>UF</span>
+                      <select
+                        value={settingsTaskForm.ufScope}
+                        onChange={(event) => handleSettingsTaskChange('ufScope', event.target.value)}
+                      >
+                        {brazilUfOptions.map((uf) => (
+                          <option key={uf} value={uf}>
+                            {uf}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>Tributação</span>
+                      <div className="multi-select" ref={settingsTaskTaxRef}>
+                        <div
+                          className={`multi-trigger ${settingsTaskTaxOpen ? 'open' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setSettingsTaskTaxOpen((prev) => !prev)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              setSettingsTaskTaxOpen((prev) => !prev)
+                            }
+                          }}
+                        >
+                          {selectedSettingsTaskTaxations.length ? (
+                            <div className="multi-tags">
+                              {selectedSettingsTaskTaxations.map((taxation) => (
+                                <span className="tag-pill" key={taxation}>
+                                  {taxation}
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      toggleSettingsTaskTaxation(taxation)
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="placeholder">Selecione...</span>
+                          )}
+                          <span className="caret" />
+                        </div>
+                        {settingsTaskTaxOpen ? (
+                          <div className="multi-menu">
+                            {settingsTaskTaxationOptions.map((option) => (
+                              <button
+                                type="button"
+                                className={`multi-option ${
+                                  selectedSettingsTaskTaxations.includes(option) ? 'selected' : ''
+                                }`}
+                                key={option}
+                                onClick={() => toggleSettingsTaskTaxation(option)}
+                              >
+                                <span className="check" />
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     </label>
                   </div>
 
@@ -4809,40 +6172,17 @@ function App() {
                     Competência inicial prevista: <strong>{settingsCompetencePreview || '--/----'}</strong>
                   </p>
 
-                  <div className="settings-clients-box">
-                    <div className="settings-clients-top">
-                      <span>
-                        Cliente(s) <strong className="req">*</strong>
-                      </span>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={settingsTaskForm.includeDisabledClients}
-                          onChange={(event) =>
-                            handleSettingsTaskChange('includeDisabledClients', event.target.checked)
-                          }
-                        />
-                        Exibir clientes desativados
-                      </label>
-                    </div>
-                    <div className="settings-clients-list">
-                      {settingsTaskClients.length ? (
-                        settingsTaskClients.map((client) => (
-                          <label key={client.id} className="settings-client-item">
-                            <input
-                              type="checkbox"
-                              checked={settingsTaskForm.clientIds.includes(client.id)}
-                              onChange={() => toggleSettingsTaskClient(client.id)}
-                            />
-                            <span>
-                              {client.nome} ({client.status})
-                            </span>
-                          </label>
-                        ))
-                      ) : (
-                        <p>Nenhum cliente disponível para seleção.</p>
-                      )}
-                    </div>
+                  <div className="settings-inline-toggle">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={settingsTaskForm.includeDisabledClients}
+                        onChange={(event) =>
+                          handleSettingsTaskChange('includeDisabledClients', event.target.checked)
+                        }
+                      />
+                      Exibir clientes desativados
+                    </label>
                   </div>
 
                   <label className="settings-field">
@@ -5219,6 +6559,153 @@ function App() {
                   </div>
                 </form>
                 {solicitationFeedback ? <p className="settings-feedback">{solicitationFeedback}</p> : null}
+              </div>
+            </div>
+          ) : null}
+
+          {clientTaskGenerateOpen ? (
+            <div className="modal-backdrop" onClick={closeClientTaskGenerateModal}>
+              <div
+                className="modal-card wide client-task-generate-modal"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <header className="modal-header">
+                  <div>
+                    <h3>Gerar tarefas</h3>
+                    <p className="client-task-generate-subtitle">
+                      {clientTaskGenerateClient ? (
+                        <>
+                          Cliente: <strong>{clientTaskGenerateClient.nome}</strong>
+                          {clientTaskGenerateClient.uf ? ` • UF ${String(clientTaskGenerateClient.uf).toUpperCase()}` : ''}
+                          {clientTaskGenerateClient.tributacao
+                            ? ` • ${clientTaskGenerateClient.tributacao}`
+                            : ''}
+                        </>
+                      ) : (
+                        'Selecione o período e as tarefas que deseja gerar.'
+                      )}
+                    </p>
+                  </div>
+                  <button className="modal-close" type="button" onClick={closeClientTaskGenerateModal}>
+                    ×
+                  </button>
+                </header>
+
+                <form
+                  className="settings-task-form"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    confirmClientTaskGeneration()
+                  }}
+                >
+                  <div className="settings-form-grid client-task-generate-dates">
+                    <label className="settings-field">
+                      <span>
+                        Data inicial <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={clientTaskGenerateForm.startDate}
+                        onChange={(event) =>
+                          handleClientTaskGenerateFormChange('startDate', event.target.value)
+                        }
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Data final <strong className="req">*</strong>
+                      </span>
+                      <input
+                        type="date"
+                        value={clientTaskGenerateForm.endDate}
+                        onChange={(event) =>
+                          handleClientTaskGenerateFormChange('endDate', event.target.value)
+                        }
+                      />
+                    </label>
+                    <div className="client-task-generate-summary-card">
+                      <span>Tarefas selecionadas</span>
+                      <strong>{clientTaskGenerateSelectedIds.length}</strong>
+                      <small>
+                        {clientTaskGenerateAvailableBlueprints.length} compatível(is) para este cliente
+                      </small>
+                    </div>
+                  </div>
+
+                  <section className="client-task-generate-list-card">
+                    <div className="client-task-generate-list-head">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={clientTaskGenerateAllSelected}
+                          onChange={toggleClientTaskGenerateAllBlueprints}
+                          disabled={!clientTaskGenerateAvailableBlueprints.length}
+                        />
+                        Selecionar todas
+                      </label>
+                      <span>{clientTaskGenerateAvailableBlueprints.length} tarefa(s) disponível(is)</span>
+                    </div>
+
+                    <div className="client-task-generate-list">
+                      {clientTaskGenerateAvailableBlueprints.length ? (
+                        clientTaskGenerateAvailableBlueprints.map((blueprint) => {
+                          const blueprintTaxations = (
+                            Array.isArray(blueprint.tributacaoScopes)
+                              ? blueprint.tributacaoScopes
+                              : blueprint.tributacaoScope
+                                ? [blueprint.tributacaoScope]
+                                : []
+                          )
+                            .map((item) => String(item || '').trim())
+                            .filter(Boolean)
+                          return (
+                            <label className="client-task-generate-item" key={blueprint.id}>
+                              <input
+                                type="checkbox"
+                                checked={clientTaskGenerateSelectedIds.includes(blueprint.id)}
+                                onChange={() => toggleClientTaskGenerateBlueprint(blueprint.id)}
+                              />
+                              <div className="client-task-generate-item-content">
+                                <strong>{blueprint.subject || blueprint.obligation}</strong>
+                                <small>
+                                  {[
+                                    blueprint.departmentScope || 'Sem departamento',
+                                    blueprint.ufScope || 'Todos',
+                                    blueprintTaxations.length
+                                      ? blueprintTaxations.join(', ')
+                                      : 'Todas as tributações',
+                                    blueprint.competenceMode || 'Mesmo mês',
+                                  ].join(' • ')}
+                                </small>
+                              </div>
+                            </label>
+                          )
+                        })
+                      ) : (
+                        <p className="client-task-generate-empty">
+                          Nenhuma tarefa cadastrada compatível com UF, tributação e grupos do cliente.
+                        </p>
+                      )}
+                    </div>
+                  </section>
+
+                  {clientTaskGenerateFeedback ? (
+                    <p className="settings-feedback">{clientTaskGenerateFeedback}</p>
+                  ) : null}
+
+                  <div className="settings-actions-row">
+                    <button type="button" className="chip small" onClick={closeClientTaskGenerateModal}>
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="primary small"
+                      disabled={!clientTaskGenerateAvailableBlueprints.length}
+                    >
+                      Gerar mensalmente
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           ) : null}
@@ -5621,6 +7108,64 @@ function App() {
                                   setTaxOpen(false)
                                 }}
                               >
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <div className="field full">
+                      <label>Check-List</label>
+                      <div className="multi-select" ref={checklistRef}>
+                        <div
+                          className={`multi-trigger ${checklistOpen ? 'open' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setChecklistOpen((prev) => !prev)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              setChecklistOpen((prev) => !prev)
+                            }
+                          }}
+                        >
+                          {selectedChecklist.length ? (
+                            <div className="multi-tags">
+                              {selectedChecklist.map((item) => (
+                                <span className="tag-pill" key={item}>
+                                  {item}
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      toggleClientChecklist(item)
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="placeholder">Selecione...</span>
+                          )}
+                          <span className="caret" />
+                        </div>
+                        {checklistOpen ? (
+                          <div className="multi-menu">
+                            {clientChecklistOptions.map((option) => (
+                              <button
+                                type="button"
+                                className={`multi-option ${
+                                  selectedChecklist.includes(option) ? 'selected' : ''
+                                }`}
+                                key={option}
+                                onClick={() => toggleClientChecklist(option)}
+                              >
+                                <span className="check" />
                                 {option}
                               </button>
                             ))}

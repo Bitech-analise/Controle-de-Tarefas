@@ -1438,11 +1438,29 @@
 }
 
 .settings-task-rules {
-  grid-template-columns: 0.65fr 1fr 1fr;
+  grid-template-columns: 0.65fr 0.95fr 0.9fr;
+}
+
+.settings-task-scope {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .settings-task-notes {
   grid-template-columns: 1.3fr 0.7fr;
+}
+
+.settings-inline-toggle {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-inline-toggle label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .settings-field {
@@ -1494,6 +1512,226 @@
   border: 1px solid #c7e6ff;
   border-radius: 10px;
   padding: 8px 10px;
+}
+
+.client-task-generate-modal {
+  width: min(860px, 95vw);
+}
+
+.client-task-generate-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.client-task-generate-dates {
+  grid-template-columns: 1fr 1fr 0.9fr;
+  align-items: end;
+}
+
+.client-task-generate-summary-card {
+  border: 1px solid #d8dee7;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 10px 12px;
+  min-height: 42px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.client-task-generate-summary-card span {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.client-task-generate-summary-card strong {
+  font-size: 18px;
+  line-height: 1;
+  color: #0f172a;
+}
+
+.client-task-generate-summary-card small {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.client-task-generate-list-card {
+  border: 1px solid #d8dee7;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.client-task-generate-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5ebf2;
+  background: #f8fafc;
+}
+
+.client-task-generate-list-head label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.client-task-generate-list-head > span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.client-task-generate-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: grid;
+}
+
+.client-task-generate-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef2f7;
+  cursor: pointer;
+}
+
+.client-task-generate-item:last-child {
+  border-bottom: none;
+}
+
+.client-task-generate-item:hover {
+  background: #fafcff;
+}
+
+.client-task-generate-item input {
+  margin-top: 2px;
+}
+
+.client-task-generate-item-content {
+  display: grid;
+  gap: 4px;
+}
+
+.client-task-generate-item-content strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.client-task-generate-item-content small {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.client-task-generate-empty {
+  margin: 0;
+  padding: 14px 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.settings-task-blueprints {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.settings-task-blueprints-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.settings-task-blueprints-head h6 {
+  margin: 0;
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.settings-task-blueprints-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.settings-task-blueprints-head > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 92px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-task-blueprints-table {
+  border: 1px solid #d8dee7;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.settings-task-blueprints-body {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.settings-task-blueprints-grid {
+  display: grid;
+  grid-template-columns: 1.9fr 0.55fr 0.95fr 0.55fr 0.8fr 0.75fr 0.75fr 0.75fr 1fr 0.9fr;
+  gap: 8px;
+  padding: 10px 12px;
+  align-items: center;
+  font-size: 12px;
+  min-width: 1010px;
+}
+
+.settings-task-blueprints-grid-head {
+  background: #eef2f7;
+  color: #475569;
+  font-weight: 700;
+  border-bottom: 1px solid #d8dee7;
+}
+
+.settings-task-blueprints-grid:not(.settings-task-blueprints-grid-head) {
+  border-bottom: 1px solid #e5ebf2;
+}
+
+.settings-task-blueprints-grid:not(.settings-task-blueprints-grid-head):last-child {
+  border-bottom: none;
+}
+
+.settings-task-blueprints-grid span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-task-blueprints-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.settings-task-blueprints-empty {
+  margin: 0;
+  padding: 14px 12px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .settings-users-table {
@@ -1704,7 +1942,7 @@
   display: grid;
   grid-template-columns: 36px minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 0.55fr)
     minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 0.8fr)
-    minmax(0, 1fr);
+    minmax(0, 1.2fr);
   gap: 12px;
   align-items: start;
   justify-items: start;
@@ -1731,6 +1969,10 @@
 .client-row {
   border-bottom: 1px solid rgba(15, 21, 25, 0.06);
   font-variant-numeric: tabular-nums;
+}
+
+.client-row.client-row-empty {
+  color: var(--muted);
 }
 
 .client-row small {
@@ -1778,8 +2020,9 @@
 
 .row-actions {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   justify-self: start;
+  flex-wrap: wrap;
 }
 
 .link-btn {
@@ -1827,6 +2070,16 @@
 .link-btn.danger {
   color: #dc2626;
   border-color: rgba(220, 38, 38, 0.2);
+}
+
+.link-btn.generate {
+  color: #15803d;
+  border-color: rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.link-btn.generate:hover {
+  background: rgba(34, 197, 94, 0.14);
 }
 
 input:read-only {
@@ -2443,6 +2696,10 @@ select:disabled {
   gap: 6px;
 }
 
+.field.full {
+  grid-column: 1 / -1;
+}
+
 .field label {
   font-size: 12px;
   color: var(--muted);
@@ -2765,6 +3022,7 @@ select:disabled {
   }
 
   .settings-task-obligation,
+  .settings-task-scope,
   .settings-task-notes {
     grid-template-columns: 1fr;
   }
@@ -2850,6 +3108,10 @@ select:disabled {
   .settings-users-row {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .settings-task-blueprints-grid {
+    min-width: 920px;
   }
 
   .settings-users-actions {
