@@ -2302,7 +2302,7 @@ function App() {
     setTaskFilters(nextFilters)
     setAppliedTaskFilters(nextFilters)
     setTaskPage(1)
-    setScreen('tasks')
+    setScreen('reports')
   }
 
   const getResponsibleByClientAndDepartment = ({
