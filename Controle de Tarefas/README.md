@@ -1,19 +1,99 @@
-# React + Vite
+# Hive Tarefas - Multi Tenant + Super Admin
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Projeto com frontend React/Vite e backend Node/Express para operação em modo **multi-tenant** com **PostgreSQL**.
 
-Currently, two official plugins are available:
+## Arquitetura
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- `src/`: painel web atual (Vite + React)
+- `backend/`: API REST com autenticação JWT, Prisma e PostgreSQL
+- `docker-compose.yml`: ambiente de desenvolvimento
+- `docker-compose.prod.yml`: ambiente de produção para `docker stack deploy`
 
-## React Compiler
+## Backend (multi-tenant)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Modelos principais no banco:
 
-## Expanding the ESLint configuration
+- `Tenant`
+- `TenantUser` (roles: `SUPER_ADMIN`, `TENANT_ADMIN`, `TENANT_USER`)
+- `Client`
+- `Task`
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### Endpoints principais
 
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `GET /api/super-admin/dashboard`
+- `GET/POST/PATCH /api/super-admin/tenants`
+- `GET /api/super-admin/tenants/:tenantId/users`
+- `GET/POST/PATCH/DELETE /api/super-admin/tenants/:tenantId/clients`
+- `GET /api/tenant/summary`
+- `GET/POST /api/tenant/clients`
+- `GET /api/tenant/tasks`
 
-teste
+## Rodar em desenvolvimento (Docker Compose)
+
+1. Copiar variáveis da API:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+2. Subir ambiente:
+
+```bash
+docker compose up -d
+```
+
+3. Acessos:
+
+- Frontend: `http://localhost:5173`
+- API: `http://localhost:4000/api`
+- Healthcheck: `http://localhost:4000/api/health`
+
+### Usuários seed
+
+- Super Admin:
+  - Email: `admin@hive.com`
+  - Senha: `Admin123`
+- Admin Tenant padrão:
+  - Email: `tenant.admin@hive.com`
+  - Senha: `Tenant123`
+
+## Produção com Docker Stack (Swarm)
+
+1. Build e push das imagens:
+
+```bash
+docker build -t seu-registro/hive-tarefas-web:latest .
+docker build -t seu-registro/hive-tarefas-api:latest ./backend
+docker push seu-registro/hive-tarefas-web:latest
+docker push seu-registro/hive-tarefas-api:latest
+```
+
+2. Criar arquivo `.env.prod` baseado em `.env.prod.example`.
+
+3. Deploy:
+
+```bash
+docker stack deploy -c docker-compose.prod.yml hive
+```
+
+## Execução local sem Docker
+
+Frontend:
+
+```bash
+npm install
+npm run dev
+```
+
+Backend:
+
+```bash
+cd backend
+npm install
+npm run db:generate
+npm run db:push
+npm run db:seed
+npm run dev
+```

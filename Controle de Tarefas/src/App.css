@@ -167,6 +167,13 @@
   box-shadow: 0 18px 32px rgba(215, 243, 63, 0.35);
 }
 
+.primary:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .primary.wide {
   width: fit-content;
   padding: 14px 24px;
@@ -524,6 +531,11 @@
   cursor: pointer;
 }
 
+.chip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .chip.primary {
   border: none;
   background: linear-gradient(135deg, var(--accent), #a6e62b);
@@ -671,6 +683,186 @@
 .card header span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.super-admin-view {
+  display: grid;
+  gap: 16px;
+}
+
+.super-admin-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.super-admin-summary h4 {
+  margin: 0;
+}
+
+.super-admin-summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.super-admin-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.super-admin-kpi {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.super-admin-kpi span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.super-admin-kpi strong {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.super-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.super-admin-card {
+  display: grid;
+  gap: 12px;
+}
+
+.super-admin-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.super-admin-card-head h5 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.super-admin-card-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.super-admin-inline-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px auto;
+  gap: 8px;
+}
+
+.super-admin-inline-filters input,
+.super-admin-inline-filters select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.super-admin-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.super-admin-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.super-admin-form label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.super-admin-form input,
+.super-admin-form select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.super-admin-form .chip {
+  justify-self: end;
+  grid-column: 1 / -1;
+}
+
+.super-admin-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.super-admin-item {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #f8fafc;
+}
+
+.super-admin-item.active {
+  border-color: rgba(215, 243, 63, 0.7);
+  background: rgba(215, 243, 63, 0.15);
+}
+
+.super-admin-item-main {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  color: inherit;
+  flex: 1;
+}
+
+.super-admin-item-main strong {
+  font-size: 14px;
+}
+
+.super-admin-item-main small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.super-admin-empty {
+  padding: 10px;
+  border: 1px dashed rgba(15, 23, 42, 0.2);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.super-admin-feedback {
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: #f8fafc;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .progress {
@@ -3009,6 +3201,14 @@ select:disabled {
   .solicitation-checks-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .super-admin-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .super-admin-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1024px) {
@@ -3140,6 +3340,22 @@ select:disabled {
 
   .settings-users-actions {
     justify-content: flex-start;
+  }
+
+  .super-admin-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .super-admin-inline-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .super-admin-form {
+    grid-template-columns: 1fr;
+  }
+
+  .super-admin-form .chip {
+    justify-self: stretch;
   }
 }
 

@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  TENANT_USER
+}
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TaskType {
+  TASK
+  SOLICITATION
+}
+
+enum TaskStatus {
+  UPCOMING
+  OPEN
+  IN_PROGRESS
+  PENDING
+  DONE
+  DISMISSED
+  CANCELLED
+  OVERDUE
+}
+
+model Tenant {
+  id        String       @id @default(uuid())
+  name      String
+  slug      String       @unique
+  status    TenantStatus @default(ACTIVE)
+  users     TenantUser[]
+  clients   Client[]
+  tasks     Task[]
+  state     TenantState?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+model TenantState {
+  id        String   @id @default(uuid())
+  tenantId  String   @unique
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model TenantUser {
+  id           String   @id @default(uuid())
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(TENANT_USER)
+  isActive     Boolean  @default(true)
+  clientIds    String[] @default([])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([role])
+}
+
+model Client {
+  id                String       @id @default(uuid())
+  tenantId          String
+  tenant            Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name              String
+  alias             String?
+  documentType      String?
+  documentNumber    String?
+  status            ClientStatus @default(ACTIVE)
+  contact           String?
+  phone             String?
+  email             String?
+  groups            String[]     @default([])
+  visibility        String?
+  uf                String?
+  taxation          String[]     @default([])
+  checklist         String[]     @default([])
+  initialCompetence String?
+  tasks             Task[]
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model Task {
+  id             String     @id @default(uuid())
+  tenantId       String
+  tenant         Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  clientId       String?
+  client         Client?    @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  type           TaskType   @default(TASK)
+  title          String
+  department     String?
+  status         TaskStatus @default(OPEN)
+  competence     String?
+  actionDate     DateTime?
+  metaDate       DateTime?
+  dueDate        DateTime?
+  conclusionDate DateTime?
+  responsible    String?
+  notes          String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([tenantId])
+  @@index([clientId])
+  @@index([type])
+  @@index([status])
+  @@index([department])
+}

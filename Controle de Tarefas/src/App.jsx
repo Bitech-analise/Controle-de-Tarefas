@@ -1257,10 +1257,13 @@ const CREDENTIALS = {
   pass: 'Admin123',
 }
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
+
 const STORAGE_KEYS = {
   remember: 'hive-remember',
   user: 'hive-username',
   pass: 'hive-password',
+  session: 'hive-session',
 }
 
 const renderSidebarIcon = (label) => {
@@ -1307,11 +1310,37 @@ const renderSidebarIcon = (label) => {
   }
 }
 
+const apiRequest = async (path, { method = 'GET', token, body } = {}) => {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  })
+
+  let payload = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    const message = payload?.message || 'Erro de comunicação com o servidor.'
+    throw new Error(message)
+  }
+
+  return payload
+}
+
 function App() {
   const [screen, setScreen] = useState('login')
   const [remember, setRemember] = useState(
     () => localStorage.getItem(STORAGE_KEYS.remember) === 'true',
   )
+  const tenantStatePersistTimeoutRef = useRef(null)
   const [username, setUsername] = useState(() =>
     localStorage.getItem(STORAGE_KEYS.remember) === 'true'
       ? localStorage.getItem(STORAGE_KEYS.user) || ''
@@ -1323,6 +1352,51 @@ function App() {
       : '',
   )
   const [error, setError] = useState('')
+  const [authSession, setAuthSession] = useState(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.session)
+      return raw ? JSON.parse(raw) : null
+    } catch {
+      return null
+    }
+  })
+  const [isApiLoading, setIsApiLoading] = useState(false)
+  const [tenantStateHydrated, setTenantStateHydrated] = useState(false)
+  const [superAdminStats, setSuperAdminStats] = useState({
+    tenantsTotal: 0,
+    tenantsActive: 0,
+    clientsTotal: 0,
+    usersTotal: 0,
+    tasksTotal: 0,
+  })
+  const [superAdminTenants, setSuperAdminTenants] = useState([])
+  const [superAdminClients, setSuperAdminClients] = useState([])
+  const [selectedSuperTenantId, setSelectedSuperTenantId] = useState('')
+  const [superAdminFilters, setSuperAdminFilters] = useState({ q: '', status: 'ALL' })
+  const [superAdminClientFilters, setSuperAdminClientFilters] = useState({ q: '', status: 'ALL' })
+  const [superAdminFeedback, setSuperAdminFeedback] = useState('')
+  const [superTenantForm, setSuperTenantForm] = useState({
+    name: '',
+    slug: '',
+    adminName: '',
+    adminEmail: '',
+    adminPassword: '',
+  })
+  const [superClientForm, setSuperClientForm] = useState({
+    name: '',
+    alias: '',
+    documentType: 'CNPJ',
+    documentNumber: '',
+    status: 'ACTIVE',
+    contact: '',
+    phone: '',
+    email: '',
+    groups: '',
+    visibility: 'Geral',
+    uf: '',
+    taxation: '',
+    initialCompetence: '',
+  })
   const [createOpen, setCreateOpen] = useState(false)
   const [taskCreateOpen, setTaskCreateOpen] = useState(false)
   const [solicitationOpen, setSolicitationOpen] = useState(false)
@@ -1393,6 +1467,8 @@ function App() {
   const [taskItemsPerPage, setTaskItemsPerPage] = useState(10)
   const [operationalFilters, setOperationalFilters] = useState(initialOperationalFilters)
   const [appliedOperationalFilters, setAppliedOperationalFilters] = useState(initialOperationalFilters)
+  const superAdminToken = authSession?.token || ''
+  const isSuperAdmin = authSession?.user?.role === 'SUPER_ADMIN'
 
   useEffect(() => {
     if (!groupsOpen) return
@@ -1492,35 +1568,152 @@ function App() {
     selectAllRef.current.indeterminate = selected > 0 && selected < total
   }, [clients.length, selectedClientIds.length])
 
-  const handleLogin = (event) => {
-    event.preventDefault()
-    const normalizedUser = username.trim().toLowerCase()
-    const hasRegisteredUser = users.some(
-      (user) => user.email.trim().toLowerCase() === normalizedUser && user.senha === password,
-    )
-    const hasLegacyAccess = username === CREDENTIALS.user && password === CREDENTIALS.pass
-    const isValid = hasRegisteredUser || hasLegacyAccess
-
-    if (!isValid) {
-      setError('Usuário ou senha inválidos.')
+  useEffect(() => {
+    if (!authSession?.token || !authSession?.user) return
+    if (authSession.user.role === 'SUPER_ADMIN') {
+      setScreen('super-admin')
       return
     }
+    setScreen('dashboard')
+  }, [authSession])
 
-    setError('')
-    if (remember) {
-      localStorage.setItem(STORAGE_KEYS.remember, 'true')
-      localStorage.setItem(STORAGE_KEYS.user, username)
-      localStorage.setItem(STORAGE_KEYS.pass, password)
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.remember)
-      localStorage.removeItem(STORAGE_KEYS.user)
-      localStorage.removeItem(STORAGE_KEYS.pass)
+  useEffect(() => {
+    if (!isSuperAdmin || !superAdminToken) return
+    refreshSuperAdminData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuperAdmin, superAdminToken])
+
+  useEffect(() => {
+    if (!isSuperAdmin || !selectedSuperTenantId) return
+    loadSuperAdminClients(selectedSuperTenantId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuperAdmin, selectedSuperTenantId])
+
+  useEffect(() => {
+    if (!authSession?.token || isSuperAdmin) {
+      setTenantStateHydrated(false)
+      return
+    }
+    loadTenantState()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authSession?.token, isSuperAdmin])
+
+  useEffect(() => {
+    if (!authSession?.token || isSuperAdmin || !tenantStateHydrated) return
+
+    if (tenantStatePersistTimeoutRef.current) {
+      clearTimeout(tenantStatePersistTimeoutRef.current)
     }
 
-    setScreen('dashboard')
+    const statePayload = {
+      schemaVersion: 1,
+      users,
+      clients,
+      tasksRows,
+      taskBlueprints,
+      solicitationRecords,
+      taskActionLogs,
+    }
+
+    tenantStatePersistTimeoutRef.current = setTimeout(async () => {
+      try {
+        await apiRequest('/tenant/state', {
+          method: 'PUT',
+          token: authSession.token,
+          body: { state: statePayload },
+        })
+      } catch (error) {
+        console.error('Falha ao persistir estado do tenant:', error)
+      }
+    }, 650)
+
+    return () => {
+      if (tenantStatePersistTimeoutRef.current) {
+        clearTimeout(tenantStatePersistTimeoutRef.current)
+      }
+    }
+  }, [
+    authSession?.token,
+    isSuperAdmin,
+    tenantStateHydrated,
+    users,
+    clients,
+    tasksRows,
+    taskBlueprints,
+    solicitationRecords,
+    taskActionLogs,
+  ])
+
+  const handleLogin = async (event) => {
+    event.preventDefault()
+    const normalizedUser = username.trim().toLowerCase()
+    const loginEmail =
+      normalizedUser.includes('@')
+        ? normalizedUser
+        : normalizedUser === 'admin'
+          ? 'admin@hive.com'
+          : normalizedUser
+
+    try {
+      setIsApiLoading(true)
+      const authResponse = await apiRequest('/auth/login', {
+        method: 'POST',
+        body: { email: loginEmail, password },
+      })
+      setError('')
+      setAuthSession(authResponse)
+      localStorage.setItem(STORAGE_KEYS.session, JSON.stringify(authResponse))
+
+      if (remember) {
+        localStorage.setItem(STORAGE_KEYS.remember, 'true')
+        localStorage.setItem(STORAGE_KEYS.user, username)
+        localStorage.setItem(STORAGE_KEYS.pass, password)
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.remember)
+        localStorage.removeItem(STORAGE_KEYS.user)
+        localStorage.removeItem(STORAGE_KEYS.pass)
+      }
+
+      setScreen(authResponse?.user?.role === 'SUPER_ADMIN' ? 'super-admin' : 'dashboard')
+      return
+    } catch (apiError) {
+      const hasRegisteredUser = users.some(
+        (user) => user.email.trim().toLowerCase() === normalizedUser && user.senha === password,
+      )
+      const hasLegacyAccess = username === CREDENTIALS.user && password === CREDENTIALS.pass
+      const isValid = hasRegisteredUser || hasLegacyAccess
+
+      if (!isValid) {
+        setError(apiError?.message || 'Usuário ou senha inválidos.')
+        return
+      }
+
+      setError('')
+      setAuthSession(null)
+      localStorage.removeItem(STORAGE_KEYS.session)
+      if (remember) {
+        localStorage.setItem(STORAGE_KEYS.remember, 'true')
+        localStorage.setItem(STORAGE_KEYS.user, username)
+        localStorage.setItem(STORAGE_KEYS.pass, password)
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.remember)
+        localStorage.removeItem(STORAGE_KEYS.user)
+        localStorage.removeItem(STORAGE_KEYS.pass)
+      }
+
+      setScreen('dashboard')
+    } finally {
+      setIsApiLoading(false)
+    }
   }
 
   const handleLogout = () => {
+    if (tenantStatePersistTimeoutRef.current) {
+      clearTimeout(tenantStatePersistTimeoutRef.current)
+      tenantStatePersistTimeoutRef.current = null
+    }
+    setTenantStateHydrated(false)
+
     if (remember) {
       localStorage.setItem(STORAGE_KEYS.remember, 'true')
       localStorage.setItem(STORAGE_KEYS.user, username)
@@ -1534,7 +1727,237 @@ function App() {
       setError('')
     }
 
+    setAuthSession(null)
+    localStorage.removeItem(STORAGE_KEYS.session)
     setScreen('login')
+  }
+
+  const listToArray = (value) =>
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+
+  const clearSuperClientForm = () => {
+    setSuperClientForm({
+      name: '',
+      alias: '',
+      documentType: 'CNPJ',
+      documentNumber: '',
+      status: 'ACTIVE',
+      contact: '',
+      phone: '',
+      email: '',
+      groups: '',
+      visibility: 'Geral',
+      uf: '',
+      taxation: '',
+      initialCompetence: '',
+    })
+  }
+
+  const loadSuperAdminDashboard = async () => {
+    if (!superAdminToken) return
+    const data = await apiRequest('/super-admin/dashboard', { token: superAdminToken })
+    setSuperAdminStats(data)
+  }
+
+  const loadSuperAdminTenants = async (filters = superAdminFilters) => {
+    if (!superAdminToken) return
+    const params = new URLSearchParams()
+    if (filters.q) params.set('q', filters.q)
+    if (filters.status) params.set('status', filters.status)
+    const data = await apiRequest(`/super-admin/tenants?${params.toString()}`, { token: superAdminToken })
+    setSuperAdminTenants(data)
+    if (!selectedSuperTenantId && data.length) {
+      setSelectedSuperTenantId(data[0].id)
+    }
+  }
+
+  const loadSuperAdminClients = async (tenantId, filters = superAdminClientFilters) => {
+    if (!superAdminToken || !tenantId) {
+      setSuperAdminClients([])
+      return
+    }
+    const params = new URLSearchParams()
+    if (filters.q) params.set('q', filters.q)
+    if (filters.status) params.set('status', filters.status)
+    const data = await apiRequest(
+      `/super-admin/tenants/${tenantId}/clients?${params.toString()}`,
+      { token: superAdminToken },
+    )
+    setSuperAdminClients(data)
+  }
+
+  const refreshSuperAdminData = async () => {
+    if (!isSuperAdmin || !superAdminToken) return
+    try {
+      setIsApiLoading(true)
+      await Promise.all([loadSuperAdminDashboard(), loadSuperAdminTenants()])
+      setSuperAdminFeedback('')
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Erro ao carregar dados do super admin.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const handleSuperTenantCreate = async (event) => {
+    event.preventDefault()
+    try {
+      setIsApiLoading(true)
+      await apiRequest('/super-admin/tenants', {
+        method: 'POST',
+        token: superAdminToken,
+        body: {
+          name: superTenantForm.name,
+          slug: superTenantForm.slug || undefined,
+          adminName: superTenantForm.adminName || undefined,
+          adminEmail: superTenantForm.adminEmail || undefined,
+          adminPassword: superTenantForm.adminPassword || undefined,
+        },
+      })
+      setSuperTenantForm({
+        name: '',
+        slug: '',
+        adminName: '',
+        adminEmail: '',
+        adminPassword: '',
+      })
+      setSuperAdminFeedback('Tenant criado com sucesso.')
+      await refreshSuperAdminData()
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Não foi possível criar o tenant.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const handleSuperTenantStatusToggle = async (tenant) => {
+    try {
+      setIsApiLoading(true)
+      await apiRequest(`/super-admin/tenants/${tenant.id}`, {
+        method: 'PATCH',
+        token: superAdminToken,
+        body: { status: tenant.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' },
+      })
+      setSuperAdminFeedback('Status do tenant atualizado.')
+      await refreshSuperAdminData()
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Não foi possível atualizar o tenant.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const handleSuperClientCreate = async (event) => {
+    event.preventDefault()
+    if (!selectedSuperTenantId) {
+      setSuperAdminFeedback('Selecione um tenant para cadastrar clientes.')
+      return
+    }
+
+    try {
+      setIsApiLoading(true)
+      await apiRequest(`/super-admin/tenants/${selectedSuperTenantId}/clients`, {
+        method: 'POST',
+        token: superAdminToken,
+        body: {
+          name: superClientForm.name,
+          alias: superClientForm.alias || null,
+          documentType: superClientForm.documentType || null,
+          documentNumber: superClientForm.documentNumber || null,
+          status: superClientForm.status,
+          contact: superClientForm.contact || null,
+          phone: superClientForm.phone || null,
+          email: superClientForm.email || null,
+          groups: listToArray(superClientForm.groups),
+          visibility: superClientForm.visibility || null,
+          uf: superClientForm.uf || null,
+          taxation: listToArray(superClientForm.taxation),
+          checklist: [],
+          initialCompetence: superClientForm.initialCompetence || null,
+        },
+      })
+      clearSuperClientForm()
+      setSuperAdminFeedback('Cliente criado com sucesso.')
+      await loadSuperAdminClients(selectedSuperTenantId)
+      await loadSuperAdminDashboard()
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Não foi possível criar o cliente.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const handleSuperClientDelete = async (client) => {
+    if (!selectedSuperTenantId) return
+    const allowDelete = window.confirm(`Excluir o cliente "${client.name}" deste tenant?`)
+    if (!allowDelete) return
+    try {
+      setIsApiLoading(true)
+      await apiRequest(`/super-admin/tenants/${selectedSuperTenantId}/clients/${client.id}`, {
+        method: 'DELETE',
+        token: superAdminToken,
+      })
+      setSuperAdminFeedback('Cliente excluído com sucesso.')
+      await loadSuperAdminClients(selectedSuperTenantId)
+      await loadSuperAdminDashboard()
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Não foi possível excluir o cliente.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const loadTenantState = async () => {
+    if (!authSession?.token || isSuperAdmin) return
+
+    const fallbackUser = {
+      id: 1,
+      nome: authSession?.user?.name || 'Usuário',
+      departamento: '',
+      telefone: '',
+      email: authSession?.user?.email || '',
+      senha: '',
+      clientIds: Array.isArray(authSession?.user?.clientIds) ? authSession.user.clientIds : [],
+    }
+
+    try {
+      setTenantStateHydrated(false)
+      const response = await apiRequest('/tenant/state', { token: authSession.token })
+      const state = response?.state && typeof response.state === 'object' ? response.state : {}
+
+      const usersFromState = Array.isArray(state.users) ? state.users : []
+      const normalizedUsers = usersFromState
+        .map((item, index) => ({
+          id: Number(item?.id) || index + 1,
+          nome: String(item?.nome || item?.name || '').trim(),
+          departamento: String(item?.departamento || '').trim(),
+          telefone: String(item?.telefone || '').trim(),
+          email: String(item?.email || '').trim(),
+          senha: String(item?.senha || '').trim(),
+          clientIds: Array.isArray(item?.clientIds) ? item.clientIds : [],
+        }))
+        .filter((item) => item.nome || item.email)
+
+      setUsers(normalizedUsers.length ? normalizedUsers : [fallbackUser])
+      setClients(Array.isArray(state.clients) ? state.clients : [])
+      setTasksRows(Array.isArray(state.tasksRows) ? state.tasksRows : [])
+      setTaskBlueprints(Array.isArray(state.taskBlueprints) ? state.taskBlueprints : [])
+      setSolicitationRecords(Array.isArray(state.solicitationRecords) ? state.solicitationRecords : [])
+      setTaskActionLogs(Array.isArray(state.taskActionLogs) ? state.taskActionLogs : [])
+    } catch (error) {
+      console.error('Falha ao carregar estado persistido do tenant:', error)
+      setUsers([fallbackUser])
+      setClients([])
+      setTasksRows([])
+      setTaskBlueprints([])
+      setSolicitationRecords([])
+      setTaskActionLogs([])
+    } finally {
+      setTenantStateHydrated(true)
+    }
   }
 
   const openCreateModal = () => {
@@ -4419,8 +4842,8 @@ function App() {
 
                 {error ? <span className="login-error">{error}</span> : null}
 
-                <button className="primary" type="submit">
-                  Entrar
+                <button className="primary" type="submit" disabled={isApiLoading}>
+                  {isApiLoading ? 'Entrando...' : 'Entrar'}
                 </button>
               </form>
 
@@ -4477,16 +4900,14 @@ function App() {
           <aside className="sidebar">
             <div className="sidebar-avatar">HV</div>
             <nav className="nav">
-              {[
-                'Visão Geral',
-                'Tarefas',
-                'Relatórios',
-                'Clientes',
-                'Configurações',
-              ].map((item, index) => (
+              {(isSuperAdmin
+                ? ['Super Admin']
+                : ['Visão Geral', 'Tarefas', 'Relatórios', 'Clientes', 'Configurações']
+              ).map((item, index) => (
                 <button
                   key={item}
                   className={`nav-item ${
+                    (screen === 'super-admin' && item === 'Super Admin') ||
                     (screen === 'dashboard' && item === 'Visão Geral') ||
                     (screen === 'operational' && item === 'Visão Geral') ||
                     ((screen === 'tasks' || screen === 'task-detail') && item === 'Tarefas') ||
@@ -4498,7 +4919,9 @@ function App() {
                   }`}
                   type="button"
                   onClick={() => {
-                    if (item === 'Visão Geral') {
+                    if (item === 'Super Admin') {
+                      setScreen('super-admin')
+                    } else if (item === 'Visão Geral') {
                       setScreen('dashboard')
                     } else if (item === 'Tarefas') {
                       setScreen('tasks')
@@ -4513,7 +4936,7 @@ function App() {
                   }}
                   style={{ '--delay': `${index * 0.05}s` }}
                 >
-                  <span className="nav-icon">{renderSidebarIcon(item)}</span>
+                  <span className="nav-icon">{item === 'Super Admin' ? renderSidebarIcon('Configurações') : renderSidebarIcon(item)}</span>
                   <span>{item}</span>
                 </button>
               ))}
@@ -4530,23 +4953,36 @@ function App() {
                 <input type="search" placeholder="Digite aqui para começar a pesquisa..." />
               </div>
               <div className="top-actions">
-                <button className="chip primary" type="button" onClick={openCreateModal}>
-                  Criar Tarefas
-                </button>
-                <button className="chip" type="button">
-                  Relatório do dia
-                </button>
-                <button className="chip" type="button" onClick={() => setScreen('reports')}>
-                  Quadro Kanban
-                </button>
+                {isSuperAdmin ? (
+                  <button
+                    className="chip primary"
+                    type="button"
+                    onClick={refreshSuperAdminData}
+                    disabled={isApiLoading}
+                  >
+                    Atualizar dados
+                  </button>
+                ) : (
+                  <>
+                    <button className="chip primary" type="button" onClick={openCreateModal}>
+                      Criar Tarefas
+                    </button>
+                    <button className="chip" type="button">
+                      Relatório do dia
+                    </button>
+                    <button className="chip" type="button" onClick={() => setScreen('reports')}>
+                      Quadro Kanban
+                    </button>
+                  </>
+                )}
               </div>
               <div className="user">
-                <span className="user-org">Hive</span>
+                <span className="user-org">{isSuperAdmin ? 'Super Admin' : 'Hive'}</span>
                 <span className="user-dot" />
               </div>
             </header>
 
-            {screen === 'dashboard' || screen === 'reports' ? (
+            {!isSuperAdmin && (screen === 'dashboard' || screen === 'reports') ? (
               <div className="view-tabs">
                 <button
                   className={screen === 'dashboard' ? 'active' : ''}
@@ -4565,7 +5001,336 @@ function App() {
               </div>
             ) : null}
 
-            {screen === 'dashboard' ? (
+            {isSuperAdmin ? (
+              <div className="super-admin-view">
+                <section className="card super-admin-summary">
+                  <h4>Painel Super Admin</h4>
+                  <p>Gestão multi-tenant de tenants e clientes em tempo real.</p>
+                  <div className="super-admin-kpis">
+                    <div className="super-admin-kpi">
+                      <span>Tenants</span>
+                      <strong>{superAdminStats.tenantsTotal}</strong>
+                    </div>
+                    <div className="super-admin-kpi">
+                      <span>Tenants ativos</span>
+                      <strong>{superAdminStats.tenantsActive}</strong>
+                    </div>
+                    <div className="super-admin-kpi">
+                      <span>Clientes</span>
+                      <strong>{superAdminStats.clientsTotal}</strong>
+                    </div>
+                    <div className="super-admin-kpi">
+                      <span>Usuários</span>
+                      <strong>{superAdminStats.usersTotal}</strong>
+                    </div>
+                    <div className="super-admin-kpi">
+                      <span>Tarefas</span>
+                      <strong>{superAdminStats.tasksTotal}</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="super-admin-grid">
+                  <article className="card super-admin-card">
+                    <div className="super-admin-card-head">
+                      <h5>Tenants</h5>
+                      <button type="button" className="chip small" onClick={refreshSuperAdminData}>
+                        Recarregar
+                      </button>
+                    </div>
+
+                    <div className="super-admin-inline-filters">
+                      <input
+                        type="text"
+                        value={superAdminFilters.q}
+                        placeholder="Buscar por nome ou slug..."
+                        onChange={(event) =>
+                          setSuperAdminFilters((prev) => ({ ...prev, q: event.target.value }))
+                        }
+                      />
+                      <select
+                        value={superAdminFilters.status}
+                        onChange={(event) =>
+                          setSuperAdminFilters((prev) => ({ ...prev, status: event.target.value }))
+                        }
+                      >
+                        <option value="ALL">Todos</option>
+                        <option value="ACTIVE">Ativos</option>
+                        <option value="INACTIVE">Inativos</option>
+                      </select>
+                      <button
+                        type="button"
+                        className="chip primary small"
+                        onClick={() => loadSuperAdminTenants(superAdminFilters)}
+                      >
+                        Buscar
+                      </button>
+                    </div>
+
+                    <form className="super-admin-form" onSubmit={handleSuperTenantCreate}>
+                      <label>
+                        <span>Nome do tenant</span>
+                        <input
+                          type="text"
+                          value={superTenantForm.name}
+                          onChange={(event) =>
+                            setSuperTenantForm((prev) => ({ ...prev, name: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+                      <label>
+                        <span>Slug (opcional)</span>
+                        <input
+                          type="text"
+                          value={superTenantForm.slug}
+                          onChange={(event) =>
+                            setSuperTenantForm((prev) => ({ ...prev, slug: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Admin tenant</span>
+                        <input
+                          type="text"
+                          value={superTenantForm.adminName}
+                          onChange={(event) =>
+                            setSuperTenantForm((prev) => ({ ...prev, adminName: event.target.value }))
+                          }
+                          placeholder="Nome (opcional)"
+                        />
+                      </label>
+                      <label>
+                        <span>E-mail admin</span>
+                        <input
+                          type="email"
+                          value={superTenantForm.adminEmail}
+                          onChange={(event) =>
+                            setSuperTenantForm((prev) => ({ ...prev, adminEmail: event.target.value }))
+                          }
+                          placeholder="admin@tenant.com"
+                        />
+                      </label>
+                      <label>
+                        <span>Senha admin</span>
+                        <input
+                          type="password"
+                          value={superTenantForm.adminPassword}
+                          onChange={(event) =>
+                            setSuperTenantForm((prev) => ({ ...prev, adminPassword: event.target.value }))
+                          }
+                          placeholder="mínimo 6 caracteres"
+                        />
+                      </label>
+                      <button type="submit" className="chip primary small" disabled={isApiLoading}>
+                        Criar tenant
+                      </button>
+                    </form>
+
+                    <div className="super-admin-list">
+                      {superAdminTenants.map((tenant) => (
+                        <div
+                          key={tenant.id}
+                          className={`super-admin-item ${
+                            selectedSuperTenantId === tenant.id ? 'active' : ''
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className="super-admin-item-main"
+                            onClick={() => setSelectedSuperTenantId(tenant.id)}
+                          >
+                            <strong>{tenant.name}</strong>
+                            <small>{tenant.slug}</small>
+                          </button>
+                          <button
+                            type="button"
+                            className={`chip tiny ${tenant.status === 'ACTIVE' ? 'primary' : ''}`}
+                            onClick={() => handleSuperTenantStatusToggle(tenant)}
+                          >
+                            {tenant.status === 'ACTIVE' ? 'Ativo' : 'Inativo'}
+                          </button>
+                        </div>
+                      ))}
+                      {!superAdminTenants.length ? (
+                        <div className="super-admin-empty">Sem tenants para os filtros atuais.</div>
+                      ) : null}
+                    </div>
+                  </article>
+
+                  <article className="card super-admin-card">
+                    <div className="super-admin-card-head">
+                      <h5>Clientes do tenant</h5>
+                      <span>
+                        {selectedSuperTenantId
+                          ? superAdminTenants.find((item) => item.id === selectedSuperTenantId)?.name ||
+                            'Tenant selecionado'
+                          : 'Selecione um tenant'}
+                      </span>
+                    </div>
+
+                    <div className="super-admin-inline-filters">
+                      <input
+                        type="text"
+                        value={superAdminClientFilters.q}
+                        placeholder="Buscar cliente..."
+                        onChange={(event) =>
+                          setSuperAdminClientFilters((prev) => ({ ...prev, q: event.target.value }))
+                        }
+                      />
+                      <select
+                        value={superAdminClientFilters.status}
+                        onChange={(event) =>
+                          setSuperAdminClientFilters((prev) => ({
+                            ...prev,
+                            status: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="ALL">Todos</option>
+                        <option value="ACTIVE">Ativos</option>
+                        <option value="INACTIVE">Inativos</option>
+                      </select>
+                      <button
+                        type="button"
+                        className="chip primary small"
+                        onClick={() =>
+                          loadSuperAdminClients(selectedSuperTenantId, superAdminClientFilters)
+                        }
+                        disabled={!selectedSuperTenantId}
+                      >
+                        Buscar
+                      </button>
+                    </div>
+
+                    <form className="super-admin-form" onSubmit={handleSuperClientCreate}>
+                      <label>
+                        <span>Nome</span>
+                        <input
+                          type="text"
+                          value={superClientForm.name}
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({ ...prev, name: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+                      <label>
+                        <span>Apelido</span>
+                        <input
+                          type="text"
+                          value={superClientForm.alias}
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({ ...prev, alias: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Documento</span>
+                        <input
+                          type="text"
+                          value={superClientForm.documentNumber}
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({
+                              ...prev,
+                              documentNumber: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>E-mail</span>
+                        <input
+                          type="email"
+                          value={superClientForm.email}
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({ ...prev, email: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Grupos (vírgula)</span>
+                        <input
+                          type="text"
+                          value={superClientForm.groups}
+                          placeholder="Fiscal, Dep. Pessoal"
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({ ...prev, groups: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Tributação (vírgula)</span>
+                        <input
+                          type="text"
+                          value={superClientForm.taxation}
+                          placeholder="Simples Nacional, Lucro Real"
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({ ...prev, taxation: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>UF</span>
+                        <input
+                          type="text"
+                          value={superClientForm.uf}
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({ ...prev, uf: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Competência inicial</span>
+                        <input
+                          type="text"
+                          value={superClientForm.initialCompetence}
+                          placeholder="MM/AAAA"
+                          onChange={(event) =>
+                            setSuperClientForm((prev) => ({
+                              ...prev,
+                              initialCompetence: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        className="chip primary small"
+                        disabled={!selectedSuperTenantId || isApiLoading}
+                      >
+                        Cadastrar cliente
+                      </button>
+                    </form>
+
+                    <div className="super-admin-list">
+                      {superAdminClients.map((client) => (
+                        <div key={client.id} className="super-admin-item">
+                          <div className="super-admin-item-main">
+                            <strong>{client.name}</strong>
+                            <small>{client.documentNumber || '-'}</small>
+                          </div>
+                          <button
+                            type="button"
+                            className="danger-outline"
+                            onClick={() => handleSuperClientDelete(client)}
+                          >
+                            Excluir
+                          </button>
+                        </div>
+                      ))}
+                      {!superAdminClients.length ? (
+                        <div className="super-admin-empty">
+                          Sem clientes para o tenant/filtro selecionado.
+                        </div>
+                      ) : null}
+                    </div>
+                  </article>
+                </section>
+
+                {superAdminFeedback ? <div className="super-admin-feedback">{superAdminFeedback}</div> : null}
+              </div>
+            ) : screen === 'dashboard' ? (
               <div className="dashboard-view">
                 <section className="filters task-filters-grid overview-filters">
                   <label className="task-filter-field">
