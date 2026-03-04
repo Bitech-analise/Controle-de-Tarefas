@@ -40,7 +40,7 @@ const stats = [
   },
   {
     label: 'Pendentes',
-    value: '226',
+    value: '0',
     tone: 'sand',
     icon: (
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -55,7 +55,7 @@ const progressRows = [
   {
     label: 'Abertas',
     tone: 'amber',
-    values: [2, 5, 25, 0],
+    values: [0, 0, 0, 0],
   },
   {
     label: 'Vencem Hoje',
@@ -65,31 +65,18 @@ const progressRows = [
   {
     label: 'Atenção',
     tone: 'violet',
-    values: [361, 20, 190, 0],
+    values: [0, 0, 0, 0],
   },
 ]
 
 const controlRows = [
   {
     group: 'Obrigações',
-    items: [
-      { name: 'Administrativo', action: 0, alert: 1, pending: 0, done: 0 },
-      { name: 'Financeiro', action: 0, alert: 2, pending: 0, done: 0 },
-      { name: 'Onboarding do Franqueado', action: 0, alert: 0, pending: 1, done: 0 },
-      { name: 'RH', action: 1, alert: 324, pending: 0, done: 0 },
-    ],
+    items: [],
   },
   {
     group: 'Solicitações',
-    items: [
-      { name: 'Back Office - Contábil', action: 0, alert: 0, pending: 5, done: 0 },
-      { name: 'Back Office - Fiscal', action: 0, alert: 1, pending: 1, done: 0 },
-      { name: 'Backoffice Novos Clientes', action: 0, alert: 1, pending: 0, done: 0 },
-      { name: 'Comercial', action: 0, alert: 5, pending: 18, done: 1 },
-      { name: 'Comercial - Franqueados', action: 0, alert: 5, pending: 132, done: 3 },
-      { name: 'Contabilidade', action: 0, alert: 0, pending: 7, done: 0 },
-      { name: 'Marketing', action: 0, alert: 0, pending: 1, done: 0 },
-    ],
+    items: [],
   },
 ]
 
@@ -481,6 +468,19 @@ const parseIsoDateToBr = (value) => {
   return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`
 }
 
+const formatIsoDateTimeToBr = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 const getTodayIsoLocal = () => {
   const now = new Date()
   const year = now.getFullYear()
@@ -629,6 +629,28 @@ const formatFileSize = (bytes) => {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
+
+const fileToBase64 = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const value = String(reader.result || '')
+      const parts = value.split(',')
+      resolve(parts.length > 1 ? parts[1] : parts[0])
+    }
+    reader.onerror = () => reject(new Error('Falha ao ler o arquivo anexado.'))
+    reader.readAsDataURL(file)
+  })
+
+const fileToDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('Falha ao ler a imagem selecionada.'))
+    reader.readAsDataURL(file)
+  })
+
+const extractDigits = (value) => String(value || '').replace(/\D/g, '')
 
 const formatCnpjValue = (value) => {
   const digits = String(value || '')
@@ -1252,11 +1274,6 @@ const getEmptySolicitationForm = () => {
   }
 }
 
-const CREDENTIALS = {
-  user: 'Admin',
-  pass: 'Admin123',
-}
-
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
 
 const STORAGE_KEYS = {
@@ -1329,7 +1346,10 @@ const apiRequest = async (path, { method = 'GET', token, body } = {}) => {
 
   if (!response.ok) {
     const message = payload?.message || 'Erro de comunicação com o servidor.'
-    throw new Error(message)
+    const error = new Error(message)
+    error.status = response.status
+    error.payload = payload
+    throw error
   }
 
   return payload
@@ -1382,6 +1402,20 @@ function App() {
     adminEmail: '',
     adminPassword: '',
   })
+  const [superTenantEditorOpen, setSuperTenantEditorOpen] = useState(false)
+  const [superTenantEditorMode, setSuperTenantEditorMode] = useState('view')
+  const [superTenantEditorForm, setSuperTenantEditorForm] = useState({
+    id: '',
+    name: '',
+    slug: '',
+    status: '',
+    createdAt: '',
+    updatedAt: '',
+    adminUserId: '',
+    adminName: '',
+    adminEmail: '',
+    adminPassword: '',
+  })
   const [superClientForm, setSuperClientForm] = useState({
     name: '',
     alias: '',
@@ -1407,6 +1441,12 @@ function App() {
   const [clientTaskGenerateForm, setClientTaskGenerateForm] = useState(() => getEmptyClientTaskGenerateForm())
   const [clientTaskGenerateFeedback, setClientTaskGenerateFeedback] = useState('')
   const [settingsTab, setSettingsTab] = useState('users')
+  const [companyLogoDataUrl, setCompanyLogoDataUrl] = useState('')
+  const [companyLogoName, setCompanyLogoName] = useState('')
+  const [settingsLogoDraftDataUrl, setSettingsLogoDraftDataUrl] = useState('')
+  const [settingsLogoDraftName, setSettingsLogoDraftName] = useState('')
+  const [settingsLogoFeedback, setSettingsLogoFeedback] = useState('')
+  const [settingsLogoLoading, setSettingsLogoLoading] = useState(false)
   const [users, setUsers] = useState(initialUsers)
   const [userForm, setUserForm] = useState(emptyUserForm)
   const [editingUserId, setEditingUserId] = useState(null)
@@ -1423,6 +1463,7 @@ function App() {
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
   const [taskActionError, setTaskActionError] = useState('')
+  const [taskEmailSending, setTaskEmailSending] = useState(false)
   const [solicitationForm, setSolicitationForm] = useState(() => getEmptySolicitationForm())
   const [solicitationFeedback, setSolicitationFeedback] = useState('')
   const [solicitationRecords, setSolicitationRecords] = useState([])
@@ -1434,6 +1475,7 @@ function App() {
   const [editingId, setEditingId] = useState(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const modalBackdropMouseDownRef = useRef(false)
   const [groupsOpen, setGroupsOpen] = useState(false)
   const groupsRef = useRef(null)
   const [taxOpen, setTaxOpen] = useState(false)
@@ -1469,6 +1511,7 @@ function App() {
   const [appliedOperationalFilters, setAppliedOperationalFilters] = useState(initialOperationalFilters)
   const superAdminToken = authSession?.token || ''
   const isSuperAdmin = authSession?.user?.role === 'SUPER_ADMIN'
+  const tenantDisplayName = String(authSession?.user?.tenantName || '').trim() || 'Empresa'
 
   useEffect(() => {
     if (!groupsOpen) return
@@ -1592,6 +1635,11 @@ function App() {
   useEffect(() => {
     if (!authSession?.token || isSuperAdmin) {
       setTenantStateHydrated(false)
+      setCompanyLogoDataUrl('')
+      setCompanyLogoName('')
+      setSettingsLogoDraftDataUrl('')
+      setSettingsLogoDraftName('')
+      setSettingsLogoFeedback('')
       return
     }
     loadTenantState()
@@ -1607,6 +1655,10 @@ function App() {
 
     const statePayload = {
       schemaVersion: 1,
+      branding: {
+        logoDataUrl: companyLogoDataUrl || '',
+        logoName: companyLogoName || '',
+      },
       users,
       clients,
       tasksRows,
@@ -1642,6 +1694,8 @@ function App() {
     taskBlueprints,
     solicitationRecords,
     taskActionLogs,
+    companyLogoDataUrl,
+    companyLogoName,
   ])
 
   const handleLogin = async (event) => {
@@ -1653,6 +1707,11 @@ function App() {
         : normalizedUser === 'admin'
           ? 'admin@hive.com'
           : normalizedUser
+
+    if (!loginEmail.includes('@')) {
+      setError('Use o e-mail cadastrado para entrar.')
+      return
+    }
 
     try {
       setIsApiLoading(true)
@@ -1677,31 +1736,7 @@ function App() {
       setScreen(authResponse?.user?.role === 'SUPER_ADMIN' ? 'super-admin' : 'dashboard')
       return
     } catch (apiError) {
-      const hasRegisteredUser = users.some(
-        (user) => user.email.trim().toLowerCase() === normalizedUser && user.senha === password,
-      )
-      const hasLegacyAccess = username === CREDENTIALS.user && password === CREDENTIALS.pass
-      const isValid = hasRegisteredUser || hasLegacyAccess
-
-      if (!isValid) {
-        setError(apiError?.message || 'Usuário ou senha inválidos.')
-        return
-      }
-
-      setError('')
-      setAuthSession(null)
-      localStorage.removeItem(STORAGE_KEYS.session)
-      if (remember) {
-        localStorage.setItem(STORAGE_KEYS.remember, 'true')
-        localStorage.setItem(STORAGE_KEYS.user, username)
-        localStorage.setItem(STORAGE_KEYS.pass, password)
-      } else {
-        localStorage.removeItem(STORAGE_KEYS.remember)
-        localStorage.removeItem(STORAGE_KEYS.user)
-        localStorage.removeItem(STORAGE_KEYS.pass)
-      }
-
-      setScreen('dashboard')
+      setError(apiError?.message || 'Não foi possível autenticar com o servidor.')
     } finally {
       setIsApiLoading(false)
     }
@@ -1769,9 +1804,10 @@ function App() {
     if (filters.status) params.set('status', filters.status)
     const data = await apiRequest(`/super-admin/tenants?${params.toString()}`, { token: superAdminToken })
     setSuperAdminTenants(data)
-    if (!selectedSuperTenantId && data.length) {
-      setSelectedSuperTenantId(data[0].id)
-    }
+    setSelectedSuperTenantId((current) => {
+      if (!data.length) return ''
+      return data.some((tenant) => tenant.id === current) ? current : data[0].id
+    })
   }
 
   const loadSuperAdminClients = async (tenantId, filters = superAdminClientFilters) => {
@@ -1804,6 +1840,12 @@ function App() {
 
   const handleSuperTenantCreate = async (event) => {
     event.preventDefault()
+    const adminEmail = String(superTenantForm.adminEmail || '').trim().toLowerCase()
+    const adminPassword = String(superTenantForm.adminPassword || '').trim()
+    if (!adminEmail || !adminPassword) {
+      setSuperAdminFeedback('Informe e-mail e senha do admin para criar o tenant.')
+      return
+    }
     try {
       setIsApiLoading(true)
       await apiRequest('/super-admin/tenants', {
@@ -1813,8 +1855,8 @@ function App() {
           name: superTenantForm.name,
           slug: superTenantForm.slug || undefined,
           adminName: superTenantForm.adminName || undefined,
-          adminEmail: superTenantForm.adminEmail || undefined,
-          adminPassword: superTenantForm.adminPassword || undefined,
+          adminEmail,
+          adminPassword,
         },
       })
       setSuperTenantForm({
@@ -1836,15 +1878,182 @@ function App() {
   const handleSuperTenantStatusToggle = async (tenant) => {
     try {
       setIsApiLoading(true)
+      const nextStatus = tenant.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
       await apiRequest(`/super-admin/tenants/${tenant.id}`, {
         method: 'PATCH',
         token: superAdminToken,
-        body: { status: tenant.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' },
+        body: { status: nextStatus },
       })
+      if (superTenantEditorForm.id === tenant.id) {
+        setSuperTenantEditorForm((prev) => ({ ...prev, status: nextStatus }))
+      }
       setSuperAdminFeedback('Status do tenant atualizado.')
       await refreshSuperAdminData()
     } catch (err) {
       setSuperAdminFeedback(err.message || 'Não foi possível atualizar o tenant.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const openSuperTenantEditor = async (tenant) => {
+    if (!tenant) return
+    setSelectedSuperTenantId(tenant.id)
+    setSuperTenantEditorForm({
+      id: tenant.id,
+      name: tenant.name || '',
+      slug: tenant.slug || '',
+      status: tenant.status || '',
+      createdAt: tenant.createdAt || '',
+      updatedAt: tenant.updatedAt || '',
+      adminUserId: '',
+      adminName: '',
+      adminEmail: '',
+      adminPassword: '',
+    })
+    setSuperTenantEditorMode('view')
+    setSuperTenantEditorOpen(true)
+
+    try {
+      const tenantUsers = await apiRequest(`/super-admin/tenants/${tenant.id}/users`, {
+        token: superAdminToken,
+      })
+      const adminUser = Array.isArray(tenantUsers)
+        ? tenantUsers.find((user) => user.role === 'TENANT_ADMIN') || tenantUsers[0]
+        : null
+
+      if (adminUser) {
+        setSuperTenantEditorForm((prev) => ({
+          ...prev,
+          adminUserId: adminUser.id || '',
+          adminName: adminUser.name || '',
+          adminEmail: adminUser.email || '',
+          adminPassword: '',
+        }))
+      }
+    } catch (error) {
+      setSuperAdminFeedback(error.message || 'Não foi possível carregar os dados do admin do tenant.')
+    }
+  }
+
+  const closeSuperTenantEditor = () => {
+    setSuperTenantEditorOpen(false)
+    setSuperTenantEditorMode('view')
+    setSuperTenantEditorForm({
+      id: '',
+      name: '',
+      slug: '',
+      status: '',
+      createdAt: '',
+      updatedAt: '',
+      adminUserId: '',
+      adminName: '',
+      adminEmail: '',
+      adminPassword: '',
+    })
+  }
+
+  const enableSuperTenantEditorEdit = () => {
+    setSuperTenantEditorMode('edit')
+    setSuperAdminFeedback('')
+  }
+
+  const cancelSuperTenantEditorEdit = () => {
+    setSuperTenantEditorMode('view')
+    setSuperTenantEditorForm((prev) => ({
+      ...prev,
+      adminPassword: '',
+    }))
+  }
+
+  const handleSuperTenantEditorSave = async (event) => {
+    event.preventDefault()
+    const tenantId = superTenantEditorForm.id
+    if (!tenantId) return
+
+    const name = String(superTenantEditorForm.name || '').trim()
+    const slug = String(superTenantEditorForm.slug || '').trim()
+    const adminName = String(superTenantEditorForm.adminName || '').trim()
+    const adminEmail = String(superTenantEditorForm.adminEmail || '').trim().toLowerCase()
+    const adminPassword = String(superTenantEditorForm.adminPassword || '').trim()
+    if (!name) {
+      setSuperAdminFeedback('Informe o nome do tenant para salvar.')
+      return
+    }
+    if (!adminEmail) {
+      setSuperAdminFeedback('Informe o e-mail do admin do tenant.')
+      return
+    }
+    if (!superTenantEditorForm.adminUserId && !adminPassword) {
+      setSuperAdminFeedback('Este tenant ainda não possui usuário admin. Informe uma senha para criar o acesso.')
+      return
+    }
+
+    try {
+      setIsApiLoading(true)
+      const updated = await apiRequest(`/super-admin/tenants/${tenantId}`, {
+        method: 'PATCH',
+        token: superAdminToken,
+        body: {
+          name,
+          ...(slug ? { slug } : {}),
+        },
+      })
+
+      const updatedAdmin = await apiRequest(`/super-admin/tenants/${tenantId}/admin`, {
+        method: 'PATCH',
+        token: superAdminToken,
+        body: {
+          name: adminName || undefined,
+          email: adminEmail,
+          password: adminPassword || undefined,
+        },
+      })
+
+      setSuperTenantEditorForm((prev) => ({
+        ...prev,
+        name: updated.name || name,
+        slug: updated.slug || slug,
+        status: updated.status || prev.status,
+        updatedAt: updated.updatedAt || prev.updatedAt,
+        adminUserId: updatedAdmin.id || prev.adminUserId,
+        adminName: updatedAdmin.name || adminName,
+        adminEmail: updatedAdmin.email || adminEmail,
+        adminPassword: '',
+      }))
+      setSuperTenantEditorMode('view')
+      setSuperAdminFeedback('Tenant atualizado com sucesso.')
+      await loadSuperAdminTenants(superAdminFilters)
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Não foi possível salvar o tenant.')
+    } finally {
+      setIsApiLoading(false)
+    }
+  }
+
+  const handleSuperTenantDelete = async () => {
+    const tenantId = superTenantEditorForm.id
+    if (!tenantId) return
+
+    const allowDelete = window.confirm(
+      `Excluir o tenant "${superTenantEditorForm.name}"?\nEssa ação remove também usuários, clientes, tarefas e estado desse tenant.`,
+    )
+    if (!allowDelete) return
+
+    try {
+      setIsApiLoading(true)
+      await apiRequest(`/super-admin/tenants/${tenantId}`, {
+        method: 'DELETE',
+        token: superAdminToken,
+      })
+      setSuperAdminFeedback('Tenant excluído com sucesso.')
+      closeSuperTenantEditor()
+      if (selectedSuperTenantId === tenantId) {
+        setSelectedSuperTenantId('')
+      }
+      await refreshSuperAdminData()
+    } catch (err) {
+      setSuperAdminFeedback(err.message || 'Não foi possível excluir o tenant.')
     } finally {
       setIsApiLoading(false)
     }
@@ -1927,6 +2136,9 @@ function App() {
       setTenantStateHydrated(false)
       const response = await apiRequest('/tenant/state', { token: authSession.token })
       const state = response?.state && typeof response.state === 'object' ? response.state : {}
+      const branding = state?.branding && typeof state.branding === 'object' ? state.branding : {}
+      const logoDataUrl = typeof branding.logoDataUrl === 'string' ? branding.logoDataUrl : ''
+      const logoName = typeof branding.logoName === 'string' ? branding.logoName : ''
 
       const usersFromState = Array.isArray(state.users) ? state.users : []
       const normalizedUsers = usersFromState
@@ -1947,17 +2159,78 @@ function App() {
       setTaskBlueprints(Array.isArray(state.taskBlueprints) ? state.taskBlueprints : [])
       setSolicitationRecords(Array.isArray(state.solicitationRecords) ? state.solicitationRecords : [])
       setTaskActionLogs(Array.isArray(state.taskActionLogs) ? state.taskActionLogs : [])
+      setCompanyLogoDataUrl(logoDataUrl)
+      setCompanyLogoName(logoName)
+      setSettingsLogoDraftDataUrl('')
+      setSettingsLogoDraftName('')
+      setSettingsLogoFeedback('')
     } catch (error) {
-      console.error('Falha ao carregar estado persistido do tenant:', error)
+      if (error?.status === 401 || error?.status === 403) {
+        setAuthSession(null)
+        localStorage.removeItem(STORAGE_KEYS.session)
+        setScreen('login')
+        setError('Sua sessão expirou. Faça login novamente.')
+      } else {
+        console.error('Falha ao carregar estado persistido do tenant:', error)
+      }
       setUsers([fallbackUser])
       setClients([])
       setTasksRows([])
       setTaskBlueprints([])
       setSolicitationRecords([])
       setTaskActionLogs([])
+      setCompanyLogoDataUrl('')
+      setCompanyLogoName('')
+      setSettingsLogoDraftDataUrl('')
+      setSettingsLogoDraftName('')
+      setSettingsLogoFeedback('')
     } finally {
       setTenantStateHydrated(true)
     }
+  }
+
+  const handleSettingsLogoSelect = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    if (!String(file.type || '').startsWith('image/')) {
+      setSettingsLogoFeedback('Selecione um arquivo de imagem válido.')
+      event.target.value = ''
+      return
+    }
+
+    try {
+      setSettingsLogoLoading(true)
+      const dataUrl = await fileToDataUrl(file)
+      setSettingsLogoDraftDataUrl(dataUrl)
+      setSettingsLogoDraftName(file.name || 'logo')
+      setSettingsLogoFeedback('Imagem pronta. Clique em "Salvar logo".')
+    } catch (error) {
+      setSettingsLogoFeedback(error.message || 'Não foi possível carregar a imagem.')
+    } finally {
+      setSettingsLogoLoading(false)
+      event.target.value = ''
+    }
+  }
+
+  const handleSettingsLogoSave = () => {
+    if (!settingsLogoDraftDataUrl) {
+      setSettingsLogoFeedback('Selecione uma imagem para salvar.')
+      return
+    }
+    setCompanyLogoDataUrl(settingsLogoDraftDataUrl)
+    setCompanyLogoName(settingsLogoDraftName || 'logo')
+    setSettingsLogoDraftDataUrl('')
+    setSettingsLogoDraftName('')
+    setSettingsLogoFeedback('Logo da empresa salva com sucesso.')
+  }
+
+  const handleSettingsLogoRemove = () => {
+    setCompanyLogoDataUrl('')
+    setCompanyLogoName('')
+    setSettingsLogoDraftDataUrl('')
+    setSettingsLogoDraftName('')
+    setSettingsLogoFeedback('Logo removida.')
   }
 
   const openCreateModal = () => {
@@ -1999,6 +2272,17 @@ function App() {
     setChecklistOpen(false)
     setClientOpen(true)
     setCreateOpen(false)
+  }
+
+  const handleModalBackdropMouseDown = (event) => {
+    modalBackdropMouseDownRef.current = event.target === event.currentTarget
+  }
+
+  const handleModalBackdropClick = (event, onClose) => {
+    if (event.target !== event.currentTarget) return
+    if (!modalBackdropMouseDownRef.current) return
+    onClose()
+    modalBackdropMouseDownRef.current = false
   }
 
   const openBulkModal = () => {
@@ -2561,6 +2845,7 @@ function App() {
             subject,
             competence,
             client: client.nome,
+            clientEmail: client.email || '',
             cnpj: client.inscricao || `${client.docType || 'Documento'} não informado`,
             clientStatus: client.status === 'Ativo' ? 'Ativo' : 'Desativado',
             dates: [`A: ${actionBr}`, `M: ${metaBr}`, `V: ${dueBr}`],
@@ -2574,6 +2859,8 @@ function App() {
             baixaAt: '',
             baixaAction: '',
             justification: '',
+            emailSentAt: '',
+            emailSentTo: '',
             generatedBySettings: true,
             competenceMode: blueprint.competenceMode || 'Mesmo mês',
             departmentScope: blueprintDepartment || '',
@@ -2774,6 +3061,8 @@ function App() {
       subject: record.assunto || record.processo || 'Solicitação',
       competence: getCompetenceFromDate(record.actionDate, 'Mesmo mês'),
       client: record.clientName || linkedClient?.nome || '',
+      clientId: linkedClient?.id || record.clientId || null,
+      clientEmail: linkedClient?.email || '',
       cnpj: clientDocument,
       clientStatus: linkedClient?.status || 'Ativo',
       dates: [
@@ -2800,6 +3089,8 @@ function App() {
       baixaAt: record.baixaAt || '',
       baixaAction: record.baixaAction || '',
       justification: record.justification || '',
+      emailSentAt: record.emailSentAt || '',
+      emailSentTo: record.emailSentTo || '',
     }
   }
 
@@ -2825,10 +3116,38 @@ function App() {
             reportSource: 'task',
             reportKey: `task-${task.id}`,
             taskType: 'Tarefa',
+            emailSentAt: task.emailSentAt || '',
+            emailSentTo: task.emailSentTo || '',
+            clientEmail: task.clientEmail || '',
           }
         })()
     : null
   const selectedTaskDisplayStatus = selectedTask ? getTaskDisplayStatus(selectedTask) : null
+
+  const resolveTaskRecipientEmail = (task) => {
+    if (!task) return ''
+    if (String(task.clientEmail || '').trim()) return String(task.clientEmail || '').trim()
+
+    const byId = task.clientId ? clients.find((client) => client.id === task.clientId) : null
+    if (byId?.email) return String(byId.email).trim()
+
+    const taskDocumentDigits = extractDigits(task.cnpj)
+    if (taskDocumentDigits) {
+      const byDocument = clients.find((client) => extractDigits(client.inscricao) === taskDocumentDigits)
+      if (byDocument?.email) return String(byDocument.email).trim()
+    }
+
+    const taskClientName = String(task.client || '').trim().toLowerCase()
+    if (taskClientName) {
+      const byName = clients.find((client) => String(client.nome || '').trim().toLowerCase() === taskClientName)
+      if (byName?.email) return String(byName.email).trim()
+    }
+
+    return ''
+  }
+
+  const selectedTaskRecipientEmail = selectedTask ? resolveTaskRecipientEmail(selectedTask) : ''
+  const isTaskEmailSent = Boolean(selectedTask?.emailSentAt)
 
   const logTaskAction = (task, action) => {
     const timestamp = getNowBrTimestamp()
@@ -2955,18 +3274,21 @@ function App() {
     setScreen('task-detail')
   }
 
-  const handleTaskAttachmentAdd = (event) => {
+  const handleTaskAttachmentAdd = async (event) => {
     if (!selectedTaskRef) return
     const files = Array.from(event.target.files || [])
     if (!files.length) return
 
-    const mappedFiles = files.map((file, index) => ({
-      id: `${Date.now()}-${index}-${file.name}`,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      file,
-    }))
+    const mappedFiles = await Promise.all(
+      files.map(async (file, index) => ({
+        id: `${Date.now()}-${index}-${file.name}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        file,
+        contentBase64: await fileToBase64(file),
+      })),
+    )
     if (selectedTaskRef.source === 'solicitation') {
       setSolicitationRecords((prev) =>
         prev.map((item) =>
@@ -3007,20 +3329,101 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
-  const handleTaskDownload = () => {
+  const updateSelectedTaskData = (updater) => {
+    if (!selectedTaskRef) return
+    if (selectedTaskRef.source === 'solicitation') {
+      setSolicitationRecords((prev) =>
+        prev.map((item) => (item.id === selectedTaskRef.id ? updater(item) : item)),
+      )
+      return
+    }
+
+    setTasksRows((prev) => prev.map((item) => (item.id === selectedTaskRef.id ? updater(item) : item)))
+  }
+
+  const handleTaskSendEmail = async () => {
+    if (!selectedTask) return
+    if (!authSession?.token) {
+      setTaskActionError('Faça login no backend para enviar e-mails.')
+      return
+    }
+
+    const recipientEmail = selectedTaskRecipientEmail
+    if (!recipientEmail) {
+      setTaskActionError('Cliente sem e-mail cadastrado. Atualize o cadastro do cliente e tente novamente.')
+      return
+    }
+
+    const newestAttachment = [...(selectedTask.attachments || [])]
+      .reverse()
+      .find((attachment) => attachment?.contentBase64 || attachment?.file)
+
+    if (!newestAttachment) {
+      setTaskActionError('Anexe um arquivo para enviar por e-mail.')
+      return
+    }
+
+    try {
+      setTaskEmailSending(true)
+      let contentBase64 = newestAttachment.contentBase64 || ''
+
+      if (!contentBase64) {
+        if (!(newestAttachment.file instanceof File)) {
+          setTaskActionError('O anexo não está disponível para envio. Reanexe o arquivo e tente novamente.')
+          return
+        }
+
+        contentBase64 = await fileToBase64(newestAttachment.file)
+        updateSelectedTaskData((item) => ({
+          ...item,
+          attachments: (item.attachments || []).map((attachment) =>
+            attachment.id === newestAttachment.id ? { ...attachment, contentBase64 } : attachment,
+          ),
+        }))
+      }
+
+      await apiRequest('/tenant/send-task-email', {
+        method: 'POST',
+        token: authSession.token,
+        body: {
+          to: recipientEmail,
+          subject: `Hive Tarefas - ${selectedTask.subject}`,
+          message: `Envio automático da ${selectedTask.taskType || 'Tarefa'} #${selectedTask.id}.`,
+          taskId: selectedTask.id,
+          taskSource: selectedTask.reportSource || 'task',
+          attachment: {
+            name: newestAttachment.name || 'anexo',
+            type: newestAttachment.type || 'application/octet-stream',
+            contentBase64,
+          },
+        },
+      })
+
+      const sentAt = getNowBrTimestamp()
+      updateSelectedTaskData((item) => ({
+        ...item,
+        emailSentAt: sentAt,
+        emailSentTo: recipientEmail,
+      }))
+      logTaskAction(selectedTask, 'Enviar por E-mail')
+      setTaskActionError('')
+    } catch (error) {
+      setTaskActionError(error.message || 'Não foi possível enviar o e-mail.')
+    } finally {
+      setTaskEmailSending(false)
+    }
+  }
+
+  const handleTaskFinalize = () => {
     if (!selectedTask) return
     const entity = selectedTask.reportSource === 'solicitation' ? 'solicitação' : 'tarefa'
     const hasAttachment = Boolean(selectedTask.attachments?.length)
     const hasJustification = Boolean((selectedTask.justification || '').trim())
     if (!hasAttachment && !hasJustification) {
-      setTaskActionError(`Para baixar a ${entity}, anexe um arquivo ou preencha a justificativa.`)
+      setTaskActionError(`Para finalizar a ${entity}, anexe um arquivo ou preencha a justificativa.`)
       return
     }
-    if (hasAttachment) {
-      const newestAttachment = selectedTask.attachments[selectedTask.attachments.length - 1]
-      downloadAttachment(newestAttachment)
-    }
-    registerTaskBaixa(selectedTask, 'Baixar')
+    registerTaskBaixa(selectedTask, 'Finalizar')
     if (selectedTask.reportSource === 'solicitation') {
       setSolicitationRecords((prev) =>
         prev.map((item) =>
@@ -3029,7 +3432,7 @@ function App() {
                 ...item,
                 deliveryDate: getNowBrDate(),
                 conclusionDate: getNowBrDate(),
-                status: 'Finalizada',
+                status: 'Finalizado',
                 etapa: 'Concluída',
                 tag: 'lime',
               }
@@ -3044,7 +3447,7 @@ function App() {
                 ...item,
                 deliveryDate: getNowBrDate(),
                 conclusionDate: getNowBrDate(),
-                status: 'Finalizada',
+                status: 'Finalizado',
                 tag: 'lime',
               }
             : item,
@@ -3542,6 +3945,7 @@ function App() {
           competence,
           client: client.nome,
           clientId: client.id,
+          clientEmail: client.email || '',
           cnpj: client.inscricao || `${client.docType} não informado`,
           clientStatus: client.status === 'Ativo' ? 'Ativo' : 'Desativado',
           dates: [`A: ${actionBr}`, `M: ${metaBr}`, `V: ${dueBr}`],
@@ -3561,6 +3965,8 @@ function App() {
           baixaAt: '',
           baixaAction: '',
           justification: '',
+          emailSentAt: '',
+          emailSentTo: '',
           generatedBySettings: true,
           competenceMode: settingsTaskForm.competenceMode,
           departmentScope: selectedDepartment,
@@ -3675,6 +4081,8 @@ function App() {
         baixaAt: '',
         baixaAction: '',
         justification: '',
+        emailSentAt: '',
+        emailSentTo: '',
         createdAt: getNowBrTimestamp(),
       }
       nextId += 1
@@ -4752,10 +5160,10 @@ function App() {
   )
   const controlRowsData = controlRows.map((group) => {
     if (group.group === 'Obrigações') {
-      return { ...group, items: obligationsRowsDynamic.length ? obligationsRowsDynamic : group.items }
+      return { ...group, items: obligationsRowsDynamic }
     }
     if (group.group === 'Solicitações') {
-      return { ...group, items: solicitationItems.length ? solicitationItems : group.items }
+      return { ...group, items: solicitationItems }
     }
     return group
   })
@@ -4851,16 +5259,6 @@ function App() {
                 <button className="link" type="button">
                   Esqueci minha senha
                 </button>
-                <button
-                  className="ghost"
-                  type="button"
-                  onClick={() => {
-                    setError('')
-                    setScreen('dashboard')
-                  }}
-                >
-                  Explorar demo
-                </button>
               </div>
             </div>
 
@@ -4878,7 +5276,7 @@ function App() {
                 Adicione uma camada extra de proteção aos dados da sua empresa e de seus clientes.
                 Automatize tarefas recorrentes, valide documentos e acompanhe indicadores em tempo real.
               </p>
-              <button className="primary wide" type="button" onClick={() => setScreen('dashboard')}>
+              <button className="primary wide" type="button">
                 Clique aqui e veja como ativar agora
               </button>
               <div className="hero-note">
@@ -4898,7 +5296,13 @@ function App() {
       ) : (
         <section className="dashboard">
           <aside className="sidebar">
-            <div className="sidebar-avatar">HV</div>
+            <div className={`sidebar-avatar${companyLogoDataUrl && !isSuperAdmin ? ' has-logo' : ''}`}>
+              {companyLogoDataUrl && !isSuperAdmin ? (
+                <img src={companyLogoDataUrl} alt={companyLogoName || 'Logo da empresa'} />
+              ) : (
+                'HV'
+              )}
+            </div>
             <nav className="nav">
               {(isSuperAdmin
                 ? ['Super Admin']
@@ -4948,9 +5352,16 @@ function App() {
 
           <div className="main">
             <header className="topbar">
-              <div className="search">
-                <span className="search-icon" />
-                <input type="search" placeholder="Digite aqui para começar a pesquisa..." />
+              <div className="topbar-main">
+                <div className="search">
+                  <span className="search-icon" />
+                  <input type="search" placeholder="Digite aqui para começar a pesquisa..." />
+                </div>
+                {!isSuperAdmin && screen === 'dashboard' ? (
+                  <span className="welcome-tenant-pill" title={`Tenant: ${tenantDisplayName}`}>
+                    Bem Vindo {tenantDisplayName}
+                  </span>
+                ) : null}
               </div>
               <div className="top-actions">
                 {isSuperAdmin ? (
@@ -5109,6 +5520,7 @@ function App() {
                             setSuperTenantForm((prev) => ({ ...prev, adminEmail: event.target.value }))
                           }
                           placeholder="admin@tenant.com"
+                          required
                         />
                       </label>
                       <label>
@@ -5120,6 +5532,7 @@ function App() {
                             setSuperTenantForm((prev) => ({ ...prev, adminPassword: event.target.value }))
                           }
                           placeholder="mínimo 6 caracteres"
+                          required
                         />
                       </label>
                       <button type="submit" className="chip primary small" disabled={isApiLoading}>
@@ -5138,7 +5551,7 @@ function App() {
                           <button
                             type="button"
                             className="super-admin-item-main"
-                            onClick={() => setSelectedSuperTenantId(tenant.id)}
+                            onClick={() => openSuperTenantEditor(tenant)}
                           >
                             <strong>{tenant.name}</strong>
                             <small>{tenant.slug}</small>
@@ -6571,7 +6984,7 @@ function App() {
                                 className="chip tiny"
                                 onClick={() => downloadAttachment(attachment)}
                               >
-                                Baixar
+                                Download
                               </button>
                             </div>
                           ))
@@ -6584,9 +6997,9 @@ function App() {
                         <button
                           type="button"
                           className="chip tiny"
-                          onClick={handleTaskDownload}
+                          onClick={handleTaskFinalize}
                         >
-                          Baixar
+                          Finalizar
                         </button>
                         <button type="button" className="chip tiny" onClick={handleTaskDispense}>
                           Dispensar
@@ -6597,7 +7010,30 @@ function App() {
                         <button type="button" className="danger-outline" onClick={handleTaskDelete}>
                           Excluir
                         </button>
+                        <button
+                          type="button"
+                          className={`chip tiny task-email-button ${isTaskEmailSent ? 'sent' : ''}`}
+                          onClick={handleTaskSendEmail}
+                          disabled={taskEmailSending}
+                          title={
+                            selectedTaskRecipientEmail
+                              ? `Enviar para ${selectedTaskRecipientEmail}`
+                              : 'Cliente sem e-mail cadastrado'
+                          }
+                        >
+                          {taskEmailSending
+                            ? 'Enviando...'
+                            : isTaskEmailSent
+                              ? 'E-mail enviado'
+                              : 'Enviar por E-mail'}
+                        </button>
                       </div>
+                      {selectedTask.emailSentAt ? (
+                        <p className="task-email-meta">
+                          Enviado para <strong>{selectedTask.emailSentTo || selectedTaskRecipientEmail}</strong> em{' '}
+                          {selectedTask.emailSentAt}
+                        </p>
+                      ) : null}
 
                       <div className="task-action-log">
                         <h6>
@@ -6661,6 +7097,55 @@ function App() {
                 {settingsTab === 'users' ? (
                   <section className="card settings-card">
                     <h5>Cadastro de usuários</h5>
+                    <div className="settings-logo-panel">
+                      <div className="settings-logo-head">
+                        <h6>Logo da empresa</h6>
+                        <p>Formatos aceitos: PNG, JPG, JPEG, SVG, WEBP e outros formatos de imagem.</p>
+                      </div>
+                      <div className="settings-logo-grid">
+                        <label className="settings-field">
+                          <span>Anexar logo</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleSettingsLogoSelect}
+                            disabled={settingsLogoLoading}
+                          />
+                        </label>
+                        <div className="settings-logo-preview">
+                          {settingsLogoDraftDataUrl || companyLogoDataUrl ? (
+                            <img
+                              src={settingsLogoDraftDataUrl || companyLogoDataUrl}
+                              alt={settingsLogoDraftName || companyLogoName || 'Logo'}
+                            />
+                          ) : (
+                            <span>Sem logo cadastrada</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="settings-actions-row settings-logo-actions">
+                        <button
+                          type="button"
+                          className="chip small"
+                          onClick={handleSettingsLogoRemove}
+                          disabled={!companyLogoDataUrl && !settingsLogoDraftDataUrl}
+                        >
+                          Remover
+                        </button>
+                        <button
+                          type="button"
+                          className="primary small"
+                          onClick={handleSettingsLogoSave}
+                          disabled={!settingsLogoDraftDataUrl || settingsLogoLoading}
+                        >
+                          Salvar logo
+                        </button>
+                      </div>
+                      {settingsLogoFeedback ? (
+                        <p className="settings-feedback">{settingsLogoFeedback}</p>
+                      ) : null}
+                    </div>
+
                     <form className="settings-form-grid" onSubmit={handleSettingsUserSave}>
                       <label className="settings-field">
                         <span>Nome</span>
@@ -7454,8 +7939,161 @@ function App() {
             ) : null}
           </div>
 
+          {superTenantEditorOpen ? (
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, closeSuperTenantEditor)}
+            >
+              <div className="modal-card super-tenant-editor-modal" onClick={(event) => event.stopPropagation()}>
+                <header className="modal-header">
+                  <h3>Tenant</h3>
+                  <button className="modal-close" type="button" onClick={closeSuperTenantEditor}>
+                    ×
+                  </button>
+                </header>
+
+                <form className="client-form" onSubmit={handleSuperTenantEditorSave}>
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Nome do tenant</span>
+                      <input
+                        type="text"
+                        value={superTenantEditorForm.name}
+                        onChange={(event) =>
+                          setSuperTenantEditorForm((prev) => ({ ...prev, name: event.target.value }))
+                        }
+                        disabled={superTenantEditorMode !== 'edit'}
+                        required
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Slug</span>
+                      <input
+                        type="text"
+                        value={superTenantEditorForm.slug}
+                        onChange={(event) =>
+                          setSuperTenantEditorForm((prev) => ({ ...prev, slug: event.target.value }))
+                        }
+                        disabled={superTenantEditorMode !== 'edit'}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Admin do tenant</span>
+                      <input
+                        type="text"
+                        value={superTenantEditorForm.adminName}
+                        onChange={(event) =>
+                          setSuperTenantEditorForm((prev) => ({ ...prev, adminName: event.target.value }))
+                        }
+                        disabled={superTenantEditorMode !== 'edit'}
+                        placeholder="Nome do admin"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>E-mail admin</span>
+                      <input
+                        type="email"
+                        value={superTenantEditorForm.adminEmail}
+                        onChange={(event) =>
+                          setSuperTenantEditorForm((prev) => ({ ...prev, adminEmail: event.target.value }))
+                        }
+                        disabled={superTenantEditorMode !== 'edit'}
+                        placeholder="admin@tenant.com"
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Senha admin</span>
+                      <input
+                        type="password"
+                        value={superTenantEditorMode === 'edit' ? superTenantEditorForm.adminPassword : '********'}
+                        onChange={(event) =>
+                          setSuperTenantEditorForm((prev) => ({ ...prev, adminPassword: event.target.value }))
+                        }
+                        disabled={superTenantEditorMode !== 'edit'}
+                        placeholder={
+                          superTenantEditorMode === 'edit'
+                            ? 'Digite para redefinir'
+                            : 'Oculta por segurança'
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Status</span>
+                      <input
+                        type="text"
+                        value={superTenantEditorForm.status === 'ACTIVE' ? 'Ativo' : 'Inativo'}
+                        disabled
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-grid">
+                    <label className="field">
+                      <span>Criado em</span>
+                      <input
+                        type="text"
+                        value={formatIsoDateTimeToBr(superTenantEditorForm.createdAt) || '-'}
+                        disabled
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Última atualização</span>
+                      <input
+                        type="text"
+                        value={formatIsoDateTimeToBr(superTenantEditorForm.updatedAt) || '-'}
+                        disabled
+                      />
+                    </label>
+                  </div>
+
+                  <div className="super-tenant-editor-actions">
+                    {superTenantEditorMode !== 'edit' ? (
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={enableSuperTenantEditorEdit}
+                      >
+                        Editar
+                      </button>
+                    ) : null}
+                    {superTenantEditorMode === 'edit' ? (
+                      <>
+                        <button type="submit" className="chip primary" disabled={isApiLoading}>
+                          Salvar
+                        </button>
+                        <button type="button" className="chip" onClick={cancelSuperTenantEditorEdit}>
+                          Cancelar
+                        </button>
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="danger-outline"
+                      onClick={handleSuperTenantDelete}
+                      disabled={isApiLoading}
+                    >
+                      Excluir
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          ) : null}
+
           {createOpen ? (
-            <div className="modal-backdrop" onClick={() => setCreateOpen(false)}>
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, () => setCreateOpen(false))}
+            >
               <div className="modal-card" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
                   <h3>Criar</h3>
@@ -7515,7 +8153,11 @@ function App() {
           ) : null}
 
           {taskCreateOpen ? (
-            <div className="modal-backdrop" onClick={() => setTaskCreateOpen(false)}>
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, () => setTaskCreateOpen(false))}
+            >
               <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
                   <h3>Cadastro de tarefas</h3>
@@ -7802,10 +8444,13 @@ function App() {
           {solicitationOpen ? (
             <div
               className="modal-backdrop"
-              onClick={() => {
-                setSolicitationOpen(false)
-                clearSolicitationForm()
-              }}
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) =>
+                handleModalBackdropClick(event, () => {
+                  setSolicitationOpen(false)
+                  clearSolicitationForm()
+                })
+              }
             >
               <div className="modal-card wide solicitation-modal" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
@@ -8121,7 +8766,11 @@ function App() {
           ) : null}
 
           {clientTaskGenerateOpen ? (
-            <div className="modal-backdrop" onClick={closeClientTaskGenerateModal}>
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, closeClientTaskGenerateModal)}
+            >
               <div
                 className="modal-card wide client-task-generate-modal"
                 onClick={(event) => event.stopPropagation()}
@@ -8279,7 +8928,11 @@ function App() {
           ) : null}
 
           {clientOpen ? (
-            <div className="modal-backdrop" onClick={() => setClientOpen(false)}>
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, () => setClientOpen(false))}
+            >
               <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
                   <h3>
@@ -8780,7 +9433,11 @@ function App() {
           ) : null}
 
           {confirmOpen ? (
-            <div className="modal-backdrop" onClick={cancelDelete}>
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, cancelDelete)}
+            >
               <div className="modal-card confirm" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
                   <h3>Confirmar exclusão</h3>
@@ -8813,7 +9470,11 @@ function App() {
           ) : null}
 
           {bulkOpen ? (
-            <div className="modal-backdrop" onClick={() => setBulkOpen(false)}>
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, () => setBulkOpen(false))}
+            >
               <div className="modal-card" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
                   <h3>Editar em lote</h3>

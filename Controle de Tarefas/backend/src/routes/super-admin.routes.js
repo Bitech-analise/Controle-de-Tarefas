@@ -29,6 +29,12 @@ const tenantUpdateSchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
 })
 
+const tenantAdminUpdateSchema = z.object({
+  name: z.string().min(2).optional(),
+  email: z.string().email().optional(),
+  password: z.string().min(6).optional(),
+})
+
 const clientBaseSchema = z.object({
   name: z.string().min(2),
   alias: z.string().optional().nullable(),
@@ -120,6 +126,14 @@ router.post('/tenants', validateBody(tenantCreateSchema), async (req, res, next)
       return res.status(409).json({ message: 'Slug já utilizado.' })
     }
 
+    const adminEmail = req.body.adminEmail?.toLowerCase().trim()
+    const adminPassword = req.body.adminPassword?.trim()
+    const adminName = req.body.adminName?.trim()
+
+    if (!adminEmail || !adminPassword) {
+      return res.status(400).json({ message: 'Informe e-mail e senha do admin para criar o tenant.' })
+    }
+
     const tenant = await prisma.$transaction(async (tx) => {
       const createdTenant = await tx.tenant.create({
         data: {
@@ -129,24 +143,21 @@ router.post('/tenants', validateBody(tenantCreateSchema), async (req, res, next)
         },
       })
 
-      if (req.body.adminEmail && req.body.adminPassword && req.body.adminName) {
-        const email = req.body.adminEmail.toLowerCase().trim()
-        const userExists = await tx.tenantUser.findUnique({ where: { email } })
-        if (userExists) {
-          throw new Error('ADMIN_EMAIL_ALREADY_EXISTS')
-        }
-
-        await tx.tenantUser.create({
-          data: {
-            tenantId: createdTenant.id,
-            name: req.body.adminName.trim(),
-            email,
-            passwordHash: await bcrypt.hash(req.body.adminPassword, 10),
-            role: 'TENANT_ADMIN',
-            isActive: true,
-          },
-        })
+      const userExists = await tx.tenantUser.findUnique({ where: { email: adminEmail } })
+      if (userExists) {
+        throw new Error('ADMIN_EMAIL_ALREADY_EXISTS')
       }
+
+      await tx.tenantUser.create({
+        data: {
+          tenantId: createdTenant.id,
+          name: adminName || `Admin ${createdTenant.name}`,
+          email: adminEmail,
+          passwordHash: await bcrypt.hash(adminPassword, 10),
+          role: 'TENANT_ADMIN',
+          isActive: true,
+        },
+      })
 
       return createdTenant
     })
@@ -187,6 +198,114 @@ router.patch('/tenants/:tenantId', validateBody(tenantUpdateSchema), async (req,
     })
 
     return res.json(updated)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete('/tenants/:tenantId', async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.tenantId } })
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant não encontrado.' })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.tenantUser.deleteMany({
+        where: { tenantId: tenant.id },
+      })
+
+      await tx.tenant.delete({
+        where: { id: tenant.id },
+      })
+    })
+
+    return res.status(204).send()
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.patch('/tenants/:tenantId/admin', validateBody(tenantAdminUpdateSchema), async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.tenantId } })
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant n�o encontrado.' })
+    }
+
+    const adminUser = await prisma.tenantUser.findFirst({
+      where: {
+        tenantId: tenant.id,
+        role: 'TENANT_ADMIN',
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    const nextName = req.body.name?.trim()
+    const nextEmail = req.body.email?.toLowerCase().trim()
+    const nextPassword = req.body.password
+
+    if (!adminUser) {
+      if (!nextEmail || !nextPassword) {
+        return res.status(400).json({
+          message: 'Esse tenant ainda n�o possui admin. Informe e-mail e senha para criar o acesso.',
+        })
+      }
+
+      const emailInUse = await prisma.tenantUser.findUnique({ where: { email: nextEmail } })
+      if (emailInUse) {
+        return res.status(409).json({ message: 'E-mail do admin j� est� em uso.' })
+      }
+
+      const createdUser = await prisma.tenantUser.create({
+        data: {
+          tenantId: tenant.id,
+          name: nextName || `Admin ${tenant.name}`,
+          email: nextEmail,
+          passwordHash: await bcrypt.hash(nextPassword, 10),
+          role: 'TENANT_ADMIN',
+          isActive: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      })
+
+      return res.json(createdUser)
+    }
+
+    if (nextEmail && nextEmail !== adminUser.email) {
+      const emailInUse = await prisma.tenantUser.findUnique({ where: { email: nextEmail } })
+      if (emailInUse) {
+        return res.status(409).json({ message: 'E-mail do admin j� est� em uso.' })
+      }
+    }
+
+    const updatedUser = await prisma.tenantUser.update({
+      where: { id: adminUser.id },
+      data: {
+        ...(nextName ? { name: nextName } : {}),
+        ...(nextEmail ? { email: nextEmail } : {}),
+        ...(nextPassword ? { passwordHash: await bcrypt.hash(nextPassword, 10) } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    })
+
+    return res.json(updatedUser)
   } catch (error) {
     return next(error)
   }

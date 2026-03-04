@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import prisma from '../lib/prisma.js'
+import env from '../config/env.js'
+import { sendTaskEmail } from '../lib/mailer.js'
 import { requireAuth, resolveTenantFromAuth } from '../middlewares/auth.js'
 import { validateBody, validateQuery } from '../middlewares/validate.js'
 
@@ -45,6 +47,19 @@ const listTasksQuerySchema = z.object({
 
 const tenantStateBodySchema = z.object({
   state: z.object({}).passthrough(),
+})
+
+const sendTaskEmailSchema = z.object({
+  to: z.string().email(),
+  subject: z.string().min(3),
+  message: z.string().optional().default(''),
+  taskId: z.union([z.string(), z.number()]).optional(),
+  taskSource: z.enum(['task', 'solicitation']).optional().default('task'),
+  attachment: z.object({
+    name: z.string().min(1),
+    type: z.string().optional().default('application/octet-stream'),
+    contentBase64: z.string().min(1),
+  }),
 })
 
 const getEmptyTenantState = () => ({
@@ -122,6 +137,60 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
     })
 
     return res.json({ ok: true, updatedAt: persisted.updatedAt })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req)
+    if (!tenantId) {
+      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+    }
+
+    if (!env.smtpHost || !env.smtpUser || !env.smtpPass || !env.smtpFrom) {
+      return res.status(400).json({
+        message:
+          'SMTP não configurado no backend. Preencha SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS e SMTP_FROM.',
+      })
+    }
+
+    let attachmentBuffer
+    try {
+      attachmentBuffer = Buffer.from(req.body.attachment.contentBase64, 'base64')
+    } catch {
+      return res.status(400).json({ message: 'Anexo inválido para envio por e-mail.' })
+    }
+
+    if (!attachmentBuffer?.length) {
+      return res.status(400).json({ message: 'Anexo vazio para envio por e-mail.' })
+    }
+
+    const emailText = [
+      `Encaminhamento automático da Hive Tarefas.`,
+      req.body.taskId ? `Referência: ${req.body.taskSource || 'task'} #${req.body.taskId}` : '',
+      req.body.message || '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+
+    const info = await sendTaskEmail({
+      to: req.body.to,
+      subject: req.body.subject,
+      text: emailText,
+      attachment: {
+        name: req.body.attachment.name,
+        type: req.body.attachment.type,
+        buffer: attachmentBuffer,
+      },
+    })
+
+    return res.json({
+      ok: true,
+      messageId: info?.messageId || null,
+      sentAt: new Date().toISOString(),
+    })
   } catch (error) {
     return next(error)
   }
