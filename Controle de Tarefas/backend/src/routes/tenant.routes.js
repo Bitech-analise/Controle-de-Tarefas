@@ -1,9 +1,10 @@
 import { Router } from 'express'
+import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import prisma from '../lib/prisma.js'
 import env from '../config/env.js'
 import { sendTaskEmail } from '../lib/mailer.js'
-import { requireAuth, resolveTenantFromAuth } from '../middlewares/auth.js'
+import { requireAuth, requireRole, resolveTenantFromAuth } from '../middlewares/auth.js'
 import { validateBody, validateQuery } from '../middlewares/validate.js'
 
 const router = Router()
@@ -49,6 +50,10 @@ const tenantStateBodySchema = z.object({
   state: z.object({}).passthrough(),
 })
 
+const tenantBrandingBodySchema = z.object({
+  branding: z.object({}).passthrough(),
+})
+
 const sendTaskEmailSchema = z.object({
   to: z.string().email(),
   subject: z.string().min(3),
@@ -62,6 +67,24 @@ const sendTaskEmailSchema = z.object({
   }),
 })
 
+const tenantUserCreateSchema = z.object({
+  name: z.string().min(2),
+  email: z.string().email(),
+  password: z.string().min(4),
+  clientIds: z.array(z.string()).optional().default([]),
+  role: z.enum(['TENANT_ADMIN', 'TENANT_USER']).optional().default('TENANT_USER'),
+  isActive: z.boolean().optional().default(true),
+})
+
+const tenantUserUpdateSchema = z.object({
+  name: z.string().min(2).optional(),
+  email: z.string().email().optional(),
+  password: z.string().min(4).optional(),
+  clientIds: z.array(z.string()).optional(),
+  role: z.enum(['TENANT_ADMIN', 'TENANT_USER']).optional(),
+  isActive: z.boolean().optional(),
+})
+
 const getEmptyTenantState = () => ({
   schemaVersion: 1,
   users: [],
@@ -72,11 +95,210 @@ const getEmptyTenantState = () => ({
   taskActionLogs: [],
 })
 
+router.get('/users', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req)
+    if (!tenantId) {
+      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+    }
+
+    const users = await prisma.tenantUser.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        isActive: true,
+        clientIds: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    })
+
+    return res.json(users)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post(
+  '/users',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantUserCreateSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      }
+
+      const email = String(req.body.email || '')
+        .trim()
+        .toLowerCase()
+      const name = String(req.body.name || '').trim()
+      const password = String(req.body.password || '').trim()
+      const role = req.body.role || 'TENANT_USER'
+      const isActive = req.body.isActive !== false
+      const candidateClientIds = Array.isArray(req.body.clientIds) ? req.body.clientIds : []
+
+      if (!name || !email || !password) {
+        return res.status(400).json({ message: 'Informe nome, e-mail e senha para cadastrar o usuÃ¡rio.' })
+      }
+
+      const emailInUse = await prisma.tenantUser.findUnique({ where: { email } })
+      if (emailInUse) {
+        return res.status(409).json({ message: 'JÃ¡ existe um usuÃ¡rio com esse e-mail.' })
+      }
+
+      const clientIds = Array.from(
+        new Set(
+          candidateClientIds
+            .map((clientId) => String(clientId || '').trim())
+            .filter(Boolean),
+        ),
+      )
+
+      const created = await prisma.tenantUser.create({
+        data: {
+          tenantId,
+          name,
+          email,
+          passwordHash: await bcrypt.hash(password, 10),
+          role,
+          isActive,
+          clientIds,
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isActive: true,
+          clientIds: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      })
+
+      return res.status(201).json(created)
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.patch(
+  '/users/:userId',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantUserUpdateSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      }
+
+      const target = await prisma.tenantUser.findFirst({
+        where: { id: req.params.userId, tenantId },
+      })
+
+      if (!target) {
+        return res.status(404).json({ message: 'UsuÃ¡rio nÃ£o encontrado para este tenant.' })
+      }
+
+      const nextEmail = req.body.email
+        ? String(req.body.email || '')
+            .trim()
+            .toLowerCase()
+        : undefined
+
+      if (nextEmail && nextEmail !== target.email) {
+        const emailInUse = await prisma.tenantUser.findUnique({ where: { email: nextEmail } })
+        if (emailInUse) {
+          return res.status(409).json({ message: 'JÃ¡ existe um usuÃ¡rio com esse e-mail.' })
+        }
+      }
+
+      let nextClientIds
+      if (Array.isArray(req.body.clientIds)) {
+        nextClientIds = Array.from(
+          new Set(
+            req.body.clientIds
+              .map((clientId) => String(clientId || '').trim())
+              .filter(Boolean),
+          ),
+        )
+      }
+
+      const updated = await prisma.tenantUser.update({
+        where: { id: target.id },
+        data: {
+          ...(req.body.name ? { name: req.body.name.trim() } : {}),
+          ...(nextEmail ? { email: nextEmail } : {}),
+          ...(req.body.password ? { passwordHash: await bcrypt.hash(req.body.password, 10) } : {}),
+          ...(nextClientIds ? { clientIds: nextClientIds } : {}),
+          ...(typeof req.body.isActive === 'boolean' ? { isActive: req.body.isActive } : {}),
+          ...(req.body.role ? { role: req.body.role } : {}),
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isActive: true,
+          clientIds: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      })
+
+      return res.json(updated)
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.delete(
+  '/users/:userId',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      }
+
+      const target = await prisma.tenantUser.findFirst({
+        where: { id: req.params.userId, tenantId },
+      })
+
+      if (!target) {
+        return res.status(404).json({ message: 'UsuÃ¡rio nÃ£o encontrado para este tenant.' })
+      }
+
+      if (req.auth?.sub === target.id) {
+        return res.status(400).json({ message: 'NÃ£o Ã© permitido excluir o usuÃ¡rio atualmente logado.' })
+      }
+
+      await prisma.tenantUser.delete({
+        where: { id: target.id },
+      })
+
+      return res.status(204).send()
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
 router.get('/summary', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
     }
 
     const [clientsTotal, clientsActive, tasksTotal, tasksOpen] = await Promise.all([
@@ -102,7 +324,7 @@ router.get('/state', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
     }
 
     const state = await prisma.tenantState.findUnique({
@@ -123,15 +345,46 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId obrigatorio para este usuario.' })
+    }
+
+    const currentStateRecord = await prisma.tenantState.findUnique({
+      where: { tenantId },
+      select: { data: true },
+    })
+    const currentState =
+      currentStateRecord?.data && typeof currentStateRecord.data === 'object'
+        ? currentStateRecord.data
+        : getEmptyTenantState()
+
+    const incomingState =
+      req.body?.state && typeof req.body.state === 'object' ? req.body.state : getEmptyTenantState()
+
+    let stateToPersist = {
+      ...incomingState,
+      // Branding e salvo apenas pela rota /tenant/branding.
+      // Isso evita que autosave com estado antigo apague a logo.
+      branding:
+        currentState?.branding && typeof currentState.branding === 'object'
+          ? currentState.branding
+          : incomingState?.branding && typeof incomingState.branding === 'object'
+            ? incomingState.branding
+            : {},
+    }
+
+    if (req.auth?.role === 'TENANT_USER') {
+      stateToPersist = {
+        ...stateToPersist,
+        users: Array.isArray(currentState?.users) ? currentState.users : [],
+      }
     }
 
     const persisted = await prisma.tenantState.upsert({
       where: { tenantId },
-      update: { data: req.body.state },
+      update: { data: stateToPersist },
       create: {
         tenantId,
-        data: req.body.state,
+        data: stateToPersist,
       },
       select: { updatedAt: true },
     })
@@ -142,17 +395,70 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
   }
 })
 
+router.put(
+  '/branding',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantBrandingBodySchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      }
+
+      const currentStateRecord = await prisma.tenantState.findUnique({
+        where: { tenantId },
+        select: { data: true },
+      })
+
+      const currentState =
+        currentStateRecord?.data && typeof currentStateRecord.data === 'object'
+          ? currentStateRecord.data
+          : getEmptyTenantState()
+
+      const brandingSource =
+        req.body?.branding && typeof req.body.branding === 'object' ? req.body.branding : {}
+      const nextBranding = {
+        logoDataUrl:
+          typeof brandingSource.logoDataUrl === 'string' ? brandingSource.logoDataUrl : '',
+        logoName: typeof brandingSource.logoName === 'string' ? brandingSource.logoName : '',
+      }
+
+      const stateToPersist = {
+        ...currentState,
+        schemaVersion:
+          typeof currentState.schemaVersion === 'number' ? currentState.schemaVersion : 1,
+        branding: nextBranding,
+      }
+
+      const persisted = await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+        select: { updatedAt: true },
+      })
+
+      return res.json({ ok: true, updatedAt: persisted.updatedAt, branding: nextBranding })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
 router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
     }
 
     if (!env.smtpHost || !env.smtpUser || !env.smtpPass || !env.smtpFrom) {
       return res.status(400).json({
         message:
-          'SMTP não configurado no backend. Preencha SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS e SMTP_FROM.',
+          'SMTP nÃ£o configurado no backend. Preencha SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS e SMTP_FROM.',
       })
     }
 
@@ -160,7 +466,7 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     try {
       attachmentBuffer = Buffer.from(req.body.attachment.contentBase64, 'base64')
     } catch {
-      return res.status(400).json({ message: 'Anexo inválido para envio por e-mail.' })
+      return res.status(400).json({ message: 'Anexo invÃ¡lido para envio por e-mail.' })
     }
 
     if (!attachmentBuffer?.length) {
@@ -168,8 +474,8 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     }
 
     const emailText = [
-      `Encaminhamento automático da Hive Tarefas.`,
-      req.body.taskId ? `Referência: ${req.body.taskSource || 'task'} #${req.body.taskId}` : '',
+      `Encaminhamento automÃ¡tico da Hive Tarefas.`,
+      req.body.taskId ? `ReferÃªncia: ${req.body.taskSource || 'task'} #${req.body.taskId}` : '',
       req.body.message || '',
     ]
       .filter(Boolean)
@@ -200,7 +506,7 @@ router.get('/clients', validateQuery(listClientsQuerySchema), async (req, res, n
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
     }
 
     const query = req.query.q.trim()
@@ -235,7 +541,7 @@ router.post('/clients', validateBody(upsertClientSchema), async (req, res, next)
   try {
     const tenantId = resolveTenantFromAuth(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
     }
 
     const client = await prisma.client.create({
@@ -258,7 +564,7 @@ router.get('/tasks', validateQuery(listTasksQuerySchema), async (req, res, next)
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
     }
 
     const query = req.query.q.trim()
@@ -296,3 +602,4 @@ router.get('/tasks', validateQuery(listTasksQuerySchema), async (req, res, next)
 })
 
 export default router
+

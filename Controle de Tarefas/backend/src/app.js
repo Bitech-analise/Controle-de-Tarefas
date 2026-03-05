@@ -17,7 +17,7 @@ app.use(
     credentials: true,
   }),
 )
-app.use(express.json({ limit: '4mb' }))
+app.use(express.json({ limit: '25mb' }))
 app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'))
 
 app.get('/', (_req, res) => {
@@ -37,6 +37,12 @@ app.use((error, _req, res, _next) => {
   const prismaUniqueErrorCode = 'P2002'
   if (error?.code === prismaUniqueErrorCode) {
     return res.status(409).json({ message: 'Registro já existe com os mesmos dados únicos.' })
+  }
+
+  if (error?.type === 'entity.too.large' || error?.status === 413) {
+    return res.status(413).json({
+      message: 'Arquivo grande demais para envio. Reduza o tamanho da imagem e tente novamente.',
+    })
   }
 
   console.error(error)

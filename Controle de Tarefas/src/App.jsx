@@ -726,6 +726,11 @@ const getGeneratedTaskStatus = (actionIso, metaIso, dueIso) => {
 }
 
 const getTaskDisplayStatus = (row) => {
+  const persistedStatus = String(row.status || '').trim()
+  if (isCompletedTaskStatus(persistedStatus)) {
+    return { status: persistedStatus, tag: row.tag || 'lime' }
+  }
+
   const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
   if (!hasDeliveryDate) {
     const actionIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'A'))
@@ -799,7 +804,7 @@ const isCompletedTaskStatus = (status) => {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
 
-  return ['finalizada', 'concluida', 'dispensada', 'cancelada'].some((keyword) =>
+  return ['finaliz', 'concluid', 'dispensad', 'cancelad'].some((keyword) =>
     normalizedStatus.includes(keyword),
   )
 }
@@ -1511,7 +1516,57 @@ function App() {
   const [appliedOperationalFilters, setAppliedOperationalFilters] = useState(initialOperationalFilters)
   const superAdminToken = authSession?.token || ''
   const isSuperAdmin = authSession?.user?.role === 'SUPER_ADMIN'
+  const isTenantAdmin = authSession?.user?.role === 'TENANT_ADMIN'
+  const currentAuthEmailLower = String(authSession?.user?.email || '')
+    .trim()
+    .toLowerCase()
   const tenantDisplayName = String(authSession?.user?.tenantName || '').trim() || 'Empresa'
+  const isTenantRestrictedUser = authSession?.user?.role === 'TENANT_USER'
+  const canManageTenantUsers = isTenantAdmin
+  const canManageTenantBranding = isTenantAdmin
+  const currentTenantUserProfile = users.find(
+    (user) => String(user.email || '').trim().toLowerCase() === currentAuthEmailLower,
+  )
+  const currentTenantDepartmentKey = normalizeFreeText(
+    getDepartmentLabel(currentTenantUserProfile?.departamento || ''),
+  )
+  const authAllowedClientIds = Array.isArray(authSession?.user?.clientIds)
+    ? authSession.user.clientIds
+    : []
+  const authAllowedClientIdSet = new Set(authAllowedClientIds.map((id) => String(id)))
+  const authAllowedClientNameSet = new Set(
+    clients
+      .filter((client) => authAllowedClientIdSet.has(String(client.id)))
+      .map((client) => String(client.nome || '').trim().toLowerCase())
+      .filter(Boolean),
+  )
+  const isAllowedByAuthClientScope = (clientId, clientName = '') => {
+    if (!isTenantRestrictedUser) return true
+    if (clientId && authAllowedClientIdSet.has(String(clientId))) return true
+    return authAllowedClientNameSet.has(String(clientName || '').trim().toLowerCase())
+  }
+  const isAllowedByAuthDepartmentScope = (department) => {
+    if (!isTenantRestrictedUser) return true
+    if (!currentTenantDepartmentKey) return false
+    const normalizedTaskDepartment = normalizeFreeText(getDepartmentLabel(department))
+    return normalizedTaskDepartment === currentTenantDepartmentKey
+  }
+  const clientsForCurrentUser = isTenantRestrictedUser
+    ? clients.filter((client) => authAllowedClientIdSet.has(String(client.id)))
+    : clients
+  const tasksRowsForCurrentUser = isTenantRestrictedUser
+    ? tasksRows.filter(
+        (task) =>
+          isAllowedByAuthClientScope(task.clientId, task.client) &&
+          isAllowedByAuthDepartmentScope(task.dept),
+      )
+    : tasksRows
+  const solicitationRecordsForCurrentUser = isTenantRestrictedUser
+    ? solicitationRecords.filter((record) =>
+        isAllowedByAuthClientScope(record.clientId, record.clientName) &&
+        isAllowedByAuthDepartmentScope(record.departamento),
+      )
+    : solicitationRecords
 
   useEffect(() => {
     if (!groupsOpen) return
@@ -1605,11 +1660,24 @@ function App() {
   }, [userClientsOpen])
 
   useEffect(() => {
+    if (canManageTenantUsers) return
+    setEditingUserId(null)
+    setUserForm(emptyUserForm)
+    setUserClientsOpen(false)
+  }, [canManageTenantUsers])
+
+  useEffect(() => {
+    if (!isTenantRestrictedUser) return
+    if (screen !== 'settings') return
+    setScreen('dashboard')
+  }, [isTenantRestrictedUser, screen])
+
+  useEffect(() => {
     if (!selectAllRef.current) return
-    const total = clients.length
+    const total = clientsForCurrentUser.length
     const selected = selectedClientIds.length
     selectAllRef.current.indeterminate = selected > 0 && selected < total
-  }, [clients.length, selectedClientIds.length])
+  }, [clientsForCurrentUser.length, selectedClientIds.length])
 
   useEffect(() => {
     if (!authSession?.token || !authSession?.user) return
@@ -1646,12 +1714,16 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authSession?.token, isSuperAdmin])
 
+  const clearPendingTenantStatePersist = () => {
+    if (!tenantStatePersistTimeoutRef.current) return
+    clearTimeout(tenantStatePersistTimeoutRef.current)
+    tenantStatePersistTimeoutRef.current = null
+  }
+
   useEffect(() => {
     if (!authSession?.token || isSuperAdmin || !tenantStateHydrated) return
 
-    if (tenantStatePersistTimeoutRef.current) {
-      clearTimeout(tenantStatePersistTimeoutRef.current)
-    }
+    clearPendingTenantStatePersist()
 
     const statePayload = {
       schemaVersion: 1,
@@ -1668,6 +1740,7 @@ function App() {
     }
 
     tenantStatePersistTimeoutRef.current = setTimeout(async () => {
+      tenantStatePersistTimeoutRef.current = null
       try {
         await apiRequest('/tenant/state', {
           method: 'PUT',
@@ -1680,9 +1753,7 @@ function App() {
     }, 650)
 
     return () => {
-      if (tenantStatePersistTimeoutRef.current) {
-        clearTimeout(tenantStatePersistTimeoutRef.current)
-      }
+      clearPendingTenantStatePersist()
     }
   }, [
     authSession?.token,
@@ -2123,7 +2194,8 @@ function App() {
     if (!authSession?.token || isSuperAdmin) return
 
     const fallbackUser = {
-      id: 1,
+      id: String(authSession?.user?.id || '1'),
+      authUserId: String(authSession?.user?.id || ''),
       nome: authSession?.user?.name || 'Usuário',
       departamento: '',
       telefone: '',
@@ -2141,9 +2213,10 @@ function App() {
       const logoName = typeof branding.logoName === 'string' ? branding.logoName : ''
 
       const usersFromState = Array.isArray(state.users) ? state.users : []
-      const normalizedUsers = usersFromState
+      const normalizedStateUsers = usersFromState
         .map((item, index) => ({
-          id: Number(item?.id) || index + 1,
+          id: String(item?.id || item?.authUserId || index + 1),
+          authUserId: String(item?.authUserId || item?.id || ''),
           nome: String(item?.nome || item?.name || '').trim(),
           departamento: String(item?.departamento || '').trim(),
           telefone: String(item?.telefone || '').trim(),
@@ -2152,6 +2225,50 @@ function App() {
           clientIds: Array.isArray(item?.clientIds) ? item.clientIds : [],
         }))
         .filter((item) => item.nome || item.email)
+      const stateUsersByAuthId = new Map(
+        normalizedStateUsers
+          .filter((item) => item.authUserId)
+          .map((item) => [String(item.authUserId), item]),
+      )
+      const stateUsersByEmail = new Map(
+        normalizedStateUsers
+          .filter((item) => item.email)
+          .map((item) => [item.email.toLowerCase(), item]),
+      )
+
+      let normalizedUsers = normalizedStateUsers
+      try {
+        const backendUsers = await apiRequest('/tenant/users', { token: authSession.token })
+        if (Array.isArray(backendUsers) && backendUsers.length) {
+          normalizedUsers = backendUsers.map((backendUser, index) => {
+            const byAuthId = stateUsersByAuthId.get(String(backendUser.id))
+            const byEmail = stateUsersByEmail.get(String(backendUser.email || '').toLowerCase())
+            const localMeta = byAuthId || byEmail
+            return {
+              id: String(backendUser.id || localMeta?.id || index + 1),
+              authUserId: String(backendUser.id || ''),
+              nome: String(localMeta?.nome || backendUser.name || '').trim(),
+              departamento: String(localMeta?.departamento || '').trim(),
+              telefone: String(localMeta?.telefone || '').trim(),
+              email: String(backendUser.email || localMeta?.email || '').trim(),
+              senha: String(localMeta?.senha || '').trim(),
+              clientIds: Array.isArray(backendUser.clientIds) ? backendUser.clientIds : [],
+              role: backendUser.role || 'TENANT_USER',
+              isActive: backendUser.isActive !== false,
+            }
+          })
+        }
+      } catch (usersError) {
+        console.error('Falha ao carregar usuários do tenant:', usersError)
+      }
+
+      const currentLoginEmail = String(authSession?.user?.email || '').trim().toLowerCase()
+      if (
+        currentLoginEmail &&
+        !normalizedUsers.some((user) => String(user.email || '').trim().toLowerCase() === currentLoginEmail)
+      ) {
+        normalizedUsers = [fallbackUser, ...normalizedUsers]
+      }
 
       setUsers(normalizedUsers.length ? normalizedUsers : [fallbackUser])
       setClients(Array.isArray(state.clients) ? state.clients : [])
@@ -2189,7 +2306,63 @@ function App() {
     }
   }
 
+  const persistTenantStateNow = async (brandingOverride = null) => {
+    if (!authSession?.token || isSuperAdmin) return
+    clearPendingTenantStatePersist()
+    const statePayload = {
+      schemaVersion: 1,
+      branding:
+        brandingOverride ||
+        {
+          logoDataUrl: companyLogoDataUrl || '',
+          logoName: companyLogoName || '',
+        },
+      users,
+      clients,
+      tasksRows,
+      taskBlueprints,
+      solicitationRecords,
+      taskActionLogs,
+    }
+    await apiRequest('/tenant/state', {
+      method: 'PUT',
+      token: authSession.token,
+      body: { state: statePayload },
+    })
+  }
+
+  const persistTenantBrandingNow = async (brandingPayload) => {
+    if (!authSession?.token || isSuperAdmin) return
+    clearPendingTenantStatePersist()
+
+    const sanitizedBranding = {
+      logoDataUrl:
+        typeof brandingPayload?.logoDataUrl === 'string' ? brandingPayload.logoDataUrl : '',
+      logoName: typeof brandingPayload?.logoName === 'string' ? brandingPayload.logoName : '',
+    }
+
+    try {
+      await apiRequest('/tenant/branding', {
+        method: 'PUT',
+        token: authSession.token,
+        body: { branding: sanitizedBranding },
+      })
+    } catch (error) {
+      if (error?.status === 404 || error?.status === 405) {
+        await persistTenantStateNow(sanitizedBranding)
+        return
+      }
+      throw error
+    }
+  }
+
   const handleSettingsLogoSelect = async (event) => {
+    if (!canManageTenantBranding) {
+      setSettingsLogoFeedback('Somente o administrador pode alterar a logo da empresa.')
+      event.target.value = ''
+      return
+    }
+
     const file = event.target.files?.[0]
     if (!file) return
 
@@ -2213,24 +2386,72 @@ function App() {
     }
   }
 
-  const handleSettingsLogoSave = () => {
+  const handleSettingsLogoSave = async () => {
+    if (!canManageTenantBranding) {
+      setSettingsLogoFeedback('Somente o administrador pode alterar a logo da empresa.')
+      return
+    }
+
     if (!settingsLogoDraftDataUrl) {
       setSettingsLogoFeedback('Selecione uma imagem para salvar.')
       return
     }
-    setCompanyLogoDataUrl(settingsLogoDraftDataUrl)
-    setCompanyLogoName(settingsLogoDraftName || 'logo')
+    const previousLogoDataUrl = companyLogoDataUrl
+    const previousLogoName = companyLogoName
+    const nextLogoDataUrl = settingsLogoDraftDataUrl
+    const nextLogoName = settingsLogoDraftName || 'logo'
+
+    setCompanyLogoDataUrl(nextLogoDataUrl)
+    setCompanyLogoName(nextLogoName)
     setSettingsLogoDraftDataUrl('')
     setSettingsLogoDraftName('')
-    setSettingsLogoFeedback('Logo da empresa salva com sucesso.')
+    setSettingsLogoFeedback('Salvando logo...')
+
+    try {
+      setSettingsLogoLoading(true)
+      await persistTenantBrandingNow({
+        logoDataUrl: nextLogoDataUrl,
+        logoName: nextLogoName,
+      })
+      setSettingsLogoFeedback('Logo da empresa salva com sucesso.')
+    } catch (error) {
+      setCompanyLogoDataUrl(previousLogoDataUrl)
+      setCompanyLogoName(previousLogoName)
+      setSettingsLogoFeedback(error?.message || 'Não foi possível salvar a logo no servidor.')
+    } finally {
+      setSettingsLogoLoading(false)
+    }
   }
 
-  const handleSettingsLogoRemove = () => {
+  const handleSettingsLogoRemove = async () => {
+    if (!canManageTenantBranding) {
+      setSettingsLogoFeedback('Somente o administrador pode alterar a logo da empresa.')
+      return
+    }
+
+    const previousLogoDataUrl = companyLogoDataUrl
+    const previousLogoName = companyLogoName
+
     setCompanyLogoDataUrl('')
     setCompanyLogoName('')
     setSettingsLogoDraftDataUrl('')
     setSettingsLogoDraftName('')
-    setSettingsLogoFeedback('Logo removida.')
+    setSettingsLogoFeedback('Removendo logo...')
+
+    try {
+      setSettingsLogoLoading(true)
+      await persistTenantBrandingNow({
+        logoDataUrl: '',
+        logoName: '',
+      })
+      setSettingsLogoFeedback('Logo removida.')
+    } catch (error) {
+      setCompanyLogoDataUrl(previousLogoDataUrl)
+      setCompanyLogoName(previousLogoName)
+      setSettingsLogoFeedback(error?.message || 'Não foi possível remover a logo no servidor.')
+    } finally {
+      setSettingsLogoLoading(false)
+    }
   }
 
   const openCreateModal = () => {
@@ -2441,9 +2662,10 @@ function App() {
 
   const handleBulkSave = () => {
     if (!selectedClientIds.length) return
+    const selectedClientIdSet = new Set(selectedClientIds.map((id) => String(id)))
     setClients((prev) =>
       prev.map((client) => {
-        if (!selectedClientIds.includes(client.id)) return client
+        if (!selectedClientIdSet.has(String(client.id))) return client
         return {
           ...client,
           ...(bulkForm.status ? { status: bulkForm.status } : {}),
@@ -2603,12 +2825,18 @@ function App() {
   }
 
   const generateTasksForSelectedClients = () => {
-    const selectedClients = clients.filter((client) => selectedClientIds.includes(client.id))
+    const selectedClientIdSet = new Set(selectedClientIds.map((id) => String(id)))
+    const selectedClients = clientsForCurrentUser.filter((client) =>
+      selectedClientIdSet.has(String(client.id)),
+    )
     openClientTaskGenerateModal(selectedClients, 'generate')
   }
 
   const deleteTasksForSelectedClients = () => {
-    const selectedClients = clients.filter((client) => selectedClientIds.includes(client.id))
+    const selectedClientIdSet = new Set(selectedClientIds.map((id) => String(id)))
+    const selectedClients = clientsForCurrentUser.filter((client) =>
+      selectedClientIdSet.has(String(client.id)),
+    )
     openClientTaskGenerateModal(selectedClients, 'delete')
   }
 
@@ -2909,15 +3137,23 @@ function App() {
 
   const requestBulkDelete = () => {
     if (!selectedClientIds.length) return
-    setPendingDelete(clients.filter((client) => selectedClientIds.includes(client.id)))
+    const selectedClientIdSet = new Set(selectedClientIds.map((id) => String(id)))
+    setPendingDelete(
+      clientsForCurrentUser.filter((client) => selectedClientIdSet.has(String(client.id))),
+    )
     setConfirmOpen(true)
   }
 
   const confirmDelete = () => {
     if (pendingDelete) {
-      const idsToDelete = pendingDelete.map((client) => client.id)
-      setClients((prev) => prev.filter((client) => !idsToDelete.includes(client.id)))
-      setSelectedClientIds((prev) => prev.filter((id) => !idsToDelete.includes(id)))
+      const idsToDelete = pendingDelete.map((client) => String(client.id))
+      const idsToDeleteSet = new Set(idsToDelete)
+      setClients((prev) => prev.filter((client) => !idsToDeleteSet.has(String(client.id))))
+      setSelectedClientIds((prev) =>
+        prev
+          .map((id) => String(id))
+          .filter((id) => !idsToDeleteSet.has(id)),
+      )
     }
     setPendingDelete(null)
     setConfirmOpen(false)
@@ -2929,22 +3165,32 @@ function App() {
   }
 
   const toggleSelectAll = () => {
-    const visibleClientIds = filteredClients.map((client) => client.id)
+    const visibleClientIds = filteredClients.map((client) => String(client.id))
     if (!visibleClientIds.length) return
 
-    const allVisibleSelected = visibleClientIds.every((id) => selectedClientIds.includes(id))
+    const selectedSet = new Set(selectedClientIds.map((id) => String(id)))
+    const allVisibleSelected = visibleClientIds.every((id) => selectedSet.has(id))
     if (allVisibleSelected) {
-      setSelectedClientIds((prev) => prev.filter((id) => !visibleClientIds.includes(id)))
+      const visibleSet = new Set(visibleClientIds)
+      setSelectedClientIds((prev) =>
+        prev
+          .map((id) => String(id))
+          .filter((id) => !visibleSet.has(id)),
+      )
       return
     }
 
-    setSelectedClientIds((prev) => Array.from(new Set([...prev, ...visibleClientIds])))
+    setSelectedClientIds((prev) => Array.from(new Set([...prev.map((id) => String(id)), ...visibleClientIds])))
   }
 
   const toggleSelectClient = (clientId) => {
-    setSelectedClientIds((prev) =>
-      prev.includes(clientId) ? prev.filter((id) => id !== clientId) : [...prev, clientId],
-    )
+    const normalizedClientId = String(clientId)
+    setSelectedClientIds((prev) => {
+      const normalized = prev.map((id) => String(id))
+      return normalized.includes(normalizedClientId)
+        ? normalized.filter((id) => id !== normalizedClientId)
+        : [...normalized, normalizedClientId]
+    })
   }
 
   const handleTaskFilterChange = (field, value) => {
@@ -3027,21 +3273,25 @@ function App() {
     }
 
     const normalizedClientId =
-      typeof clientId === 'number' && Number.isFinite(clientId)
-        ? clientId
-        : clients.find(
-            (client) =>
-              String(client.nome || '').trim().toLowerCase() ===
-              String(clientName || '').trim().toLowerCase(),
-          )?.id
+      clientId !== null && clientId !== undefined && String(clientId).trim() !== ''
+        ? String(clientId)
+        : String(
+            clientsForCurrentUser.find(
+              (client) =>
+                String(client.nome || '').trim().toLowerCase() ===
+                String(clientName || '').trim().toLowerCase(),
+            )?.id || '',
+          )
 
-    if (typeof normalizedClientId !== 'number') {
+    if (!normalizedClientId) {
       return String(fallback || '').trim()
     }
 
     const assignedUser = users.find((user) => {
       const userDepartment = getDepartmentLabel(user.departamento)
-      const userClientIds = Array.isArray(user.clientIds) ? user.clientIds : []
+      const userClientIds = Array.isArray(user.clientIds)
+        ? user.clientIds.map((id) => String(id))
+        : []
       return userDepartment === normalizedDepartment && userClientIds.includes(normalizedClientId)
     })
 
@@ -3049,7 +3299,7 @@ function App() {
   }
 
   const mapSolicitationRecordToReportRow = (record) => {
-    const linkedClient = clients.find((client) => client.id === record.clientId)
+    const linkedClient = clientsForCurrentUser.find((client) => client.id === record.clientId)
     const clientDocument = linkedClient
       ? `${linkedClient.docType || ''} ${linkedClient.inscricao || ''}`.trim()
       : ''
@@ -3097,11 +3347,11 @@ function App() {
   const selectedTask = selectedTaskRef
     ? selectedTaskRef.source === 'solicitation'
       ? (() => {
-          const record = solicitationRecords.find((item) => item.id === selectedTaskRef.id)
+          const record = solicitationRecordsForCurrentUser.find((item) => item.id === selectedTaskRef.id)
           return record ? mapSolicitationRecordToReportRow(record) : null
         })()
       : (() => {
-          const task = tasksRows.find((item) => item.id === selectedTaskRef.id)
+          const task = tasksRowsForCurrentUser.find((item) => item.id === selectedTaskRef.id)
           if (!task) return null
           const resolvedOwner = getResponsibleByClientAndDepartment({
             clientId: task.clientId,
@@ -3128,18 +3378,24 @@ function App() {
     if (!task) return ''
     if (String(task.clientEmail || '').trim()) return String(task.clientEmail || '').trim()
 
-    const byId = task.clientId ? clients.find((client) => client.id === task.clientId) : null
+    const byId = task.clientId
+      ? clientsForCurrentUser.find((client) => client.id === task.clientId)
+      : null
     if (byId?.email) return String(byId.email).trim()
 
     const taskDocumentDigits = extractDigits(task.cnpj)
     if (taskDocumentDigits) {
-      const byDocument = clients.find((client) => extractDigits(client.inscricao) === taskDocumentDigits)
+      const byDocument = clientsForCurrentUser.find(
+        (client) => extractDigits(client.inscricao) === taskDocumentDigits,
+      )
       if (byDocument?.email) return String(byDocument.email).trim()
     }
 
     const taskClientName = String(task.client || '').trim().toLowerCase()
     if (taskClientName) {
-      const byName = clients.find((client) => String(client.nome || '').trim().toLowerCase() === taskClientName)
+      const byName = clientsForCurrentUser.find(
+        (client) => String(client.nome || '').trim().toLowerCase() === taskClientName,
+      )
       if (byName?.email) return String(byName.email).trim()
     }
 
@@ -3537,7 +3793,7 @@ function App() {
   const getClientsByDepartment = (department) => {
     const normalizedDepartment = getDepartmentLabel(department)
     if (!normalizedDepartment) return []
-    return clients.filter((client) =>
+    return clientsForCurrentUser.filter((client) =>
       (Array.isArray(client.grupos) ? client.grupos : [])
         .map((group) => getDepartmentLabel(String(group || '').trim()))
         .includes(normalizedDepartment),
@@ -3545,13 +3801,19 @@ function App() {
   }
 
   const handleSettingsUserChange = (field, value) => {
+    if (!canManageTenantUsers) return
+
     if (field === 'departamento') {
       setUserClientsOpen(false)
     }
     setUserForm((prev) => {
       if (field === 'departamento') {
-        const allowedClientIds = new Set(getClientsByDepartment(value).map((client) => client.id))
-        const currentClientIds = Array.isArray(prev.clientIds) ? prev.clientIds : []
+        const allowedClientIds = new Set(
+          getClientsByDepartment(value).map((client) => String(client.id)),
+        )
+        const currentClientIds = Array.isArray(prev.clientIds)
+          ? prev.clientIds.map((id) => String(id))
+          : []
         return {
           ...prev,
           departamento: value,
@@ -3562,7 +3824,7 @@ function App() {
       if (field === 'clientIds') {
         return {
           ...prev,
-          clientIds: Array.isArray(value) ? value : [],
+          clientIds: Array.isArray(value) ? value.map((id) => String(id)) : [],
         }
       }
 
@@ -3571,33 +3833,48 @@ function App() {
   }
 
   const toggleSettingsUserClient = (clientId) => {
+    if (!canManageTenantUsers) return
+
+    const normalizedClientId = String(clientId)
     setUserForm((prev) => {
-      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
-      if (current.includes(clientId)) {
-        return { ...prev, clientIds: current.filter((id) => id !== clientId) }
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds.map((id) => String(id)) : []
+      if (current.includes(normalizedClientId)) {
+        return { ...prev, clientIds: current.filter((id) => id !== normalizedClientId) }
       }
-      return { ...prev, clientIds: [...current, clientId] }
+      return { ...prev, clientIds: [...current, normalizedClientId] }
     })
   }
 
   const clearSettingsUserForm = () => {
+    if (!canManageTenantUsers) return
+
     setEditingUserId(null)
     setUserForm(emptyUserForm)
     setSettingsUserFeedback('')
     setUserClientsOpen(false)
   }
 
-  const handleSettingsUserSave = (event) => {
+  const handleSettingsUserSave = async (event) => {
     event.preventDefault()
+    if (!canManageTenantUsers) {
+      setSettingsUserFeedback('Somente o administrador pode gerenciar usuários.')
+      return
+    }
+
+    if (!authSession?.token) {
+      setSettingsUserFeedback('Faça login novamente para cadastrar usuários.')
+      return
+    }
+
     const nome = userForm.nome.trim()
     const departamento = userForm.departamento.trim()
     const telefone = userForm.telefone.trim()
     const email = userForm.email.trim().toLowerCase()
     const senha = userForm.senha
     const eligibleClientIds = new Set(
-      getClientsByDepartment(departamento).map((client) => client.id),
+      getClientsByDepartment(departamento).map((client) => String(client.id)),
     )
-    const clientIds = (Array.isArray(userForm.clientIds) ? userForm.clientIds : []).filter((id) =>
+    const clientIds = (Array.isArray(userForm.clientIds) ? userForm.clientIds.map((id) => String(id)) : []).filter((id) =>
       eligibleClientIds.has(id),
     )
 
@@ -3615,31 +3892,109 @@ function App() {
       return
     }
 
-    if (editingUserId !== null) {
-      setUsers((prev) =>
-        prev.map((user) =>
-          user.id === editingUserId
-            ? { id: editingUserId, nome, departamento, telefone, email, senha, clientIds }
-            : user,
-        ),
-      )
-      setSettingsUserFeedback('Usuário atualizado com sucesso.')
-    } else {
-      const nextId = users.reduce((maxId, user) => Math.max(maxId, user.id), 0) + 1
-      setUsers((prev) => [...prev, { id: nextId, nome, departamento, telefone, email, senha, clientIds }])
-      setSettingsUserFeedback('Usuário cadastrado com sucesso.')
-    }
+    try {
+      if (editingUserId !== null) {
+        const currentUser = users.find((user) => user.id === editingUserId)
+        const authUserId = String(currentUser?.authUserId || currentUser?.id || '')
+        const currentRole =
+          currentUser?.role === 'TENANT_ADMIN' || currentUser?.role === 'TENANT_USER'
+            ? currentUser.role
+            : 'TENANT_USER'
+        if (!authUserId) {
+          setSettingsUserFeedback('Usuário sem vínculo de autenticação. Recarregue a tela e tente novamente.')
+          return
+        }
 
-    setEditingUserId(null)
-    setUserForm(emptyUserForm)
-    setUserClientsOpen(false)
+        const updatedAuthUser = await apiRequest(`/tenant/users/${authUserId}`, {
+          method: 'PATCH',
+          token: authSession.token,
+          body: {
+            name: nome,
+            email,
+            password: senha,
+            clientIds,
+            role: currentRole,
+            isActive: true,
+          },
+        })
+
+        setUsers((prev) =>
+          prev.map((user) =>
+            user.id === editingUserId
+              ? {
+                  ...user,
+                  id: String(updatedAuthUser.id || editingUserId),
+                  authUserId: String(updatedAuthUser.id || authUserId),
+                  nome,
+                  departamento,
+                  telefone,
+                  email: updatedAuthUser.email || email,
+                  senha,
+                  clientIds: Array.isArray(updatedAuthUser.clientIds)
+                    ? updatedAuthUser.clientIds.map((id) => String(id))
+                    : clientIds,
+                  role: updatedAuthUser.role || 'TENANT_USER',
+                  isActive: updatedAuthUser.isActive !== false,
+                }
+              : user,
+          ),
+        )
+        setSettingsUserFeedback('Usuário atualizado com sucesso.')
+      } else {
+        const createdAuthUser = await apiRequest('/tenant/users', {
+          method: 'POST',
+          token: authSession.token,
+          body: {
+            name: nome,
+            email,
+            password: senha,
+            clientIds,
+            role: 'TENANT_USER',
+            isActive: true,
+          },
+        })
+
+        const createdId = String(createdAuthUser.id || `${Date.now()}`)
+        setUsers((prev) => [
+          ...prev,
+          {
+            id: createdId,
+            authUserId: createdId,
+            nome,
+            departamento,
+            telefone,
+            email: createdAuthUser.email || email,
+            senha,
+            clientIds: Array.isArray(createdAuthUser.clientIds)
+              ? createdAuthUser.clientIds.map((id) => String(id))
+              : clientIds,
+            role: createdAuthUser.role || 'TENANT_USER',
+            isActive: createdAuthUser.isActive !== false,
+          },
+        ])
+        setSettingsUserFeedback('Usuário cadastrado com sucesso.')
+      }
+
+      setEditingUserId(null)
+      setUserForm(emptyUserForm)
+      setUserClientsOpen(false)
+    } catch (saveError) {
+      setSettingsUserFeedback(saveError?.message || 'Não foi possível salvar o usuário.')
+    }
   }
 
   const editSettingsUser = (user) => {
+    if (!canManageTenantUsers) {
+      setSettingsUserFeedback('Somente o administrador pode gerenciar usuários.')
+      return
+    }
+
     const allowedClientIds = new Set(
-      getClientsByDepartment(user.departamento).map((client) => client.id),
+      getClientsByDepartment(user.departamento).map((client) => String(client.id)),
     )
-    const currentClientIds = Array.isArray(user.clientIds) ? user.clientIds : []
+    const currentClientIds = Array.isArray(user.clientIds)
+      ? user.clientIds.map((id) => String(id))
+      : []
     setEditingUserId(user.id)
     setUserForm({
       nome: user.nome || '',
@@ -3653,18 +4008,42 @@ function App() {
     setUserClientsOpen(false)
   }
 
-  const removeSettingsUser = (userId) => {
+  const removeSettingsUser = async (userId) => {
+    if (!canManageTenantUsers) {
+      setSettingsUserFeedback('Somente o administrador pode gerenciar usuários.')
+      return
+    }
+
+    if (!authSession?.token) {
+      setSettingsUserFeedback('Faça login novamente para excluir usuários.')
+      return
+    }
+
     const targetUser = users.find((user) => user.id === userId)
     if (!targetUser) return
     const canDelete = window.confirm(`Deseja excluir o usuário ${targetUser.email}?`)
     if (!canDelete) return
-    setUsers((prev) => prev.filter((user) => user.id !== userId))
-    if (editingUserId === userId) {
-      setEditingUserId(null)
-      setUserForm(emptyUserForm)
-      setUserClientsOpen(false)
+    const authUserId = String(targetUser.authUserId || targetUser.id || '')
+    if (!authUserId) {
+      setSettingsUserFeedback('Usuário sem vínculo de autenticação. Recarregue a tela e tente novamente.')
+      return
     }
-    setSettingsUserFeedback('Usuário excluído com sucesso.')
+
+    try {
+      await apiRequest(`/tenant/users/${authUserId}`, {
+        method: 'DELETE',
+        token: authSession.token,
+      })
+      setUsers((prev) => prev.filter((user) => user.id !== userId))
+      if (editingUserId === userId) {
+        setEditingUserId(null)
+        setUserForm(emptyUserForm)
+        setUserClientsOpen(false)
+      }
+      setSettingsUserFeedback('Usuário excluído com sucesso.')
+    } catch (deleteError) {
+      setSettingsUserFeedback(deleteError?.message || 'Não foi possível excluir o usuário.')
+    }
   }
 
   const handleSettingsTaskChange = (field, value) => {
@@ -3686,12 +4065,13 @@ function App() {
   }
 
   const toggleSolicitationClient = (clientId) => {
+    const normalizedClientId = String(clientId)
     setSolicitationForm((prev) => {
-      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
-      if (current.includes(clientId)) {
-        return { ...prev, clientIds: current.filter((id) => id !== clientId) }
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds.map((id) => String(id)) : []
+      if (current.includes(normalizedClientId)) {
+        return { ...prev, clientIds: current.filter((id) => id !== normalizedClientId) }
       }
-      return { ...prev, clientIds: [...current, clientId] }
+      return { ...prev, clientIds: [...current, normalizedClientId] }
     })
   }
 
@@ -3715,23 +4095,25 @@ function App() {
   }
 
   const addSolicitationClientBySearch = (clientId) => {
+    const normalizedClientId = String(clientId)
     setSolicitationForm((prev) => {
-      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
-      if (current.includes(clientId)) {
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds.map((id) => String(id)) : []
+      if (current.includes(normalizedClientId)) {
         return prev
       }
-      return { ...prev, clientIds: [...current, clientId] }
+      return { ...prev, clientIds: [...current, normalizedClientId] }
     })
     setSolicitationClientSearch('')
   }
 
   const toggleSettingsTaskClient = (clientId) => {
+    const normalizedClientId = String(clientId)
     setSettingsTaskForm((prev) => {
-      const current = Array.isArray(prev.clientIds) ? prev.clientIds : []
-      if (current.includes(clientId)) {
-        return { ...prev, clientIds: current.filter((id) => id !== clientId) }
+      const current = Array.isArray(prev.clientIds) ? prev.clientIds.map((id) => String(id)) : []
+      if (current.includes(normalizedClientId)) {
+        return { ...prev, clientIds: current.filter((id) => id !== normalizedClientId) }
       }
-      return { ...prev, clientIds: [...current, clientId] }
+      return { ...prev, clientIds: [...current, normalizedClientId] }
     })
   }
 
@@ -4034,9 +4416,10 @@ function App() {
       return
     }
 
-    const targetClients = clients.filter(
+    const selectedClientIdSet = new Set(selectedIds.map((id) => String(id)))
+    const targetClients = clientsForCurrentUser.filter(
       (client) =>
-        selectedIds.includes(client.id) &&
+        selectedClientIdSet.has(String(client.id)) &&
         (solicitationForm.includeDisabledClients || client.status !== 'Inativo'),
     )
 
@@ -4095,7 +4478,7 @@ function App() {
     setScreen('dashboard')
   }
 
-  const reportTaskRows = tasksRows.map((task) => {
+  const reportTaskRows = tasksRowsForCurrentUser.map((task) => {
     const resolvedOwner = getResponsibleByClientAndDepartment({
       clientId: task.clientId,
       clientName: task.client,
@@ -4111,7 +4494,7 @@ function App() {
       reportKey: `task-${task.id}`,
     }
   })
-  const reportSolicitationRows = solicitationRecords.map((record) =>
+  const reportSolicitationRows = solicitationRecordsForCurrentUser.map((record) =>
     mapSolicitationRecordToReportRow(record),
   )
   const taskReportRows = [...reportTaskRows, ...reportSolicitationRows]
@@ -4147,15 +4530,15 @@ function App() {
     new Set(
       [
         ...taskBlueprints.map((template) => String(template.obligation || '').trim()),
-        ...tasksRows.map((task) => task.subject.split(' - ')[0]?.trim()),
+        ...tasksRowsForCurrentUser.map((task) => task.subject.split(' - ')[0]?.trim()),
       ].filter((value) => value && value.length > 0),
     ),
   )
-  const settingsTaskClients = clients.filter(
+  const settingsTaskClients = clientsForCurrentUser.filter(
     (client) => settingsTaskForm.includeDisabledClients || client.status !== 'Inativo',
   )
   const clientTaxationOptions = Array.from(
-    new Set(clients.map((client) => (client.tributacao || '').trim()).filter(Boolean)),
+    new Set(clientsForCurrentUser.map((client) => (client.tributacao || '').trim()).filter(Boolean)),
   )
   const settingsTaskTaxationOptions = (clientTaxationOptions.length
     ? clientTaxationOptions
@@ -4167,7 +4550,7 @@ function App() {
       ? [settingsTaskForm.tributacaoScope]
       : []
   const settingsOwnerOptions = Array.from(
-    new Set(users.map((user) => user.nome).concat(tasksRows.map((task) => task.owner))),
+    new Set(users.map((user) => user.nome).concat(tasksRowsForCurrentUser.map((task) => task.owner))),
   ).filter(Boolean)
   const taskBlueprintRows = taskBlueprints.map((template) => {
     return {
@@ -4754,32 +5137,42 @@ function App() {
   const isReadOnly = clientMode === 'view'
   const selectedUserDepartment = getDepartmentLabel(userForm.departamento)
   const settingsUserAvailableClients = selectedUserDepartment
-    ? clients.filter((client) =>
+    ? clientsForCurrentUser.filter((client) =>
         (Array.isArray(client.grupos) ? client.grupos : [])
           .map((group) => getDepartmentLabel(String(group || '').trim()))
           .includes(selectedUserDepartment),
       )
     : []
   const settingsUserAvailableClientIds = new Set(
-    settingsUserAvailableClients.map((client) => client.id),
+    settingsUserAvailableClients.map((client) => String(client.id)),
   )
-  const selectedUserClientIds = (Array.isArray(userForm.clientIds) ? userForm.clientIds : []).filter((id) =>
+  const selectedUserClientIds = (Array.isArray(userForm.clientIds)
+    ? userForm.clientIds.map((id) => String(id))
+    : []
+  ).filter((id) =>
     settingsUserAvailableClientIds.has(id),
   )
   const selectedUserClientLabels = selectedUserClientIds
-    .map((id) => settingsUserAvailableClients.find((client) => client.id === id)?.nome)
+    .map((id) => settingsUserAvailableClients.find((client) => String(client.id) === id)?.nome)
     .filter(Boolean)
+  const settingsUsersVisibleRows = isTenantRestrictedUser
+    ? users.filter(
+        (user) => String(user.email || '').trim().toLowerCase() === currentAuthEmailLower,
+      )
+    : users
   const bulkSelectedGroups = Array.isArray(bulkForm.grupos) ? bulkForm.grupos : []
   const bulkSelectedTax = bulkForm.tributacao || ''
   const clientStatusFilterOptions = [
     'Todos',
-    ...Array.from(new Set(clients.map((client) => String(client.status || '').trim()).filter(Boolean))),
+    ...Array.from(
+      new Set(clientsForCurrentUser.map((client) => String(client.status || '').trim()).filter(Boolean)),
+    ),
   ]
   const clientGroupFilterOptions = [
     'Todos',
     ...Array.from(
       new Set(
-        clients.flatMap((client) =>
+        clientsForCurrentUser.flatMap((client) =>
           (Array.isArray(client.grupos) ? client.grupos : [])
             .map((group) => String(group || '').trim())
             .filter(Boolean),
@@ -4789,21 +5182,35 @@ function App() {
   ]
   const clientVisibilityFilterOptions = [
     'Todos',
-    ...Array.from(new Set(clients.map((client) => String(client.visibilidade || '').trim()).filter(Boolean))),
+    ...Array.from(
+      new Set(
+        clientsForCurrentUser.map((client) => String(client.visibilidade || '').trim()).filter(Boolean),
+      ),
+    ),
   ]
   const clientUfFilterOptions = [
     'Todos',
-    ...Array.from(new Set(clients.map((client) => String(client.uf || '').trim().toUpperCase()).filter(Boolean))),
+    ...Array.from(
+      new Set(
+        clientsForCurrentUser
+          .map((client) => String(client.uf || '').trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    ),
   ]
   const clientTaxationFilterOptions = [
     'Todos',
-    ...Array.from(new Set(clients.map((client) => String(client.tributacao || '').trim()).filter(Boolean))),
+    ...Array.from(
+      new Set(clientsForCurrentUser.map((client) => String(client.tributacao || '').trim()).filter(Boolean)),
+    ),
   ]
   const clientDocTypeFilterOptions = [
     'Todos',
-    ...Array.from(new Set(clients.map((client) => String(client.docType || '').trim()).filter(Boolean))),
+    ...Array.from(
+      new Set(clientsForCurrentUser.map((client) => String(client.docType || '').trim()).filter(Boolean)),
+    ),
   ]
-  const filteredClients = clients.filter((client) => {
+  const filteredClients = clientsForCurrentUser.filter((client) => {
     const matchesStatus =
       appliedClientTableFilters.status === 'Todos' || client.status === appliedClientTableFilters.status
     const matchesGroup =
@@ -5022,11 +5429,17 @@ function App() {
     new Set(
       [
         ...users.map((user) => getDepartmentLabel(user.departamento)),
-        ...clients.flatMap((client) =>
+        ...clientsForCurrentUser.flatMap((client) =>
           (Array.isArray(client.grupos) ? client.grupos : []).map((group) => getDepartmentLabel(group)),
         ),
-        ...tasksRows.map((task) => getDepartmentLabel(task.dept)),
-      ].filter(Boolean),
+        ...tasksRowsForCurrentUser.map((task) => getDepartmentLabel(task.dept)),
+      ]
+        .filter(Boolean)
+        .filter(
+          (department) =>
+            !isTenantRestrictedUser ||
+            normalizeFreeText(getDepartmentLabel(department)) === currentTenantDepartmentKey,
+        ),
     ),
   ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
   const obligationsByDepartment = new Map(
@@ -5080,26 +5493,33 @@ function App() {
       [
         ...departmentsInSystem.map((department) => normalizeSolicitationDepartment(department)),
         ...users.map((user) => normalizeSolicitationDepartment(user.departamento)),
-        ...clients.flatMap((client) =>
+        ...clientsForCurrentUser.flatMap((client) =>
           (Array.isArray(client.grupos) ? client.grupos : []).map((group) =>
             normalizeSolicitationDepartment(group),
           ),
         ),
-        ...solicitationRecords.map((record) => normalizeSolicitationDepartment(record.departamento)),
+        ...solicitationRecordsForCurrentUser.map((record) =>
+          normalizeSolicitationDepartment(record.departamento),
+        ),
       ].filter(Boolean),
     ),
   ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
   const solicitationProcessOptions = Array.from(
     new Set(
-      solicitationRecords
+      solicitationRecordsForCurrentUser
         .map((record) => String(record.processo || '').trim())
         .filter(Boolean),
     ),
   ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
   const solicitationStageOptions = Array.from(
-    new Set(['Aberta', 'Em andamento', 'Concluída', ...solicitationRecords.map((record) => record.etapa)]),
+    new Set([
+      'Aberta',
+      'Em andamento',
+      'Concluída',
+      ...solicitationRecordsForCurrentUser.map((record) => record.etapa),
+    ]),
   )
-  const solicitationClients = clients.filter(
+  const solicitationClients = clientsForCurrentUser.filter(
     (client) => solicitationForm.includeDisabledClients || client.status !== 'Inativo',
   )
   const solicitationClientSearchTerm = solicitationClientSearch.trim().toLowerCase()
@@ -5306,7 +5726,13 @@ function App() {
             <nav className="nav">
               {(isSuperAdmin
                 ? ['Super Admin']
-                : ['Visão Geral', 'Tarefas', 'Relatórios', 'Clientes', 'Configurações']
+                : [
+                    'Visão Geral',
+                    'Tarefas',
+                    'Relatórios',
+                    'Clientes',
+                    ...(canManageTenantUsers ? ['Configurações'] : []),
+                  ]
               ).map((item, index) => (
                 <button
                   key={item}
@@ -7109,7 +7535,7 @@ function App() {
                             type="file"
                             accept="image/*"
                             onChange={handleSettingsLogoSelect}
-                            disabled={settingsLogoLoading}
+                            disabled={settingsLogoLoading || !canManageTenantBranding}
                           />
                         </label>
                         <div className="settings-logo-preview">
@@ -7128,7 +7554,10 @@ function App() {
                           type="button"
                           className="chip small"
                           onClick={handleSettingsLogoRemove}
-                          disabled={!companyLogoDataUrl && !settingsLogoDraftDataUrl}
+                          disabled={
+                            !canManageTenantBranding ||
+                            (!companyLogoDataUrl && !settingsLogoDraftDataUrl)
+                          }
                         >
                           Remover
                         </button>
@@ -7136,7 +7565,9 @@ function App() {
                           type="button"
                           className="primary small"
                           onClick={handleSettingsLogoSave}
-                          disabled={!settingsLogoDraftDataUrl || settingsLogoLoading}
+                          disabled={
+                            !canManageTenantBranding || !settingsLogoDraftDataUrl || settingsLogoLoading
+                          }
                         >
                           Salvar logo
                         </button>
@@ -7144,9 +7575,19 @@ function App() {
                       {settingsLogoFeedback ? (
                         <p className="settings-feedback">{settingsLogoFeedback}</p>
                       ) : null}
+                      {!canManageTenantBranding ? (
+                        <p className="settings-feedback">
+                          Somente o administrador do tenant pode alterar a logo.
+                        </p>
+                      ) : null}
                     </div>
 
                     <form className="settings-form-grid" onSubmit={handleSettingsUserSave}>
+                      {!canManageTenantUsers ? (
+                        <p className="settings-feedback">
+                          Você tem acesso somente de visualização ao seu cadastro.
+                        </p>
+                      ) : null}
                       <label className="settings-field">
                         <span>Nome</span>
                         <input
@@ -7154,6 +7595,7 @@ function App() {
                           value={userForm.nome}
                           onChange={(event) => handleSettingsUserChange('nome', event.target.value)}
                           placeholder="Nome do usuário"
+                          disabled={!canManageTenantUsers}
                         />
                       </label>
                       <label className="settings-field">
@@ -7163,6 +7605,7 @@ function App() {
                           onChange={(event) =>
                             handleSettingsUserChange('departamento', event.target.value)
                           }
+                          disabled={!canManageTenantUsers}
                         >
                           <option value="" disabled>
                             Selecione...
@@ -7181,6 +7624,7 @@ function App() {
                           value={userForm.telefone}
                           onChange={(event) => handleSettingsUserChange('telefone', event.target.value)}
                           placeholder="(00) 9 0000-0000"
+                          disabled={!canManageTenantUsers}
                         />
                       </label>
                       <label className="settings-field">
@@ -7190,6 +7634,7 @@ function App() {
                           value={userForm.email}
                           onChange={(event) => handleSettingsUserChange('email', event.target.value)}
                           placeholder="usuario@empresa.com"
+                          disabled={!canManageTenantUsers}
                         />
                       </label>
                       <label className="settings-field">
@@ -7199,6 +7644,7 @@ function App() {
                           value={userForm.senha}
                           onChange={(event) => handleSettingsUserChange('senha', event.target.value)}
                           placeholder="Senha de acesso"
+                          disabled={!canManageTenantUsers}
                         />
                       </label>
                       <label className="settings-field settings-user-clients-field">
@@ -7209,14 +7655,14 @@ function App() {
                             role="button"
                             tabIndex={0}
                             onClick={() => {
-                              if (selectedUserDepartment) {
+                              if (canManageTenantUsers && selectedUserDepartment) {
                                 setUserClientsOpen((prev) => !prev)
                               }
                             }}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter' || event.key === ' ') {
                                 event.preventDefault()
-                                if (selectedUserDepartment) {
+                                if (canManageTenantUsers && selectedUserDepartment) {
                                   setUserClientsOpen((prev) => !prev)
                                 }
                               }
@@ -7225,7 +7671,9 @@ function App() {
                             {selectedUserClientLabels.length ? (
                               <div className="multi-tags">
                                 {selectedUserClientIds.map((clientId) => {
-                                  const currentClient = settingsUserAvailableClients.find((client) => client.id === clientId)
+                                  const currentClient = settingsUserAvailableClients.find(
+                                    (client) => String(client.id) === String(clientId),
+                                  )
                                   const clientName = currentClient?.nome || `Cliente #${clientId}`
                                   return (
                                     <span className="tag-pill" key={`settings-user-client-${clientId}`}>
@@ -7236,6 +7684,7 @@ function App() {
                                           event.stopPropagation()
                                           toggleSettingsUserClient(clientId)
                                         }}
+                                        disabled={!canManageTenantUsers}
                                       >
                                         ×
                                       </button>
@@ -7259,10 +7708,11 @@ function App() {
                                   <button
                                     type="button"
                                     className={`multi-option ${
-                                      selectedUserClientIds.includes(client.id) ? 'selected' : ''
+                                      selectedUserClientIds.includes(String(client.id)) ? 'selected' : ''
                                     }`}
                                     key={`settings-user-client-option-${client.id}`}
                                     onClick={() => toggleSettingsUserClient(client.id)}
+                                    disabled={!canManageTenantUsers}
                                   >
                                     <span className="check" />
                                     {client.nome}
@@ -7276,10 +7726,15 @@ function App() {
                         </div>
                       </label>
                       <div className="settings-actions-row">
-                        <button type="button" className="chip small" onClick={clearSettingsUserForm}>
+                        <button
+                          type="button"
+                          className="chip small"
+                          onClick={clearSettingsUserForm}
+                          disabled={!canManageTenantUsers}
+                        >
                           Limpar
                         </button>
-                        <button type="submit" className="primary small">
+                        <button type="submit" className="primary small" disabled={!canManageTenantUsers}>
                           {editingUserId !== null ? 'Salvar alteração' : 'Cadastrar usuário'}
                         </button>
                       </div>
@@ -7299,7 +7754,7 @@ function App() {
                         <span>Ações</span>
                       </div>
                       <div className="settings-users-body">
-                        {users.map((user) => (
+                        {settingsUsersVisibleRows.map((user) => (
                           <div className="settings-users-row" key={user.id}>
                             <span title={user.nome}>{user.nome}</span>
                             <span title={user.departamento || '-'}>{user.departamento || '-'}</span>
@@ -7307,7 +7762,11 @@ function App() {
                               title={
                                 Array.isArray(user.clientIds) && user.clientIds.length
                                   ? user.clientIds
-                                      .map((clientId) => clients.find((client) => client.id === clientId)?.nome)
+                                      .map((clientId) =>
+                                        clientsForCurrentUser.find(
+                                          (client) => String(client.id) === String(clientId),
+                                        )?.nome,
+                                      )
                                       .filter(Boolean)
                                       .join(', ')
                                   : '-'
@@ -7315,7 +7774,11 @@ function App() {
                             >
                               {Array.isArray(user.clientIds) && user.clientIds.length
                                 ? user.clientIds
-                                    .map((clientId) => clients.find((client) => client.id === clientId)?.nome)
+                                    .map((clientId) =>
+                                      clientsForCurrentUser.find(
+                                        (client) => String(client.id) === String(clientId),
+                                      )?.nome,
+                                    )
                                     .filter(Boolean)
                                     .join(', ')
                                 : '-'}
@@ -7324,16 +7787,26 @@ function App() {
                             <span title={user.email}>{user.email}</span>
                             <span title={user.senha}>{user.senha}</span>
                             <span className="settings-users-actions">
-                              <button type="button" className="link-btn" onClick={() => editSettingsUser(user)}>
-                                Editar
-                              </button>
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                onClick={() => removeSettingsUser(user.id)}
-                              >
-                                Excluir
-                              </button>
+                              {canManageTenantUsers ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="link-btn"
+                                    onClick={() => editSettingsUser(user)}
+                                  >
+                                    Editar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="link-btn danger"
+                                    onClick={() => removeSettingsUser(user.id)}
+                                  >
+                                    Excluir
+                                  </button>
+                                </>
+                              ) : (
+                                <span>-</span>
+                              )}
                             </span>
                           </div>
                         ))}
@@ -7770,7 +8243,9 @@ function App() {
                         ref={selectAllRef}
                         checked={
                           filteredClients.length > 0 &&
-                          filteredClients.every((client) => selectedClientIds.includes(client.id))
+                          filteredClients.every((client) =>
+                            selectedClientIds.includes(String(client.id)),
+                          )
                         }
                         onChange={toggleSelectAll}
                         disabled={!filteredClients.length}
@@ -7832,7 +8307,7 @@ function App() {
                         <span>
                           <input
                             type="checkbox"
-                            checked={selectedClientIds.includes(client.id)}
+                            checked={selectedClientIds.includes(String(client.id))}
                             onChange={() => toggleSelectClient(client.id)}
                           />
                         </span>
@@ -8543,7 +9018,7 @@ function App() {
                       {solicitationClientSearchResults.length ? (
                         <div className="solicitation-search-results">
                           {solicitationClientSearchResults.map((client) => {
-                            const isSelected = solicitationForm.clientIds.includes(client.id)
+                            const isSelected = solicitationForm.clientIds.includes(String(client.id))
                             return (
                               <button
                                 key={client.id}
@@ -8583,7 +9058,7 @@ function App() {
                           <label key={client.id} className="settings-client-item">
                             <input
                               type="checkbox"
-                              checked={solicitationForm.clientIds.includes(client.id)}
+                              checked={solicitationForm.clientIds.includes(String(client.id))}
                               onChange={() => toggleSolicitationClient(client.id)}
                             />
                             <span>
