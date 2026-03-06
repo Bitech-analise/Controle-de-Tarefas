@@ -3808,7 +3808,7 @@ function App() {
   const goBackToTasks = () => {
     setTaskEditMode(false)
     setTaskActionError('')
-    setScreen('tasks')
+    setScreen('reports')
   }
 
   const getClientsByDepartment = (department) => {
@@ -5758,6 +5758,8 @@ function App() {
                 <button
                   key={item}
                   className={`nav-item ${
+                    item === 'Tarefas' ? 'nav-item--tasks' : ''
+                  } ${
                     (screen === 'super-admin' && item === 'Super Admin') ||
                     (screen === 'dashboard' && item === 'Visão Geral') ||
                     (screen === 'operational' && item === 'Visão Geral') ||
@@ -5767,7 +5769,7 @@ function App() {
                     (screen === 'settings' && item === 'Configurações')
                       ? 'active'
                       : ''
-                  }`}
+                  }`.trim()}
                   type="button"
                   onClick={() => {
                     if (item === 'Super Admin') {
@@ -5788,7 +5790,13 @@ function App() {
                   style={{ '--delay': `${index * 0.05}s` }}
                 >
                   <span className="nav-icon">{item === 'Super Admin' ? renderSidebarIcon('Configurações') : renderSidebarIcon(item)}</span>
-                  <span>{item}</span>
+                  <span>
+                    {item === 'Tarefas'
+                      ? 'Tarefas Cadastradas'
+                      : item === 'Relatórios'
+                        ? 'Obrigações'
+                        : item}
+                  </span>
                 </button>
               ))}
             </nav>
@@ -7276,7 +7284,7 @@ function App() {
                 <header className="task-detail-header card">
                   <div className="task-detail-title">
                     <button type="button" className="chip small" onClick={goBackToTasks}>
-                      Voltar para tarefas
+                      Voltar para Obrigações
                     </button>
                     <h4>{selectedTask ? selectedTask.subject : `${selectedEntityLabel} não encontrada`}</h4>
                     <p>

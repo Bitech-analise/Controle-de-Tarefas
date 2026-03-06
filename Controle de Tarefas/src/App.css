@@ -427,6 +427,11 @@
   letter-spacing: 0;
 }
 
+.nav-item.nav-item--tasks > span:last-child {
+  white-space: normal;
+  line-height: 1.15;
+}
+
 .nav-item .nav-icon {
   width: 26px;
   height: 26px;
