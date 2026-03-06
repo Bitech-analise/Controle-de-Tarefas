@@ -195,6 +195,7 @@ const clientChecklistOptions = [
   'Compra fora do Estado',
   'Parcelamentos',
   'Folha de pagamento',
+  'Folha de Pagamento Ultimo Dia',
   'Pró-Labore',
 ]
 const brazilUfOptions = [
@@ -560,8 +561,15 @@ const checklistMatchingRules = [
   { checklist: 'Compra fora do Estado', terms: ['compra fora do estado', 'fora do estado'] },
   { checklist: 'Parcelamentos', terms: ['parcelamento', 'parcelamentos'] },
   { checklist: 'Folha de pagamento', terms: ['folha de pagamento', 'folha pagamento'] },
+  {
+    checklist: 'Folha de Pagamento Ultimo Dia',
+    terms: ['folha de pagamento ultimo dia', 'folha pagamento ultimo dia'],
+  },
   { checklist: 'Pró-Labore', terms: ['pro labore', 'prolabore'] },
 ]
+
+const checklistFolhaPagamentoKey = normalizeFreeText('Folha de pagamento')
+const checklistFolhaUltimoDiaKey = normalizeFreeText('Folha de Pagamento Ultimo Dia')
 
 const getChecklistRequirementsForBlueprint = (blueprint) => {
   const sourceText = normalizeFreeText(
@@ -576,7 +584,7 @@ const getChecklistRequirementsForBlueprint = (blueprint) => {
   if (!sourceText) return []
 
   const textTokens = sourceText.split(' ').filter(Boolean)
-  return checklistMatchingRules
+  const matchedKeys = checklistMatchingRules
     .filter((rule) =>
       rule.terms.some((term) => {
         const normalizedTerm = normalizeFreeText(term)
@@ -587,7 +595,20 @@ const getChecklistRequirementsForBlueprint = (blueprint) => {
         return sourceText.includes(normalizedTerm)
       }),
     )
+    .map((rule) => normalizeFreeText(rule.checklist))
+
+  const normalizedRequiredChecklist = new Set(matchedKeys)
+
+  // "Folha de Pagamento Ultimo Dia" é uma particularidade exclusiva.
+  // Quando ela é identificada, a obrigação NÃO deve exigir também "Folha de pagamento".
+  if (normalizedRequiredChecklist.has(checklistFolhaUltimoDiaKey)) {
+    normalizedRequiredChecklist.delete(checklistFolhaPagamentoKey)
+  }
+
+  return checklistMatchingRules
     .map((rule) => rule.checklist)
+    .filter((item, index, array) => array.indexOf(item) === index)
+    .filter((item) => normalizedRequiredChecklist.has(normalizeFreeText(item)))
 }
 
 const isBlueprintAllowedByClientChecklist = (blueprint, client) => {
