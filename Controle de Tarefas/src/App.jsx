@@ -1334,6 +1334,14 @@ const renderSidebarIcon = (label) => {
           <path d="M8.5 11h7M8.5 15h7M8.5 19h4" />
         </svg>
       )
+    case 'Solicitações':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+          <path d="M8 8h8M8 12h6M8 16h5" />
+          <circle cx="18.5" cy="16.5" r="2.5" />
+        </svg>
+      )
     case 'Clientes':
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1397,6 +1405,7 @@ function App() {
       ? localStorage.getItem(STORAGE_KEYS.pass) || ''
       : '',
   )
+  const [showPasswordOnHold, setShowPasswordOnHold] = useState(false)
   const [error, setError] = useState('')
   const [authSession, setAuthSession] = useState(() => {
     try {
@@ -3214,18 +3223,54 @@ function App() {
     })
   }
 
+  const getForcedTaskTypeByScreen = (targetScreen) => {
+    if (targetScreen === 'reports') return 'Tarefa'
+    if (targetScreen === 'solicitations') return 'Solicitação'
+    return ''
+  }
+
+  const normalizeTaskFiltersForScreen = (filters, targetScreen) => {
+    const forcedTaskType = getForcedTaskTypeByScreen(targetScreen || screen)
+    if (!forcedTaskType) return filters
+    return {
+      ...filters,
+      taskType: forcedTaskType,
+    }
+  }
+
+  const openObligationsScreen = () => {
+    const nextTaskFilters = normalizeTaskFiltersForScreen(taskFilters, 'reports')
+    const nextAppliedTaskFilters = normalizeTaskFiltersForScreen(appliedTaskFilters, 'reports')
+    setTaskFilters(nextTaskFilters)
+    setAppliedTaskFilters(nextAppliedTaskFilters)
+    setTaskPage(1)
+    setScreen('reports')
+  }
+
+  const openSolicitationsScreen = () => {
+    const nextTaskFilters = normalizeTaskFiltersForScreen(taskFilters, 'solicitations')
+    const nextAppliedTaskFilters = normalizeTaskFiltersForScreen(appliedTaskFilters, 'solicitations')
+    setTaskFilters(nextTaskFilters)
+    setAppliedTaskFilters(nextAppliedTaskFilters)
+    setTaskPage(1)
+    setScreen('solicitations')
+  }
+
   const handleTaskFilterChange = (field, value) => {
     setTaskFilters((prev) => ({ ...prev, [field]: value }))
   }
 
   const applyTaskFilters = () => {
-    setAppliedTaskFilters(taskFilters)
+    const nextTaskFilters = normalizeTaskFiltersForScreen(taskFilters)
+    setTaskFilters(nextTaskFilters)
+    setAppliedTaskFilters(nextTaskFilters)
     setTaskPage(1)
   }
 
   const clearTaskFilters = () => {
-    setTaskFilters(initialTaskFilters)
-    setAppliedTaskFilters(initialTaskFilters)
+    const nextTaskFilters = normalizeTaskFiltersForScreen(initialTaskFilters)
+    setTaskFilters(nextTaskFilters)
+    setAppliedTaskFilters(nextTaskFilters)
     setTaskPage(1)
   }
 
@@ -3279,7 +3324,7 @@ function App() {
     setTaskFilters(nextFilters)
     setAppliedTaskFilters(nextFilters)
     setTaskPage(1)
-    setScreen('reports')
+    setScreen(groupName === 'Solicitações' ? 'solicitations' : 'reports')
   }
 
   const getResponsibleByClientAndDepartment = ({
@@ -4775,6 +4820,10 @@ function App() {
     return getTaggedReportDate(row.dates, 'A')
   }
 
+  const forcedTaskTypeForCurrentScreen = getForcedTaskTypeByScreen(screen)
+  const taskTypeFilterValue = forcedTaskTypeForCurrentScreen || taskFilters.taskType
+  const appliedTaskTypeFilterValue = forcedTaskTypeForCurrentScreen || appliedTaskFilters.taskType
+
   const reportTodayIso = getTodayIsoLocal()
   const filteredReportRows = taskReportRows.filter((row) => {
     const displayStatus = getTaskDisplayStatus(row)
@@ -4783,7 +4832,7 @@ function App() {
     const dueIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'V'))
     const isCompleted = isCompletedTaskStatus(displayStatus.status)
     const matchesType =
-      appliedTaskFilters.taskType === 'Todos' || row.taskType === appliedTaskFilters.taskType
+      appliedTaskTypeFilterValue === 'Todos' || row.taskType === appliedTaskTypeFilterValue
     const matchesSubject =
       appliedTaskFilters.subject === 'Todos' || row.subject === appliedTaskFilters.subject
     const matchesClient =
@@ -4912,7 +4961,7 @@ function App() {
     doc.text('Hive Tarefas - Relatorio de Tarefas', 40, 34)
     doc.setFontSize(9)
     doc.text(
-      `Filtros: Tipo ${appliedTaskFilters.taskType} | Departamento ${appliedTaskFilters.department} | Status ${appliedTaskFilters.status}`,
+      `Filtros: Tipo ${appliedTaskTypeFilterValue} | Departamento ${appliedTaskFilters.department} | Status ${appliedTaskFilters.status}`,
       40,
       52,
     )
@@ -5618,8 +5667,11 @@ function App() {
   const isSelectedSolicitation = selectedTask?.reportSource === 'solicitation'
   const selectedEntityLabel = isSelectedSolicitation ? 'Solicitação' : 'Tarefa'
   const selectedEntityLabelLower = isSelectedSolicitation ? 'solicitação' : 'tarefa'
+  const isObligationsScreen = screen === 'reports'
+  const isSolicitationsScreen = screen === 'solicitations'
+  const isReportsLikeScreen = isObligationsScreen || isSolicitationsScreen
   const isSolicitationReportMode =
-    (screen === 'tasks' || screen === 'reports') && appliedTaskFilters.taskType === 'Solicitação'
+    (screen === 'tasks' || isReportsLikeScreen) && appliedTaskTypeFilterValue === 'Solicitação'
 
   return (
     <div className="app">
@@ -5660,14 +5712,19 @@ function App() {
                       }}
                       autoComplete="username"
                     />
-                    <span className="input-icon" />
+                    <span className="input-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                        <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+                        <circle cx="12" cy="12" r="2.6" />
+                      </svg>
+                    </span>
                   </div>
                 </label>
                 <label>
                   Senha
                   <div className="input-wrap">
                     <input
-                      type="password"
+                      type={showPasswordOnHold ? 'text' : 'password'}
                       placeholder="••••••••"
                       value={password}
                       onChange={(event) => {
@@ -5676,7 +5733,24 @@ function App() {
                       }}
                       autoComplete={remember ? 'current-password' : 'off'}
                     />
-                    <span className="input-icon lock" />
+                    <button
+                      type="button"
+                      className="input-icon input-icon-btn"
+                      aria-label="Mostrar senha enquanto pressionado"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        setShowPasswordOnHold(true)
+                      }}
+                      onPointerUp={() => setShowPasswordOnHold(false)}
+                      onPointerLeave={() => setShowPasswordOnHold(false)}
+                      onPointerCancel={() => setShowPasswordOnHold(false)}
+                      onBlur={() => setShowPasswordOnHold(false)}
+                    >
+                      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                        <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+                        <circle cx="12" cy="12" r="2.6" />
+                      </svg>
+                    </button>
                   </div>
                 </label>
 
@@ -5751,6 +5825,7 @@ function App() {
                     'Visão Geral',
                     'Tarefas',
                     'Relatórios',
+                    'Solicitações',
                     'Clientes',
                     ...(canManageTenantUsers ? ['Configurações'] : []),
                   ]
@@ -5765,6 +5840,7 @@ function App() {
                     (screen === 'operational' && item === 'Visão Geral') ||
                     ((screen === 'tasks' || screen === 'task-detail') && item === 'Tarefas') ||
                     (screen === 'reports' && item === 'Relatórios') ||
+                    (screen === 'solicitations' && item === 'Solicitações') ||
                     (screen === 'clients' && item === 'Clientes') ||
                     (screen === 'settings' && item === 'Configurações')
                       ? 'active'
@@ -5779,7 +5855,9 @@ function App() {
                     } else if (item === 'Tarefas') {
                       setScreen('tasks')
                     } else if (item === 'Relatórios') {
-                      setScreen('reports')
+                      openObligationsScreen()
+                    } else if (item === 'Solicitações') {
+                      openSolicitationsScreen()
                     } else if (item === 'Clientes') {
                       setScreen('clients')
                     } else if (item === 'Configurações') {
@@ -5836,7 +5914,7 @@ function App() {
                     <button className="chip" type="button">
                       Relatório do dia
                     </button>
-                    <button className="chip" type="button" onClick={() => setScreen('reports')}>
+                    <button className="chip" type="button" onClick={openObligationsScreen}>
                       Quadro Kanban
                     </button>
                   </>
@@ -5848,7 +5926,7 @@ function App() {
               </div>
             </header>
 
-            {!isSuperAdmin && (screen === 'dashboard' || screen === 'reports') ? (
+            {!isSuperAdmin && (screen === 'dashboard' || isReportsLikeScreen) ? (
               <div className="view-tabs">
                 <button
                   className={screen === 'dashboard' ? 'active' : ''}
@@ -5858,11 +5936,11 @@ function App() {
                   Visão Geral
                 </button>
                 <button
-                  className={screen === 'reports' ? 'active' : ''}
+                  className={isReportsLikeScreen ? 'active' : ''}
                   type="button"
-                  onClick={() => setScreen('reports')}
+                  onClick={openObligationsScreen}
                 >
-                  Relatórios
+                  Obrigações
                 </button>
               </div>
             ) : null}
@@ -6781,7 +6859,7 @@ function App() {
                   </div>
                 </section>
               </div>
-            ) : screen === 'reports' || screen === 'tasks' ? (
+            ) : isReportsLikeScreen || screen === 'tasks' ? (
               <div className="reports-view">
                 <header className="reports-header">
                   <div>
@@ -6790,14 +6868,18 @@ function App() {
                         ? isSolicitationReportMode
                           ? 'Relatórios > Solicitações'
                           : 'Relatórios > Tarefas'
-                        : 'Relatórios'}
+                        : isSolicitationsScreen
+                          ? 'Solicitações'
+                          : 'Obrigações'}
                     </h4>
                     <p>
                       {screen === 'tasks'
                         ? isSolicitationReportMode
                           ? 'Solicitações cadastradas • visão detalhada por cliente e status'
                           : 'Tarefas cadastradas • visão detalhada por cliente e status'
-                        : 'Tarefas • Visão detalhada por cliente e status'}
+                        : isSolicitationsScreen
+                          ? 'Solicitações • visão detalhada por cliente e status'
+                          : 'Obrigações • visão detalhada por cliente e status'}
                     </p>
                   </div>
                   <div className="reports-actions">
@@ -6997,8 +7079,9 @@ function App() {
                       <label className="task-filter-field">
                         <span>Tipos de tarefas</span>
                         <select
-                          value={taskFilters.taskType}
+                          value={taskTypeFilterValue}
                           onChange={(event) => handleTaskFilterChange('taskType', event.target.value)}
+                          disabled={isReportsLikeScreen}
                         >
                           {taskTypeOptions.map((item) => (
                             <option key={item} value={item}>
@@ -7159,7 +7242,7 @@ function App() {
 
                 {screen === 'tasks' && taskBlueprintRows.length ? taskBlueprintsPanel : null}
 
-                {screen === 'reports' ? (
+                {isReportsLikeScreen ? (
                   <>
                     <div className="report-table">
                   <div className="report-head">
