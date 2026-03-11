@@ -2369,6 +2369,12 @@
   cursor: pointer;
 }
 
+.link-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .link-btn.eye {
   display: inline-flex;
   align-items: center;

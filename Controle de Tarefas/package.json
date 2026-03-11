@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "predev": "node scripts/patch-vite-windows-eperm.cjs",
+    "dev": "vite --configLoader runner",
+    "prebuild": "node scripts/patch-vite-windows-eperm.cjs",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"

@@ -51,7 +51,7 @@ const stats = [
   },
 ]
 
-const progressRows = [
+const _progressRows = [
   {
     label: 'Abertas',
     tone: 'amber',
@@ -80,7 +80,7 @@ const controlRows = [
   },
 ]
 
-const reportRows = [
+const _reportRows = [
   {
     id: 1,
     status: 'Concluída na programação',
@@ -194,6 +194,9 @@ const clientChecklistOptions = [
   'Emite Nfse',
   'Compra fora do Estado',
   'Parcelamentos',
+  'Parcelamento MEI',
+  'Parcelamento PGFN',
+  'Parcelamento Simples Nacional',
   'Folha de pagamento',
   'Folha de Pagamento Ultimo Dia',
   'Pró-Labore',
@@ -560,6 +563,12 @@ const checklistMatchingRules = [
   { checklist: 'Emite Nfse', terms: ['nfse', 'nfs e', 'nota fiscal de servico'] },
   { checklist: 'Compra fora do Estado', terms: ['compra fora do estado', 'fora do estado'] },
   { checklist: 'Parcelamentos', terms: ['parcelamento', 'parcelamentos'] },
+  { checklist: 'Parcelamento MEI', terms: ['parcelamento mei'] },
+  { checklist: 'Parcelamento PGFN', terms: ['parcelamento pgfn'] },
+  {
+    checklist: 'Parcelamento Simples Nacional',
+    terms: ['parcelamento simples nacional'],
+  },
   { checklist: 'Folha de pagamento', terms: ['folha de pagamento', 'folha pagamento'] },
   {
     checklist: 'Folha de Pagamento Ultimo Dia',
@@ -570,6 +579,10 @@ const checklistMatchingRules = [
 
 const checklistFolhaPagamentoKey = normalizeFreeText('Folha de pagamento')
 const checklistFolhaUltimoDiaKey = normalizeFreeText('Folha de Pagamento Ultimo Dia')
+const checklistParcelamentosKey = normalizeFreeText('Parcelamentos')
+const checklistParcelamentoMeiKey = normalizeFreeText('Parcelamento MEI')
+const checklistParcelamentoPgfnKey = normalizeFreeText('Parcelamento PGFN')
+const checklistParcelamentoSimplesNacionalKey = normalizeFreeText('Parcelamento Simples Nacional')
 
 const getChecklistRequirementsForBlueprint = (blueprint) => {
   const sourceText = normalizeFreeText(
@@ -605,6 +618,16 @@ const getChecklistRequirementsForBlueprint = (blueprint) => {
     normalizedRequiredChecklist.delete(checklistFolhaPagamentoKey)
   }
 
+  // Quando o blueprint já identificar parcelamento específico,
+  // removemos a chave genérica "Parcelamentos" para não exigir ambas.
+  if (
+    normalizedRequiredChecklist.has(checklistParcelamentoMeiKey) ||
+    normalizedRequiredChecklist.has(checklistParcelamentoPgfnKey) ||
+    normalizedRequiredChecklist.has(checklistParcelamentoSimplesNacionalKey)
+  ) {
+    normalizedRequiredChecklist.delete(checklistParcelamentosKey)
+  }
+
   return checklistMatchingRules
     .map((rule) => rule.checklist)
     .filter((item, index, array) => array.indexOf(item) === index)
@@ -620,7 +643,22 @@ const isBlueprintAllowedByClientChecklist = (blueprint, client) => {
       .map((item) => normalizeFreeText(item))
       .filter(Boolean),
   )
-  return requiredChecklist.every((item) => clientChecklist.has(normalizeFreeText(item)))
+  return requiredChecklist.every((item) => {
+    const requiredKey = normalizeFreeText(item)
+    if (clientChecklist.has(requiredKey)) return true
+
+    // Retrocompatibilidade: se o cliente tiver apenas "Parcelamentos",
+    // considera atendido também para parcelamentos específicos.
+    if (
+      clientChecklist.has(checklistParcelamentosKey) &&
+      (requiredKey === checklistParcelamentoMeiKey ||
+        requiredKey === checklistParcelamentoPgfnKey ||
+        requiredKey === checklistParcelamentoSimplesNacionalKey)
+    ) {
+      return true
+    }
+    return false
+  })
 }
 
 const getMonthEndIso = (isoDate) => {
@@ -919,7 +957,7 @@ const downloadFileFromBlob = (content, fileName, type) => {
   URL.revokeObjectURL(url)
 }
 
-const initialClients = [
+const _initialClients = [
   {
     id: 1,
     docType: 'CNPJ',
@@ -1552,6 +1590,10 @@ function App() {
     .toLowerCase()
   const tenantDisplayName = String(authSession?.user?.tenantName || '').trim() || 'Empresa'
   const isTenantRestrictedUser = authSession?.user?.role === 'TENANT_USER'
+  const canManageTaskBlueprints = isTenantAdmin || isSuperAdmin
+  const canCreateTaskBlueprints = canManageTaskBlueprints
+  const canManageClients = isTenantAdmin || isSuperAdmin
+  const canManageClientTaskGeneration = isTenantAdmin || isSuperAdmin
   const canManageTenantUsers = isTenantAdmin
   const canManageTenantBranding = isTenantAdmin
   const currentTenantUserProfile = users.find(
@@ -2485,6 +2527,10 @@ function App() {
   }
 
   const openCreateModal = () => {
+    if (isTenantRestrictedUser) {
+      openSolicitationModal()
+      return
+    }
     setCreateOpen(true)
     setClientOpen(false)
   }
@@ -2503,6 +2549,8 @@ function App() {
   }
 
   const openClientModal = (mode = 'create', client = null) => {
+    if (mode === 'edit' && !canManageClients) return
+
     const nextClientForm = client
       ? {
           ...client,
@@ -2537,6 +2585,7 @@ function App() {
   }
 
   const openBulkModal = () => {
+    if (!canManageClients) return
     if (!selectedClientIds.length) return
     setBulkOpen(true)
     setBulkGroupsOpen(false)
@@ -2691,6 +2740,7 @@ function App() {
   }
 
   const handleBulkSave = () => {
+    if (!canManageClients) return
     if (!selectedClientIds.length) return
     const selectedClientIdSet = new Set(selectedClientIds.map((id) => String(id)))
     setClients((prev) =>
@@ -2815,6 +2865,7 @@ function App() {
   }
 
   const openClientTaskGenerateModal = (clientsList, mode = 'generate') => {
+    if (!canManageClientTaskGeneration) return
     const targetClients = Array.isArray(clientsList) ? clientsList.filter(Boolean) : []
     if (!targetClients.length) return
 
@@ -2871,6 +2922,7 @@ function App() {
   }
 
   const confirmClientTaskGeneration = () => {
+    if (!canManageClientTaskGeneration) return
     const targetClients = Array.isArray(clientTaskGenerateClients)
       ? clientTaskGenerateClients.filter(Boolean)
       : []
@@ -3161,11 +3213,13 @@ function App() {
   }
 
   const requestDelete = (client) => {
+    if (!canManageClients) return
     setPendingDelete([client])
     setConfirmOpen(true)
   }
 
   const requestBulkDelete = () => {
+    if (!canManageClients) return
     if (!selectedClientIds.length) return
     const selectedClientIdSet = new Set(selectedClientIds.map((id) => String(id)))
     setPendingDelete(
@@ -3824,6 +3878,10 @@ function App() {
 
   const handleTaskEdit = () => {
     if (!selectedTask) return
+    if (selectedTask.reportSource !== 'solicitation' && !canManageTaskBlueprints) {
+      setTaskActionError('Somente administradores podem editar tarefas cadastradas.')
+      return
+    }
     if (!taskEditMode) {
       setTaskEditMode(true)
       return
@@ -3834,6 +3892,10 @@ function App() {
 
   const handleTaskDelete = () => {
     if (!selectedTask) return
+    if (selectedTask.reportSource !== 'solicitation' && !canManageTaskBlueprints) {
+      setTaskActionError('Somente administradores podem excluir tarefas cadastradas.')
+      return
+    }
     const entity = selectedTask.reportSource === 'solicitation' ? 'solicitação' : 'tarefa'
     const shouldDelete = window.confirm(
       `Deseja excluir a ${entity} #${selectedTask.id} (${selectedTask.subject})?`,
@@ -4172,7 +4234,7 @@ function App() {
     setSolicitationClientSearch('')
   }
 
-  const toggleSettingsTaskClient = (clientId) => {
+  const _toggleSettingsTaskClient = (clientId) => {
     const normalizedClientId = String(clientId)
     setSettingsTaskForm((prev) => {
       const current = Array.isArray(prev.clientIds) ? prev.clientIds.map((id) => String(id)) : []
@@ -4210,6 +4272,10 @@ function App() {
   }
 
   const editTaskBlueprint = (blueprint) => {
+    if (!canManageTaskBlueprints) {
+      setSettingsTaskFeedback('Somente administradores podem editar tarefas cadastradas.')
+      return
+    }
     if (!blueprint) return
     setEditingTaskBlueprintId(blueprint.id)
     setSettingsTaskFeedback('')
@@ -4239,6 +4305,10 @@ function App() {
   }
 
   const deleteTaskBlueprint = (blueprintId) => {
+    if (!canManageTaskBlueprints) {
+      setSettingsTaskFeedback('Somente administradores podem excluir tarefas cadastradas.')
+      return
+    }
     const blueprint = taskBlueprints.find((item) => item.id === blueprintId)
     if (!blueprint) return
     const canDelete = window.confirm(
@@ -4253,6 +4323,10 @@ function App() {
 
   const handleSettingsTaskSave = (event) => {
     event.preventDefault()
+    if (!canCreateTaskBlueprints) {
+      setSettingsTaskFeedback('Somente administradores podem cadastrar tarefas.')
+      return
+    }
 
     const obligation = settingsTaskForm.obligation.trim()
     const loggedOwner =
@@ -4786,16 +4860,34 @@ function App() {
                 <span title={row.dueDateBr}>{row.dueDateBr}</span>
                 <span title={row.createdAt}>{row.createdAt}</span>
                 <span className="settings-task-blueprints-actions">
-                  <button type="button" className="link-btn" onClick={() => editTaskBlueprint(row)}>
-                    Editar
-                  </button>
-                  <button
-                    type="button"
-                    className="link-btn danger"
-                    onClick={() => deleteTaskBlueprint(row.id)}
-                  >
-                    Excluir
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="link-btn"
+                      onClick={() => editTaskBlueprint(row)}
+                      disabled={!canManageTaskBlueprints}
+                      title={
+                        canManageTaskBlueprints
+                          ? 'Editar tarefa cadastrada'
+                          : 'Apenas administrador pode editar tarefas cadastradas'
+                      }
+                    >
+                      Editar
+                    </button>
+                    <button
+                      type="button"
+                      className="link-btn danger"
+                      onClick={() => deleteTaskBlueprint(row.id)}
+                      disabled={!canManageTaskBlueprints}
+                      title={
+                        canManageTaskBlueprints
+                          ? 'Excluir tarefa cadastrada'
+                          : 'Apenas administrador pode excluir tarefas cadastradas'
+                      }
+                    >
+                      Excluir
+                    </button>
+                  </>
                 </span>
               </div>
             ))
@@ -5667,6 +5759,7 @@ function App() {
   const isSelectedSolicitation = selectedTask?.reportSource === 'solicitation'
   const selectedEntityLabel = isSelectedSolicitation ? 'Solicitação' : 'Tarefa'
   const selectedEntityLabelLower = isSelectedSolicitation ? 'solicitação' : 'tarefa'
+  const canManageSelectedTaskRecord = isSelectedSolicitation || canManageTaskBlueprints
   const isObligationsScreen = screen === 'reports'
   const isSolicitationsScreen = screen === 'solicitations'
   const isReportsLikeScreen = isObligationsScreen || isSolicitationsScreen
@@ -5909,7 +6002,7 @@ function App() {
                 ) : (
                   <>
                     <button className="chip primary" type="button" onClick={openCreateModal}>
-                      Criar Tarefas
+                      {isTenantRestrictedUser ? 'Nova Solicitação' : 'Criar Tarefas'}
                     </button>
                     <button className="chip" type="button">
                       Relatório do dia
@@ -7542,12 +7635,16 @@ function App() {
                         <button type="button" className="chip tiny" onClick={handleTaskDispense}>
                           Dispensar
                         </button>
-                        <button type="button" className="chip tiny" onClick={handleTaskEdit}>
-                          {taskEditMode ? 'Salvar edição' : 'Editar'}
-                        </button>
-                        <button type="button" className="danger-outline" onClick={handleTaskDelete}>
-                          Excluir
-                        </button>
+                        {canManageSelectedTaskRecord ? (
+                          <button type="button" className="chip tiny" onClick={handleTaskEdit}>
+                            {taskEditMode ? 'Salvar edição' : 'Editar'}
+                          </button>
+                        ) : null}
+                        {canManageSelectedTaskRecord ? (
+                          <button type="button" className="danger-outline" onClick={handleTaskDelete}>
+                            Excluir
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className={`chip tiny task-email-button ${isTaskEmailSent ? 'sent' : ''}`}
@@ -8368,32 +8465,52 @@ function App() {
                       <button
                         type="button"
                         className="chip small"
-                        disabled={!selectedClientIds.length}
+                        disabled={!canManageClients || !selectedClientIds.length}
                         onClick={openBulkModal}
+                        title={
+                          canManageClients
+                            ? 'Editar clientes selecionados'
+                            : 'Apenas administrador pode editar clientes'
+                        }
                       >
                         Editar em lote
                       </button>
                       <button
                         type="button"
                         className="chip small"
-                        disabled={!selectedClientIds.length}
+                        disabled={!canManageClientTaskGeneration || !selectedClientIds.length}
                         onClick={generateTasksForSelectedClients}
+                        title={
+                          canManageClientTaskGeneration
+                            ? 'Gerar tarefas para clientes selecionados'
+                            : 'Apenas administrador pode gerar tarefas em lote'
+                        }
                       >
                         Gerar tarefas em lote
                       </button>
                       <button
                         type="button"
                         className="danger-outline"
-                        disabled={!selectedClientIds.length}
+                        disabled={!canManageClientTaskGeneration || !selectedClientIds.length}
                         onClick={deleteTasksForSelectedClients}
+                        title={
+                          canManageClientTaskGeneration
+                            ? 'Excluir tarefas dos clientes selecionados'
+                            : 'Apenas administrador pode excluir tarefas em lote'
+                        }
                       >
                         Excluir tarefas em lote
                       </button>
                       <button
                         type="button"
                         className="danger-outline"
-                        disabled={!selectedClientIds.length}
+                        disabled={!canManageClients || !selectedClientIds.length}
                         onClick={requestBulkDelete}
+                        title={
+                          canManageClients
+                            ? 'Excluir clientes selecionados'
+                            : 'Apenas administrador pode excluir clientes'
+                        }
                       >
                         Excluir selecionados
                       </button>
@@ -8447,7 +8564,12 @@ function App() {
                             className="link-btn icon generate"
                             onClick={() => generateTasksForClient(client)}
                             aria-label="Gerar tarefas"
-                            title="Gerar tarefas"
+                            title={
+                              canManageClientTaskGeneration
+                                ? 'Gerar tarefas'
+                                : 'Apenas administrador pode gerar tarefas'
+                            }
+                            disabled={!canManageClientTaskGeneration}
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                               <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" />
@@ -8458,7 +8580,12 @@ function App() {
                             className="link-btn icon danger"
                             onClick={() => deleteTasksForClient(client)}
                             aria-label="Excluir tarefas"
-                            title="Excluir tarefas"
+                            title={
+                              canManageClientTaskGeneration
+                                ? 'Excluir tarefas'
+                                : 'Apenas administrador pode excluir tarefas'
+                            }
+                            disabled={!canManageClientTaskGeneration}
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                               <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" />
@@ -8482,7 +8609,8 @@ function App() {
                             className="link-btn icon"
                             onClick={() => openClientModal('edit', client)}
                             aria-label="Editar"
-                            title="Editar"
+                            title={canManageClients ? 'Editar' : 'Apenas administrador pode editar clientes'}
+                            disabled={!canManageClients}
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                               <path d="M4 20h4l10-10-4-4L4 16v4z" />
@@ -8494,7 +8622,8 @@ function App() {
                             className="link-btn icon danger"
                             onClick={() => requestDelete(client)}
                             aria-label="Excluir"
-                            title="Excluir"
+                            title={canManageClients ? 'Excluir' : 'Apenas administrador pode excluir clientes'}
+                            disabled={!canManageClients}
                           >
                             <svg viewBox="0 0 24 24" aria-hidden="true">
                               <path d="M4 7h16" />
@@ -8717,18 +8846,20 @@ function App() {
                     <span className="option-icon" />
                     Novo Cliente
                   </button>
-                  <button
-                    className="create-option"
-                    type="button"
-                    onClick={() => {
-                      clearSettingsTaskForm()
-                      setCreateOpen(false)
-                      setTaskCreateOpen(true)
-                    }}
-                  >
-                    <span className="option-icon" />
-                    Criar Tarefa
-                  </button>
+                  {canCreateTaskBlueprints ? (
+                    <button
+                      className="create-option"
+                      type="button"
+                      onClick={() => {
+                        clearSettingsTaskForm()
+                        setCreateOpen(false)
+                        setTaskCreateOpen(true)
+                      }}
+                    >
+                      <span className="option-icon" />
+                      Criar Tarefa
+                    </button>
+                  ) : null}
                 </div>
                 <div className="modal-footer">
                   <button className="chip small" type="button" onClick={() => setCreateOpen(false)}>

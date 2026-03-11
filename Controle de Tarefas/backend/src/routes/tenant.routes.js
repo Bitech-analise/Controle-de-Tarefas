@@ -373,9 +373,19 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
     }
 
     if (req.auth?.role === 'TENANT_USER') {
+      const currentTasksRows = Array.isArray(currentState?.tasksRows) ? currentState.tasksRows : []
+      const incomingTasksRows = Array.isArray(stateToPersist?.tasksRows) ? stateToPersist.tasksRows : []
+      const currentTaskIds = new Set(currentTasksRows.map((task) => String(task?.id ?? '')))
+      const canPersistTaskRowsWithoutCreateOrDelete =
+        incomingTasksRows.length === currentTasksRows.length &&
+        incomingTasksRows.every((task) => currentTaskIds.has(String(task?.id ?? '')))
+
       stateToPersist = {
         ...stateToPersist,
         users: Array.isArray(currentState?.users) ? currentState.users : [],
+        clients: Array.isArray(currentState?.clients) ? currentState.clients : [],
+        taskBlueprints: Array.isArray(currentState?.taskBlueprints) ? currentState.taskBlueprints : [],
+        tasksRows: canPersistTaskRowsWithoutCreateOrDelete ? incomingTasksRows : currentTasksRows,
       }
     }
 
@@ -537,7 +547,7 @@ router.get('/clients', validateQuery(listClientsQuerySchema), async (req, res, n
   }
 })
 
-router.post('/clients', validateBody(upsertClientSchema), async (req, res, next) => {
+router.post('/clients', requireRole('TENANT_ADMIN', 'SUPER_ADMIN'), validateBody(upsertClientSchema), async (req, res, next) => {
   try {
     const tenantId = resolveTenantFromAuth(req)
     if (!tenantId) {
