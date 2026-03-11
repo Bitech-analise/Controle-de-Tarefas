@@ -709,6 +709,177 @@ const fileToDataUrl = (file) =>
     reader.readAsDataURL(file)
   })
 
+const normalizeLogoDataUrl = async (file) => {
+  const rawDataUrl = await fileToDataUrl(file)
+
+  return new Promise((resolve) => {
+    const image = new Image()
+    image.onload = () => {
+      try {
+        const sourceWidth = Math.max(1, Number(image.naturalWidth || image.width || 1))
+        const sourceHeight = Math.max(1, Number(image.naturalHeight || image.height || 1))
+        const sourceCanvas = document.createElement('canvas')
+        sourceCanvas.width = sourceWidth
+        sourceCanvas.height = sourceHeight
+        const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true })
+        if (!sourceCtx) {
+          resolve(rawDataUrl)
+          return
+        }
+
+        sourceCtx.drawImage(image, 0, 0, sourceWidth, sourceHeight)
+
+        const { data } = sourceCtx.getImageData(0, 0, sourceWidth, sourceHeight)
+        let minX = sourceWidth
+        let minY = sourceHeight
+        let maxX = -1
+        let maxY = -1
+
+        for (let y = 0; y < sourceHeight; y += 1) {
+          for (let x = 0; x < sourceWidth; x += 1) {
+            const idx = (y * sourceWidth + x) * 4
+            const r = data[idx]
+            const g = data[idx + 1]
+            const b = data[idx + 2]
+            const a = data[idx + 3]
+
+            const isTransparent = a < 16
+            const isNearWhite = r > 245 && g > 245 && b > 245
+            if (isTransparent || isNearWhite) continue
+
+            if (x < minX) minX = x
+            if (y < minY) minY = y
+            if (x > maxX) maxX = x
+            if (y > maxY) maxY = y
+          }
+        }
+
+        if (maxX === -1 || maxY === -1) {
+          resolve(rawDataUrl)
+          return
+        }
+
+        const cropWidth = Math.max(1, maxX - minX + 1)
+        const cropHeight = Math.max(1, maxY - minY + 1)
+        const padX = Math.max(2, Math.round(cropWidth * 0.03))
+        const padY = Math.max(2, Math.round(cropHeight * 0.03))
+
+        const cropX = Math.max(0, minX - padX)
+        const cropY = Math.max(0, minY - padY)
+        const cropW = Math.min(sourceWidth - cropX, cropWidth + padX * 2)
+        const cropH = Math.min(sourceHeight - cropY, cropHeight + padY * 2)
+
+        const detectLogoBackgroundColor = () => {
+          const buckets = new Map()
+          const quant = 16
+          const marginX = Math.max(1, Math.round(sourceWidth * 0.04))
+          const marginY = Math.max(1, Math.round(sourceHeight * 0.04))
+          const patchW = Math.max(2, Math.round(sourceWidth * 0.1))
+          const patchH = Math.max(2, Math.round(sourceHeight * 0.1))
+
+          const corners = [
+            { x: marginX, y: marginY },
+            { x: Math.max(0, sourceWidth - marginX - patchW), y: marginY },
+            { x: marginX, y: Math.max(0, sourceHeight - marginY - patchH) },
+            {
+              x: Math.max(0, sourceWidth - marginX - patchW),
+              y: Math.max(0, sourceHeight - marginY - patchH),
+            },
+          ]
+
+          let sampled = 0
+
+          const addPixel = (px, py) => {
+            if (px < 0 || py < 0 || px >= sourceWidth || py >= sourceHeight) return
+            const idx = (py * sourceWidth + px) * 4
+            const r = data[idx]
+            const g = data[idx + 1]
+            const b = data[idx + 2]
+            const a = data[idx + 3]
+            if (a < 32) return
+
+            sampled += 1
+            const qR = Math.max(0, Math.min(255, Math.round(r / quant) * quant))
+            const qG = Math.max(0, Math.min(255, Math.round(g / quant) * quant))
+            const qB = Math.max(0, Math.min(255, Math.round(b / quant) * quant))
+            const key = `${qR}-${qG}-${qB}`
+            const current = buckets.get(key) || { count: 0, sumR: 0, sumG: 0, sumB: 0 }
+            current.count += 1
+            current.sumR += r
+            current.sumG += g
+            current.sumB += b
+            buckets.set(key, current)
+          }
+
+          corners.forEach((corner) => {
+            for (let y = corner.y; y < corner.y + patchH; y += 1) {
+              for (let x = corner.x; x < corner.x + patchW; x += 1) {
+                addPixel(x, y)
+              }
+            }
+          })
+
+          if (!buckets.size || sampled < 20) return '#0b0f14'
+
+          let best = null
+          buckets.forEach((entry) => {
+            if (!best || entry.count > best.count) best = entry
+          })
+
+          if (!best || !best.count) return '#0b0f14'
+
+          const avgR = Math.round(best.sumR / best.count)
+          const avgG = Math.round(best.sumG / best.count)
+          const avgB = Math.round(best.sumB / best.count)
+          return `rgb(${avgR}, ${avgG}, ${avgB})`
+        }
+
+        const logoBackgroundColor = detectLogoBackgroundColor()
+
+        const outputSize = 320
+        const outputCanvas = document.createElement('canvas')
+        outputCanvas.width = outputSize
+        outputCanvas.height = outputSize
+        const outputCtx = outputCanvas.getContext('2d')
+        if (!outputCtx) {
+          resolve(rawDataUrl)
+          return
+        }
+
+        outputCtx.fillStyle = logoBackgroundColor
+        outputCtx.fillRect(0, 0, outputSize, outputSize)
+        outputCtx.imageSmoothingEnabled = true
+        outputCtx.imageSmoothingQuality = 'high'
+
+        const innerSpace = outputSize * 0.88
+        const scale = Math.min(innerSpace / cropW, innerSpace / cropH)
+        const drawW = cropW * scale
+        const drawH = cropH * scale
+        const drawX = (outputSize - drawW) / 2
+        const drawY = (outputSize - drawH) / 2
+
+        outputCtx.drawImage(
+          sourceCanvas,
+          cropX,
+          cropY,
+          cropW,
+          cropH,
+          drawX,
+          drawY,
+          drawW,
+          drawH,
+        )
+
+        resolve(outputCanvas.toDataURL('image/png'))
+      } catch {
+        resolve(rawDataUrl)
+      }
+    }
+    image.onerror = () => resolve(rawDataUrl)
+    image.src = rawDataUrl
+  })
+}
+
 const extractDigits = (value) => String(value || '').replace(/\D/g, '')
 
 const formatCnpjValue = (value) => {
@@ -1541,6 +1712,8 @@ function App() {
   const [solicitationFeedback, setSolicitationFeedback] = useState('')
   const [solicitationRecords, setSolicitationRecords] = useState([])
   const [solicitationClientSearch, setSolicitationClientSearch] = useState('')
+  const [solicitationClientsOpen, setSolicitationClientsOpen] = useState(false)
+  const solicitationClientsRef = useRef(null)
   const [clientCepLookupLoading, setClientCepLookupLoading] = useState(false)
   const [clientCepLookupMessage, setClientCepLookupMessage] = useState('')
   const [clientForm, setClientForm] = useState(emptyClientForm)
@@ -1596,6 +1769,8 @@ function App() {
   const canManageClientTaskGeneration = isTenantAdmin || isSuperAdmin
   const canManageTenantUsers = isTenantAdmin
   const canManageTenantBranding = isTenantAdmin
+  const loggedUserDisplayName = String(authSession?.user?.name || authSession?.user?.email || '')
+    .trim()
   const currentTenantUserProfile = users.find(
     (user) => String(user.email || '').trim().toLowerCase() === currentAuthEmailLower,
   )
@@ -1678,6 +1853,19 @@ function App() {
     document.addEventListener('mousedown', handleOutsideClick)
     return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [checklistOpen])
+
+  useEffect(() => {
+    if (!solicitationClientsOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (solicitationClientsRef.current && !solicitationClientsRef.current.contains(event.target)) {
+        setSolicitationClientsOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [solicitationClientsOpen])
 
   useEffect(() => {
     if (!bulkGroupsOpen) return
@@ -2446,7 +2634,7 @@ function App() {
 
     try {
       setSettingsLogoLoading(true)
-      const dataUrl = await fileToDataUrl(file)
+      const dataUrl = await normalizeLogoDataUrl(file)
       setSettingsLogoDraftDataUrl(dataUrl)
       setSettingsLogoDraftName(file.name || 'logo')
       setSettingsLogoFeedback('Imagem pronta. Clique em "Salvar logo".')
@@ -2538,6 +2726,7 @@ function App() {
   const clearSolicitationForm = () => {
     setSolicitationForm(getEmptySolicitationForm())
     setSolicitationClientSearch('')
+    setSolicitationClientsOpen(false)
     setSolicitationFeedback('')
   }
 
@@ -4189,6 +4378,10 @@ function App() {
   }
 
   const handleSolicitationChange = (field, value) => {
+    if (field === 'departamento') {
+      setSolicitationForm((prev) => ({ ...prev, departamento: value, responsavel: '' }))
+      return
+    }
     setSolicitationForm((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -4220,18 +4413,6 @@ function App() {
         (file) => !(file.name === fileName && file.size === fileSize),
       ),
     }))
-  }
-
-  const addSolicitationClientBySearch = (clientId) => {
-    const normalizedClientId = String(clientId)
-    setSolicitationForm((prev) => {
-      const current = Array.isArray(prev.clientIds) ? prev.clientIds.map((id) => String(id)) : []
-      if (current.includes(normalizedClientId)) {
-        return prev
-      }
-      return { ...prev, clientIds: [...current, normalizedClientId] }
-    })
-    setSolicitationClientSearch('')
   }
 
   const _toggleSettingsTaskClient = (clientId) => {
@@ -4547,7 +4728,7 @@ function App() {
     }
 
     if (!andamento) {
-      setSolicitationFeedback('Informe o andamento da solicitação.')
+      setSolicitationFeedback('Informe as informações adicionais da solicitação.')
       return
     }
 
@@ -4689,9 +4870,6 @@ function App() {
     : settingsTaskForm.tributacaoScope
       ? [settingsTaskForm.tributacaoScope]
       : []
-  const settingsOwnerOptions = Array.from(
-    new Set(users.map((user) => user.nome).concat(tasksRowsForCurrentUser.map((task) => task.owner))),
-  ).filter(Boolean)
   const taskBlueprintRows = taskBlueprints.map((template) => {
     return {
       ...template,
@@ -5684,17 +5862,36 @@ function App() {
   const solicitationClients = clientsForCurrentUser.filter(
     (client) => solicitationForm.includeDisabledClients || client.status !== 'Inativo',
   )
-  const solicitationClientSearchTerm = solicitationClientSearch.trim().toLowerCase()
-  const solicitationClientSearchResults = solicitationClientSearchTerm
-    ? solicitationClients
-        .filter((client) =>
-          [client.nome, client.apelido, client.inscricao, client.email]
-            .join(' ')
-            .toLowerCase()
-            .includes(solicitationClientSearchTerm),
-        )
-        .slice(0, 8)
+  const selectedSolicitationDepartment = normalizeSolicitationDepartment(solicitationForm.departamento)
+  const solicitationResponsibleOptions = selectedSolicitationDepartment
+    ? Array.from(
+        new Set(
+          users
+            .filter(
+              (user) =>
+                normalizeSolicitationDepartment(user.departamento) === selectedSolicitationDepartment,
+            )
+            .map((user) => String(user.nome || '').trim())
+            .filter(Boolean),
+        ),
+      ).sort((a, b) => a.localeCompare(b, 'pt-BR'))
     : []
+  const solicitationClientSearchTerm = solicitationClientSearch.trim().toLowerCase()
+  const solicitationClientFilteredOptions = (solicitationClientSearchTerm
+    ? solicitationClients.filter((client) =>
+        [client.nome, client.apelido, client.inscricao, client.email]
+          .join(' ')
+          .toLowerCase()
+          .includes(solicitationClientSearchTerm),
+      )
+    : solicitationClients
+  ).sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
+  const selectedSolicitationClientIdSet = new Set(
+    (Array.isArray(solicitationForm.clientIds) ? solicitationForm.clientIds : []).map((id) => String(id)),
+  )
+  const selectedSolicitationClients = clientsForCurrentUser
+    .filter((client) => selectedSolicitationClientIdSet.has(String(client.id)))
+    .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'))
   const solicitationsByDepartment = new Map(
     departmentsInSystem.map((department) => [
       department,
@@ -5971,6 +6168,9 @@ function App() {
                 </button>
               ))}
             </nav>
+            <div className="nav-account" title={loggedUserDisplayName || 'Usuário'}>
+              {loggedUserDisplayName || 'Usuário'}
+            </div>
             <button className="nav-logout" type="button" onClick={handleLogout}>
               Sair
             </button>
@@ -9244,42 +9444,9 @@ function App() {
                         placeholder="Descreva a nova solicitação"
                       />
                     </label>
-                    <label className="settings-field solicitation-client-search-field">
-                      <span>Pesquisar Clientes</span>
-                      <input
-                        type="text"
-                        value={solicitationClientSearch}
-                        onChange={(event) => setSolicitationClientSearch(event.target.value)}
-                        placeholder="Digite para buscar e selecionar"
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' && solicitationClientSearchResults.length) {
-                            event.preventDefault()
-                            addSolicitationClientBySearch(solicitationClientSearchResults[0].id)
-                          }
-                        }}
-                      />
-                      {solicitationClientSearchResults.length ? (
-                        <div className="solicitation-search-results">
-                          {solicitationClientSearchResults.map((client) => {
-                            const isSelected = solicitationForm.clientIds.includes(String(client.id))
-                            return (
-                              <button
-                                key={client.id}
-                                type="button"
-                                className={`solicitation-search-option ${isSelected ? 'selected' : ''}`}
-                                onClick={() => addSolicitationClientBySearch(client.id)}
-                              >
-                                <span>{client.nome}</span>
-                                <small>{client.inscricao || client.email || client.status}</small>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-                    </label>
                   </div>
 
-                  <div className="settings-clients-box">
+                  <div className="settings-clients-box solicitation-clients-box">
                     <div className="settings-clients-top">
                       <span>
                         Cliente(s) <strong className="req">*</strong>
@@ -9295,23 +9462,78 @@ function App() {
                         Exibir clientes desativados
                       </label>
                     </div>
-                    <div className="settings-clients-list">
-                      {solicitationClients.length ? (
-                        solicitationClients.map((client) => (
-                          <label key={client.id} className="settings-client-item">
+                    <div className="multi-select solicitation-clients-select" ref={solicitationClientsRef}>
+                      <div
+                        className={`multi-trigger ${solicitationClientsOpen ? 'open' : ''}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSolicitationClientsOpen((prev) => !prev)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setSolicitationClientsOpen((prev) => !prev)
+                          }
+                        }}
+                      >
+                        {selectedSolicitationClients.length ? (
+                          <div className="multi-tags">
+                            {selectedSolicitationClients.map((client) => (
+                              <span className="tag-pill" key={`solicitation-client-${client.id}`}>
+                                {client.nome}
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    toggleSolicitationClient(client.id)
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="placeholder">Clique para selecionar cliente(s)</span>
+                        )}
+                        <span className="caret" />
+                      </div>
+
+                      {solicitationClientsOpen ? (
+                        <div className="multi-menu solicitation-clients-menu">
+                          <label className="solicitation-clients-search-inline">
+                            <span>Pesquisar Clientes</span>
                             <input
-                              type="checkbox"
-                              checked={solicitationForm.clientIds.includes(String(client.id))}
-                              onChange={() => toggleSolicitationClient(client.id)}
+                              type="text"
+                              value={solicitationClientSearch}
+                              onChange={(event) => setSolicitationClientSearch(event.target.value)}
+                              placeholder="Digite para filtrar clientes"
                             />
-                            <span>
-                              {client.nome} ({client.status})
-                            </span>
                           </label>
-                        ))
-                      ) : (
-                        <p>Nenhum cliente disponível para seleção.</p>
-                      )}
+                          <div className="solicitation-clients-options">
+                            {solicitationClientFilteredOptions.length ? (
+                              solicitationClientFilteredOptions.map((client) => {
+                                const isSelected = solicitationForm.clientIds.includes(String(client.id))
+                                return (
+                                  <button
+                                    type="button"
+                                    key={client.id}
+                                    className={`multi-option ${isSelected ? 'selected' : ''}`}
+                                    onClick={() => toggleSolicitationClient(client.id)}
+                                  >
+                                    <span className="check" />
+                                    <span className="solicitation-client-line">
+                                      <span>{client.nome}</span>
+                                      <small>{client.status}</small>
+                                    </span>
+                                  </button>
+                                )
+                              })
+                            ) : (
+                              <p className="multi-empty">Nenhum cliente encontrado para o filtro informado.</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -9370,13 +9592,13 @@ function App() {
 
                   <label className="settings-field">
                     <span>
-                      Andamento <strong className="req">*</strong>
+                      Informações Adicionais <strong className="req">*</strong>
                     </span>
                     <textarea
                       rows={4}
                       value={solicitationForm.andamento}
                       onChange={(event) => handleSolicitationChange('andamento', event.target.value)}
-                      placeholder="Descreva o andamento da solicitação."
+                      placeholder="Descreva informações adicionais da solicitação."
                     />
                   </label>
 
@@ -9385,18 +9607,22 @@ function App() {
                       <span>
                         Responsável <strong className="req">*</strong>
                       </span>
-                      <input
-                        list="solicitation-owner-options"
-                        type="text"
+                      <select
                         value={solicitationForm.responsavel}
                         onChange={(event) => handleSolicitationChange('responsavel', event.target.value)}
-                        placeholder="Selecione..."
-                      />
-                      <datalist id="solicitation-owner-options">
-                        {settingsOwnerOptions.map((option) => (
-                          <option key={option} value={option} />
+                        disabled={!solicitationResponsibleOptions.length}
+                      >
+                        <option value="">
+                          {solicitationForm.departamento
+                            ? 'Selecione...'
+                            : 'Selecione o departamento primeiro'}
+                        </option>
+                        {solicitationResponsibleOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
                         ))}
-                      </datalist>
+                      </select>
                     </label>
                     <label className="settings-field">
                       <span>Convidados</span>
