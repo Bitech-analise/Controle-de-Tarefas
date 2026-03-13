@@ -186,7 +186,14 @@ const _reportRows = [
 ]
 
 const groupOptions = ['Dep. Pessoal', 'Fiscal', 'Contábil', 'Sucesso do Cliente']
-const taxOptions = ['Simples Nacional', 'Lucro Real', 'Lucro Presumido', 'MEI']
+const taxOptions = [
+  'Simples Nacional',
+  'Lucro Real',
+  'Lucro Presumido',
+  'MEI',
+  'Isento',
+]
+const companyTypeOptions = ['Comércio', 'Serviços', 'Sem Fins Lucrativos', 'Industria']
 const clientChecklistOptions = [
   'Iss',
   'Difal',
@@ -232,6 +239,7 @@ const brazilUfOptions = [
   'TO',
 ]
 const monthDayOptions = Array.from({ length: 31 }, (_, index) => String(index + 1))
+const taskFrequencyOptions = ['Mensal', 'Trimestral']
 const dateFilterOptions = ['Ação', 'Meta', 'Conclusão']
 const taskDateFilterOptions = ['Ação', 'Meta', 'Vencimento', 'Data da Entrega']
 const operationalActionKeys = ['A Realizar', '3 Dias', 'Hoje', 'Último Dia']
@@ -542,6 +550,22 @@ const getMonthStartIso = (isoDate) => {
   const [year, month] = String(isoDate).split('-')
   if (!year || !month) return ''
   return `${year}-${month}-01`
+}
+
+const normalizeClientCompanyTypes = (value) => {
+  const values = Array.isArray(value)
+    ? value
+    : String(value || '').trim()
+      ? [String(value || '').trim()]
+      : []
+
+  return Array.from(
+    new Set(
+      values
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+    ),
+  )
 }
 
 const normalizeFreeText = (value) =>
@@ -987,6 +1011,47 @@ const getMonthIndexFromIso = (value) => {
   return year * 12 + (month - 1)
 }
 
+const getTaskFrequencyStepMonths = (frequency) => {
+  const normalizedFrequency = String(frequency || '')
+    .trim()
+    .toLowerCase()
+  return normalizedFrequency === 'trimestral' ? 3 : 1
+}
+
+const getQuarterEndMonthIndex = (monthIndex) => {
+  if (typeof monthIndex !== 'number' || Number.isNaN(monthIndex)) return null
+  const monthInYear = ((monthIndex % 12) + 12) % 12
+  const offsetToQuarterEnd = (2 - (monthInYear % 3) + 3) % 3
+  return monthIndex + offsetToQuarterEnd
+}
+
+const getFirstScheduledMonthIndexInRange = ({
+  startMonthIndex,
+  endMonthIndex,
+  baseMonthIndex,
+  stepMonths,
+}) => {
+  if (
+    typeof startMonthIndex !== 'number' ||
+    Number.isNaN(startMonthIndex) ||
+    typeof endMonthIndex !== 'number' ||
+    Number.isNaN(endMonthIndex) ||
+    typeof baseMonthIndex !== 'number' ||
+    Number.isNaN(baseMonthIndex)
+  ) {
+    return null
+  }
+
+  const safeStep = Math.max(Number(stepMonths) || 1, 1)
+  const maxStart = Math.max(startMonthIndex, baseMonthIndex)
+  const alignmentOffset = (maxStart - baseMonthIndex) % safeStep
+  const firstAlignedMonthIndex =
+    alignmentOffset === 0 ? maxStart : maxStart + (safeStep - alignmentOffset)
+
+  if (firstAlignedMonthIndex > endMonthIndex) return null
+  return firstAlignedMonthIndex
+}
+
 const getYearMonthOffset = (baseIso, targetIso) => {
   const baseIndex = getMonthIndexFromIso(baseIso)
   const targetIndex = getMonthIndexFromIso(targetIso)
@@ -1418,6 +1483,7 @@ const emptyClientForm = {
   sistema: '',
   dataInicio: '2026-02-06',
   status: 'Ativo',
+  tipoEmpresa: [],
   statusComplementar: '',
   grupos: [],
   visibilidade: 'Geral',
@@ -1466,6 +1532,8 @@ const getEmptySettingsTaskForm = () => {
     competenceMode: 'Mesmo mês',
     departmentScope: '',
     ufScope: 'Todos',
+    frequency: 'Mensal',
+    companyTypeScopes: [],
     tributacaoScopes: [],
     clientIds: [],
     includeDisabledClients: false,
@@ -1726,10 +1794,17 @@ function App() {
   const groupsRef = useRef(null)
   const [taxOpen, setTaxOpen] = useState(false)
   const taxRef = useRef(null)
+  const [clientCompanyTypesOpen, setClientCompanyTypesOpen] = useState(false)
+  const clientCompanyTypesRef = useRef(null)
   const [checklistOpen, setChecklistOpen] = useState(false)
   const checklistRef = useRef(null)
+  const [settingsTaskCompanyTypeOpen, setSettingsTaskCompanyTypeOpen] = useState(false)
+  const settingsTaskCompanyTypeRef = useRef(null)
+  const settingsTaskCompanyTypeOpenedAtRef = useRef(0)
   const [settingsTaskTaxOpen, setSettingsTaskTaxOpen] = useState(false)
   const settingsTaskTaxRef = useRef(null)
+  const settingsTaskTaxOpenedAtRef = useRef(0)
+  const wasTaskCreateOpenRef = useRef(false)
   const [selectedClientIds, setSelectedClientIds] = useState([])
   const selectAllRef = useRef(null)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1752,7 +1827,7 @@ function App() {
   const [taskBlueprintFilters, setTaskBlueprintFilters] = useState(initialTaskBlueprintFilters)
   const [appliedTaskBlueprintFilters, setAppliedTaskBlueprintFilters] = useState(initialTaskBlueprintFilters)
   const [taskPage, setTaskPage] = useState(1)
-  const [taskItemsPerPage, setTaskItemsPerPage] = useState(10)
+  const [taskItemsPerPage, setTaskItemsPerPage] = useState(50)
   const [operationalFilters, setOperationalFilters] = useState(initialOperationalFilters)
   const [appliedOperationalFilters, setAppliedOperationalFilters] = useState(initialOperationalFilters)
   const superAdminToken = authSession?.token || ''
@@ -1842,6 +1917,19 @@ function App() {
   }, [taxOpen])
 
   useEffect(() => {
+    if (!clientCompanyTypesOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (clientCompanyTypesRef.current && !clientCompanyTypesRef.current.contains(event.target)) {
+        setClientCompanyTypesOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [clientCompanyTypesOpen])
+
+  useEffect(() => {
     if (!checklistOpen) return
 
     const handleOutsideClick = (event) => {
@@ -1868,6 +1956,19 @@ function App() {
   }, [solicitationClientsOpen])
 
   useEffect(() => {
+    const openedNow = taskCreateOpen && !wasTaskCreateOpenRef.current
+    if (openedNow && !editingTaskBlueprintId) {
+      setSettingsTaskForm(getEmptySettingsTaskForm())
+      setSettingsTaskFeedback('')
+      setSettingsTaskCompanyTypeOpen(false)
+      settingsTaskCompanyTypeOpenedAtRef.current = 0
+      setSettingsTaskTaxOpen(false)
+      settingsTaskTaxOpenedAtRef.current = 0
+    }
+    wasTaskCreateOpenRef.current = taskCreateOpen
+  }, [taskCreateOpen, editingTaskBlueprintId])
+
+  useEffect(() => {
     if (!bulkGroupsOpen) return
 
     const handleOutsideClick = (event) => {
@@ -1892,6 +1993,22 @@ function App() {
     document.addEventListener('mousedown', handleOutsideClick)
     return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [bulkTaxOpen])
+
+  useEffect(() => {
+    if (!settingsTaskCompanyTypeOpen) return
+
+    const handleOutsideClick = (event) => {
+      if (
+        settingsTaskCompanyTypeRef.current &&
+        !settingsTaskCompanyTypeRef.current.contains(event.target)
+      ) {
+        setSettingsTaskCompanyTypeOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [settingsTaskCompanyTypeOpen])
 
   useEffect(() => {
     if (!settingsTaskTaxOpen) return
@@ -2743,6 +2860,7 @@ function App() {
     const nextClientForm = client
       ? {
           ...client,
+          tipoEmpresa: normalizeClientCompanyTypes(client.tipoEmpresa),
           competenceStart:
             formatMonthYearInput(String(client.competenceStart || '').trim()) ||
             getMonthYearFromIso(client.dataInicio) ||
@@ -2757,6 +2875,7 @@ function App() {
     setClientCepLookupMessage('')
     setGroupsOpen(false)
     setTaxOpen(false)
+    setClientCompanyTypesOpen(false)
     setChecklistOpen(false)
     setClientOpen(true)
     setCreateOpen(false)
@@ -2865,6 +2984,16 @@ function App() {
     })
   }
 
+  const toggleClientCompanyType = (companyType) => {
+    setClientForm((prev) => {
+      const current = normalizeClientCompanyTypes(prev.tipoEmpresa)
+      if (current.includes(companyType)) {
+        return { ...prev, tipoEmpresa: current.filter((item) => item !== companyType) }
+      }
+      return { ...prev, tipoEmpresa: [...current, companyType] }
+    })
+  }
+
   const toggleClientChecklist = (item) => {
     setClientForm((prev) => {
       const current = Array.isArray(prev.checklist) ? prev.checklist : []
@@ -2907,6 +3036,7 @@ function App() {
           getMonthYearFromIso(getTodayIsoLocal())
     const payload = {
       ...clientForm,
+      tipoEmpresa: normalizeClientCompanyTypes(clientForm.tipoEmpresa),
       competenceStart: validCompetenceStart,
     }
 
@@ -2922,6 +3052,7 @@ function App() {
     setClientOpen(false)
     setGroupsOpen(false)
     setTaxOpen(false)
+    setClientCompanyTypesOpen(false)
     setChecklistOpen(false)
     setEditingId(null)
     setClientMode('create')
@@ -3294,18 +3425,31 @@ function App() {
         const metaMonthOffset = getYearMonthOffset(blueprint.actionDate, blueprint.metaDate)
         const dueMonthOffset = getYearMonthOffset(blueprint.actionDate, blueprint.dueDate)
         const clientCompetenceMonthIndex = getClientCompetenceStartMonthIndex(client, blueprint.actionDate)
-        const firstActionMonthIndex =
+        const frequency = taskFrequencyOptions.includes(blueprint.frequency)
+          ? blueprint.frequency
+          : 'Mensal'
+        const frequencyStepMonths = getTaskFrequencyStepMonths(frequency)
+        const isQuarterlyFrequency = frequencyStepMonths === 3
+        const monthlyBaseMonthIndex =
           clientCompetenceMonthIndex + (blueprint.competenceMode === 'Mês anterior' ? 1 : 0)
-        const generationStartMonthIndex = Math.max(startMonthIndex, firstActionMonthIndex)
+        const firstActionMonthIndex = isQuarterlyFrequency
+          ? getQuarterEndMonthIndex(clientCompetenceMonthIndex) ?? clientCompetenceMonthIndex
+          : monthlyBaseMonthIndex
+        const generationStartMonthIndex = getFirstScheduledMonthIndexInRange({
+          startMonthIndex,
+          endMonthIndex,
+          baseMonthIndex: firstActionMonthIndex,
+          stepMonths: frequencyStepMonths,
+        })
 
-        if (generationStartMonthIndex > endMonthIndex) {
+        if (generationStartMonthIndex === null) {
           return
         }
 
         for (
           let actionMonthIndex = generationStartMonthIndex;
           actionMonthIndex <= endMonthIndex;
-          actionMonthIndex += 1
+          actionMonthIndex += frequencyStepMonths
         ) {
           const actionIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex, actionDay)
           const metaIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex + metaMonthOffset, metaDay)
@@ -3314,7 +3458,9 @@ function App() {
           const actionBr = parseIsoDateToBr(actionIso)
           const metaBr = parseIsoDateToBr(metaIso)
           const dueBr = parseIsoDateToBr(dueIso)
-          const competence = getCompetenceFromDate(actionIso, blueprint.competenceMode || 'Mesmo mês')
+          const competence = isQuarterlyFrequency
+            ? formatCompetenceValue(getMonthYearFromIso(actionIso))
+            : getCompetenceFromDate(actionIso, blueprint.competenceMode || 'Mesmo mês')
           const duplicateKey = buildTaskDuplicateKey({
             subject,
             clientName: client.nome,
@@ -3364,6 +3510,12 @@ function App() {
             competenceMode: blueprint.competenceMode || 'Mesmo mês',
             departmentScope: blueprintDepartment || '',
             ufScope: blueprint.ufScope || 'Todos',
+            frequency,
+            companyTypeScopes: Array.isArray(blueprint.companyTypeScopes)
+              ? blueprint.companyTypeScopes
+              : blueprint.companyTypeScope
+                ? [blueprint.companyTypeScope]
+                : [],
             tributacaoScopes: Array.isArray(blueprint.tributacaoScopes)
               ? blueprint.tributacaoScopes
               : blueprint.tributacaoScope
@@ -4367,9 +4519,51 @@ function App() {
     setSettingsTaskForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  const toggleSettingsTaskCompanyTypeMenu = () => {
+    setSettingsTaskCompanyTypeOpen((prev) => {
+      const next = !prev
+      if (next) {
+        settingsTaskCompanyTypeOpenedAtRef.current = Date.now()
+      } else {
+        settingsTaskCompanyTypeOpenedAtRef.current = 0
+      }
+      return next
+    })
+  }
+
+  const toggleSettingsTaskCompanyType = (companyType) => {
+    setSettingsTaskForm((prev) => {
+      const current = Array.isArray(prev.companyTypeScopes) ? prev.companyTypeScopes : []
+      const justOpened = Date.now() - settingsTaskCompanyTypeOpenedAtRef.current
+      if (justOpened >= 0 && justOpened < 350) {
+        return prev
+      }
+      if (current.includes(companyType)) {
+        return { ...prev, companyTypeScopes: current.filter((item) => item !== companyType) }
+      }
+      return { ...prev, companyTypeScopes: [...current, companyType] }
+    })
+  }
+
+  const toggleSettingsTaskTaxMenu = () => {
+    setSettingsTaskTaxOpen((prev) => {
+      const next = !prev
+      if (next) {
+        settingsTaskTaxOpenedAtRef.current = Date.now()
+      } else {
+        settingsTaskTaxOpenedAtRef.current = 0
+      }
+      return next
+    })
+  }
+
   const toggleSettingsTaskTaxation = (taxation) => {
     setSettingsTaskForm((prev) => {
       const current = Array.isArray(prev.tributacaoScopes) ? prev.tributacaoScopes : []
+      const justOpened = Date.now() - settingsTaskTaxOpenedAtRef.current
+      if (justOpened >= 0 && justOpened < 350) {
+        return prev
+      }
       if (current.includes(taxation)) {
         return { ...prev, tributacaoScopes: current.filter((item) => item !== taxation) }
       }
@@ -4445,11 +4639,17 @@ function App() {
     }))
   }
 
-  const clearSettingsTaskForm = () => {
+  const clearSettingsTaskForm = (closeModal = false) => {
     setEditingTaskBlueprintId(null)
+    setSettingsTaskCompanyTypeOpen(false)
+    settingsTaskCompanyTypeOpenedAtRef.current = 0
     setSettingsTaskTaxOpen(false)
+    settingsTaskTaxOpenedAtRef.current = 0
     setSettingsTaskForm(getEmptySettingsTaskForm())
     setSettingsTaskFeedback('')
+    if (closeModal) {
+      setTaskCreateOpen(false)
+    }
   }
 
   const editTaskBlueprint = (blueprint) => {
@@ -4471,6 +4671,12 @@ function App() {
       competenceMode: blueprint.competenceMode || 'Mesmo mês',
       departmentScope: blueprint.departmentScope || '',
       ufScope: blueprint.ufScope || 'Todos',
+      frequency: blueprint.frequency || 'Mensal',
+      companyTypeScopes: Array.isArray(blueprint.companyTypeScopes)
+        ? blueprint.companyTypeScopes
+        : blueprint.companyTypeScope
+          ? [blueprint.companyTypeScope]
+          : [],
       tributacaoScopes: Array.isArray(blueprint.tributacaoScopes)
         ? blueprint.tributacaoScopes
         : blueprint.tributacaoScope
@@ -4480,7 +4686,10 @@ function App() {
       attachments: [],
       guests: blueprint.guests && blueprint.guests !== 'Não definido' ? blueprint.guests : '',
     })
+    setSettingsTaskCompanyTypeOpen(false)
+    settingsTaskCompanyTypeOpenedAtRef.current = 0
     setSettingsTaskTaxOpen(false)
+    settingsTaskTaxOpenedAtRef.current = 0
     setCreateOpen(false)
     setTaskCreateOpen(true)
   }
@@ -4534,12 +4743,19 @@ function App() {
 
     const selectedDepartment = String(settingsTaskForm.departmentScope || '').trim()
     const selectedUf = (settingsTaskForm.ufScope || 'Todos').trim().toUpperCase()
-    const selectedTaxations = (
-      Array.isArray(settingsTaskForm.tributacaoScopes)
-        ? settingsTaskForm.tributacaoScopes
-        : settingsTaskForm.tributacaoScope
-          ? [settingsTaskForm.tributacaoScope]
-          : []
+    const selectedFrequency = taskFrequencyOptions.includes(settingsTaskForm.frequency)
+      ? settingsTaskForm.frequency
+      : 'Mensal'
+    const frequencyStepMonths = getTaskFrequencyStepMonths(selectedFrequency)
+    const selectedCompanyTypes = (Array.isArray(settingsTaskForm.companyTypeScopes)
+      ? settingsTaskForm.companyTypeScopes
+      : []
+    )
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    const selectedTaxations = (Array.isArray(settingsTaskForm.tributacaoScopes)
+      ? settingsTaskForm.tributacaoScopes
+      : []
     )
       .map((item) => String(item || '').trim())
       .filter(Boolean)
@@ -4568,6 +4784,7 @@ function App() {
     const guests = settingsTaskForm.guests.trim() || 'Não definido'
     const ufScope = settingsTaskForm.ufScope || 'Todos'
     const tributacaoScopes = selectedTaxations
+    const companyTypeScopes = selectedCompanyTypes
     const actionDay = getDayOfMonthFromIso(settingsTaskForm.actionDate)
     const metaDay = getDayOfMonthFromIso(settingsTaskForm.metaDate)
     const dueDay = getDayOfMonthFromIso(settingsTaskForm.dueDate)
@@ -4587,6 +4804,8 @@ function App() {
           metaDate: settingsTaskForm.metaDate,
           dueDate: settingsTaskForm.dueDate,
           ufScope,
+          frequency: selectedFrequency,
+          companyTypeScopes,
           tributacaoScopes,
           guests,
           createdAt:
@@ -4622,11 +4841,15 @@ function App() {
 
     targetClients.forEach((client) => {
       const clientCompetenceMonthIndex = getClientCompetenceStartMonthIndex(client, settingsTaskForm.actionDate)
-      const firstActionMonthIndex =
+      const isQuarterlyFrequency = frequencyStepMonths === 3
+      const monthlyBaseMonthIndex =
         clientCompetenceMonthIndex + (settingsTaskForm.competenceMode === 'Mês anterior' ? 1 : 0)
+      const firstActionMonthIndex = isQuarterlyFrequency
+        ? getQuarterEndMonthIndex(clientCompetenceMonthIndex) ?? clientCompetenceMonthIndex
+        : monthlyBaseMonthIndex
 
-      for (let step = 0; step < installments; step += 1) {
-        const actionMonthIndex = firstActionMonthIndex + step
+      for (let monthOffset = 0; monthOffset < installments; monthOffset += frequencyStepMonths) {
+        const actionMonthIndex = firstActionMonthIndex + monthOffset
         const actionIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex, actionDay)
         const metaIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex + metaMonthOffset, metaDay)
         const dueIso = buildIsoDateFromMonthIndexAndDay(actionMonthIndex + dueMonthOffset, dueDay)
@@ -4634,7 +4857,9 @@ function App() {
         const actionBr = parseIsoDateToBr(actionIso)
         const metaBr = parseIsoDateToBr(metaIso)
         const dueBr = parseIsoDateToBr(dueIso)
-        const competence = getCompetenceFromDate(actionIso, settingsTaskForm.competenceMode)
+        const competence = isQuarterlyFrequency
+          ? formatCompetenceValue(getMonthYearFromIso(actionIso))
+          : getCompetenceFromDate(actionIso, settingsTaskForm.competenceMode)
         const generatedStatus = getGeneratedTaskStatus(actionIso, metaIso, dueIso)
         const dept = selectedDepartment
         const rowId = nextId
@@ -4674,6 +4899,8 @@ function App() {
           competenceMode: settingsTaskForm.competenceMode,
           departmentScope: selectedDepartment,
           ufScope,
+          frequency: selectedFrequency,
+          companyTypeScopes,
           tributacaoScopes,
         })
       }
@@ -4861,15 +5088,16 @@ function App() {
   const clientTaxationOptions = Array.from(
     new Set(clientsForCurrentUser.map((client) => (client.tributacao || '').trim()).filter(Boolean)),
   )
-  const settingsTaskTaxationOptions = (clientTaxationOptions.length
-    ? clientTaxationOptions
-    : taxOptions
-  ).filter(Boolean)
+  const settingsTaskTaxationOptions = Array.from(
+    new Set([...taxOptions, ...clientTaxationOptions].filter(Boolean)),
+  )
+  const settingsTaskCompanyTypeOptions = Array.from(new Set(companyTypeOptions.filter(Boolean)))
+  const selectedSettingsTaskCompanyTypes = Array.isArray(settingsTaskForm.companyTypeScopes)
+    ? settingsTaskForm.companyTypeScopes.filter(Boolean)
+    : []
   const selectedSettingsTaskTaxations = Array.isArray(settingsTaskForm.tributacaoScopes)
-    ? settingsTaskForm.tributacaoScopes
-    : settingsTaskForm.tributacaoScope
-      ? [settingsTaskForm.tributacaoScope]
-      : []
+    ? settingsTaskForm.tributacaoScopes.filter(Boolean)
+    : []
   const taskBlueprintRows = taskBlueprints.map((template) => {
     return {
       ...template,
@@ -5472,6 +5700,7 @@ function App() {
   }
 
   const selectedGroups = Array.isArray(clientForm.grupos) ? clientForm.grupos : []
+  const selectedClientCompanyTypes = normalizeClientCompanyTypes(clientForm.tipoEmpresa)
   const selectedChecklist = Array.isArray(clientForm.checklist) ? clientForm.checklist : []
   const selectedTax = clientForm.tributacao || ''
   const isReadOnly = clientMode === 'view'
@@ -8387,17 +8616,88 @@ function App() {
                           </select>
                         </label>
                         <label className="settings-field">
+                          <span>Frequência</span>
+                          <select
+                            value={settingsTaskForm.frequency}
+                            onChange={(event) =>
+                              handleSettingsTaskChange('frequency', event.target.value)
+                            }
+                          >
+                            {taskFrequencyOptions.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>Tipo de Empresa</span>
+                          <div className="multi-select" ref={settingsTaskCompanyTypeRef}>
+                            <div
+                              className={`multi-trigger ${settingsTaskCompanyTypeOpen ? 'open' : ''}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={toggleSettingsTaskCompanyTypeMenu}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  toggleSettingsTaskCompanyTypeMenu()
+                                }
+                              }}
+                            >
+                              {selectedSettingsTaskCompanyTypes.length ? (
+                                <div className="multi-tags">
+                                  {selectedSettingsTaskCompanyTypes.map((companyType) => (
+                                    <span className="tag-pill" key={companyType}>
+                                      {companyType}
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          toggleSettingsTaskCompanyType(companyType)
+                                        }}
+                                      >
+                                        ×
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="placeholder">Selecione...</span>
+                              )}
+                              <span className="caret" />
+                            </div>
+                            {settingsTaskCompanyTypeOpen ? (
+                              <div className="multi-menu">
+                                {settingsTaskCompanyTypeOptions.map((option) => (
+                                  <button
+                                    type="button"
+                                    className={`multi-option ${
+                                      selectedSettingsTaskCompanyTypes.includes(option) ? 'selected' : ''
+                                    }`}
+                                    key={option}
+                                    onClick={() => toggleSettingsTaskCompanyType(option)}
+                                  >
+                                    <span className="check" />
+                                    {option}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </label>
+                        <label className="settings-field">
                           <span>Tributação</span>
                           <div className="multi-select" ref={settingsTaskTaxRef}>
                             <div
                               className={`multi-trigger ${settingsTaskTaxOpen ? 'open' : ''}`}
                               role="button"
                               tabIndex={0}
-                              onClick={() => setSettingsTaskTaxOpen((prev) => !prev)}
+                              onClick={toggleSettingsTaskTaxMenu}
                               onKeyDown={(event) => {
                                 if (event.key === 'Enter' || event.key === ' ') {
                                   event.preventDefault()
-                                  setSettingsTaskTaxOpen((prev) => !prev)
+                                  toggleSettingsTaskTaxMenu()
                                 }
                               }}
                             >
@@ -8646,21 +8946,27 @@ function App() {
 
                 <div className="client-table card">
                   <div className="client-select-all">
-                    <label>
-                      <input
-                        type="checkbox"
-                        ref={selectAllRef}
-                        checked={
-                          filteredClients.length > 0 &&
-                          filteredClients.every((client) =>
-                            selectedClientIds.includes(String(client.id)),
-                          )
-                        }
-                        onChange={toggleSelectAll}
-                        disabled={!filteredClients.length}
-                      />
-                      Selecionar todos
-                    </label>
+                    <div className="client-select-info">
+                      <label>
+                        <input
+                          type="checkbox"
+                          ref={selectAllRef}
+                          checked={
+                            filteredClients.length > 0 &&
+                            filteredClients.every((client) =>
+                              selectedClientIds.includes(String(client.id)),
+                            )
+                          }
+                          onChange={toggleSelectAll}
+                          disabled={!filteredClients.length}
+                        />
+                        Selecionar todos
+                      </label>
+                      <div className="client-total-card" aria-live="polite">
+                        <span>Total de Clientes</span>
+                        <strong>{clientsForCurrentUser.length}</strong>
+                      </div>
+                    </div>
                     <div className="bulk-actions">
                       <button
                         type="button"
@@ -9074,12 +9380,12 @@ function App() {
             <div
               className="modal-backdrop"
               onMouseDown={handleModalBackdropMouseDown}
-              onClick={(event) => handleModalBackdropClick(event, () => setTaskCreateOpen(false))}
+              onClick={(event) => handleModalBackdropClick(event, () => clearSettingsTaskForm(true))}
             >
               <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
                   <h3>Cadastro de tarefas</h3>
-                  <button className="modal-close" type="button" onClick={() => setTaskCreateOpen(false)}>
+                  <button className="modal-close" type="button" onClick={() => clearSettingsTaskForm(true)}>
                     ×
                   </button>
                 </header>
@@ -9245,17 +9551,88 @@ function App() {
                       </select>
                     </label>
                     <label className="settings-field">
+                      <span>Frequência</span>
+                      <select
+                        value={settingsTaskForm.frequency}
+                        onChange={(event) =>
+                          handleSettingsTaskChange('frequency', event.target.value)
+                        }
+                      >
+                        {taskFrequencyOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>Tipo de Empresa</span>
+                      <div className="multi-select" ref={settingsTaskCompanyTypeRef}>
+                        <div
+                          className={`multi-trigger ${settingsTaskCompanyTypeOpen ? 'open' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={toggleSettingsTaskCompanyTypeMenu}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              toggleSettingsTaskCompanyTypeMenu()
+                            }
+                          }}
+                        >
+                          {selectedSettingsTaskCompanyTypes.length ? (
+                            <div className="multi-tags">
+                              {selectedSettingsTaskCompanyTypes.map((companyType) => (
+                                <span className="tag-pill" key={companyType}>
+                                  {companyType}
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      toggleSettingsTaskCompanyType(companyType)
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="placeholder">Selecione...</span>
+                          )}
+                          <span className="caret" />
+                        </div>
+                        {settingsTaskCompanyTypeOpen ? (
+                          <div className="multi-menu">
+                            {settingsTaskCompanyTypeOptions.map((option) => (
+                              <button
+                                type="button"
+                                className={`multi-option ${
+                                  selectedSettingsTaskCompanyTypes.includes(option) ? 'selected' : ''
+                                }`}
+                                key={option}
+                                onClick={() => toggleSettingsTaskCompanyType(option)}
+                              >
+                                <span className="check" />
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </label>
+                    <label className="settings-field">
                       <span>Tributação</span>
                       <div className="multi-select" ref={settingsTaskTaxRef}>
                         <div
                           className={`multi-trigger ${settingsTaskTaxOpen ? 'open' : ''}`}
                           role="button"
                           tabIndex={0}
-                          onClick={() => setSettingsTaskTaxOpen((prev) => !prev)}
+                          onClick={toggleSettingsTaskTaxMenu}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault()
-                              setSettingsTaskTaxOpen((prev) => !prev)
+                              toggleSettingsTaskTaxMenu()
                             }
                           }}
                         >
@@ -9346,7 +9723,11 @@ function App() {
                   </label>
 
                   <div className="settings-actions-row">
-                    <button type="button" className="chip small" onClick={clearSettingsTaskForm}>
+                    <button
+                      type="button"
+                      className="chip small"
+                      onClick={() => clearSettingsTaskForm(true)}
+                    >
                       Cancelar
                     </button>
                     <button type="submit" className="primary small">
@@ -9834,6 +10215,7 @@ function App() {
                                       ? blueprintTaxations.join(', ')
                                       : 'Todas as tributações',
                                     blueprint.competenceMode || 'Mesmo mês',
+                                    blueprint.frequency || 'Mensal',
                                   ].join(' • ')}
                                 </small>
                               </div>
@@ -9985,7 +10367,7 @@ function App() {
                       />
                     </div>
                   </div>
-                  <div className="form-grid three">
+                  <div className="form-grid client-status-grid">
                     <div className="field">
                       <label>
                         Data Início <span className="req">*</span>
@@ -10007,6 +10389,70 @@ function App() {
                         <option>Ativo</option>
                         <option>Inativo</option>
                       </select>
+                    </div>
+                    <div className="field">
+                      <label>Tipo de empresa</label>
+                      <div className="multi-select" ref={clientCompanyTypesRef}>
+                        <div
+                          className={`multi-trigger ${clientCompanyTypesOpen ? 'open' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => {
+                            if (!isReadOnly) {
+                              setClientCompanyTypesOpen((prev) => !prev)
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              if (!isReadOnly) {
+                                setClientCompanyTypesOpen((prev) => !prev)
+                              }
+                            }
+                          }}
+                        >
+                          {selectedClientCompanyTypes.length ? (
+                            <div className="multi-tags">
+                              {selectedClientCompanyTypes.map((companyType) => (
+                                <span className="tag-pill" key={companyType}>
+                                  {companyType}
+                                  {!isReadOnly ? (
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        toggleClientCompanyType(companyType)
+                                      }}
+                                    >
+                                      ×
+                                    </button>
+                                  ) : null}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="placeholder">Selecione...</span>
+                          )}
+                          <span className="caret" />
+                        </div>
+                        {clientCompanyTypesOpen && !isReadOnly ? (
+                          <div className="multi-menu">
+                            {companyTypeOptions.map((option) => (
+                              <button
+                                type="button"
+                                className={`multi-option ${
+                                  selectedClientCompanyTypes.includes(option) ? 'selected' : ''
+                                }`}
+                                key={`client-company-type-${option}`}
+                                onClick={() => toggleClientCompanyType(option)}
+                              >
+                                <span className="check" />
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="field">
                       <label>Status Complementar</label>
