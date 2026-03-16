@@ -473,6 +473,31 @@ const parseBrDateToIso = (value) => {
   return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
 }
 
+const parseBrDateTimeParts = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return null
+  const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:,\s*|\s+)(\d{2}):(\d{2})(?::(\d{2}))?$/)
+  if (!match) return null
+  const [, day, month, year, hour, minute, secondRaw] = match
+  const second = secondRaw || '00'
+  const isoDate = `${year}-${month}-${day}`
+  return {
+    isoDate,
+    time: `${hour}:${minute}`,
+    isoDateTime: `${isoDate}T${hour}:${minute}:${second}`,
+  }
+}
+
+const normalizeAnyDateToIso = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) return text.slice(0, 10)
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) return parseBrDateToIso(text)
+  const parsedDateTime = parseBrDateTimeParts(text)
+  return parsedDateTime?.isoDate || ''
+}
+
 const parseIsoDateToBr = (value) => {
   if (!value) return ''
   const [year, month, day] = value.split('-')
@@ -3655,6 +3680,10 @@ function App() {
     setScreen('kanban')
   }
 
+  const openDailyReportScreen = () => {
+    setScreen('daily-report')
+  }
+
   const handleTaskFilterChange = (field, value) => {
     setTaskFilters((prev) => ({ ...prev, [field]: value }))
   }
@@ -3872,6 +3901,7 @@ function App() {
 
   const logTaskAction = (task, action) => {
     const timestamp = getNowBrTimestamp()
+    const actor = String(authSession?.user?.name || authSession?.user?.email || '').trim() || 'Usuário'
     if (!task) return timestamp
     const source = task.reportSource || 'task'
     setTaskActionLogs((prev) =>
@@ -3883,6 +3913,7 @@ function App() {
           taskName: task.subject,
           action,
           timestamp,
+          actor,
         },
         ...prev,
       ].slice(0, 20),
@@ -5998,6 +6029,100 @@ function App() {
       ],
     },
   ]
+  const completionActions = new Set(['Finalizar', 'Dispensar'])
+  const completionLogsByTaskKey = taskActionLogs.reduce((acc, log) => {
+    if (!completionActions.has(String(log?.action || '').trim())) return acc
+    const source = String(log?.taskSource || 'task').trim() || 'task'
+    const taskId = String(log?.taskId || '').trim()
+    if (!taskId) return acc
+    const key = `${source}-${taskId}`
+    const parsedTimestamp = parseBrDateTimeParts(log?.timestamp)
+    const nextLog = {
+      timestamp: String(log?.timestamp || '').trim(),
+      actor: String(log?.actor || '').trim(),
+      isoDate: parsedTimestamp?.isoDate || '',
+      time: parsedTimestamp?.time || '',
+      isoDateTime: parsedTimestamp?.isoDateTime || '',
+    }
+    const currentLog = acc.get(key)
+    if (!currentLog || (nextLog.isoDateTime && nextLog.isoDateTime > currentLog.isoDateTime)) {
+      acc.set(key, nextLog)
+    }
+    return acc
+  }, new Map())
+  const resolveCompletionMeta = (row) => {
+    const source = String(row?.reportSource || 'task').trim() || 'task'
+    const key = `${source}-${String(row?.id || '').trim()}`
+    const completionLog = completionLogsByTaskKey.get(key)
+    const baixaAtParts = parseBrDateTimeParts(row?.baixaAt)
+    const conclusionIso = normalizeAnyDateToIso(row?.conclusionDate)
+    const completionDateIso = completionLog?.isoDate || baixaAtParts?.isoDate || conclusionIso
+    const completionTime = completionLog?.time || baixaAtParts?.time || ''
+    const completionSortKey =
+      completionLog?.isoDateTime ||
+      baixaAtParts?.isoDateTime ||
+      (completionDateIso ? `${completionDateIso}T${completionTime || '00:00'}:00` : '')
+    const completedBy =
+      String(completionLog?.actor || '').trim() ||
+      String(row?.owner || '').trim() ||
+      'Não informado'
+
+    return {
+      completionDateIso,
+      completionTime,
+      completionSortKey,
+      completedBy,
+    }
+  }
+  const dailyFinalizationRows = taskReportRows
+    .map((row) => {
+      const displayStatus = getTaskDisplayStatus(row)
+      const completionMeta = resolveCompletionMeta(row)
+      return {
+        ...row,
+        displayStatus,
+        ...completionMeta,
+      }
+    })
+    .filter(
+      (row) =>
+        isCompletedTaskStatus(row.displayStatus.status) &&
+        row.completionDateIso &&
+        row.completionDateIso === todayIso,
+    )
+    .sort((a, b) => (b.completionSortKey || '').localeCompare(a.completionSortKey || ''))
+  const dailyTrackedRows = taskReportRows.filter((row) => {
+    const actionIso = normalizeAnyDateToIso(getTaggedReportDate(row.dates, 'A'))
+    const metaIso = normalizeAnyDateToIso(getTaggedReportDate(row.dates, 'M'))
+    const dueIso = normalizeAnyDateToIso(getTaggedReportDate(row.dates, 'V'))
+    const completionMeta = resolveCompletionMeta(row)
+    return (
+      actionIso === todayIso ||
+      metaIso === todayIso ||
+      dueIso === todayIso ||
+      completionMeta.completionDateIso === todayIso
+    )
+  })
+  const dailyRemainingRows = dailyTrackedRows.filter(
+    (row) => !isCompletedTaskStatus(getTaskDisplayStatus(row).status),
+  )
+  const dailyCompletedCount = dailyFinalizationRows.length
+  const dailyRemainingCount = dailyRemainingRows.length
+  const dailyTotalTracked = dailyCompletedCount + dailyRemainingCount
+  const dailyCompletionPercent = dailyTotalTracked
+    ? Math.round((dailyCompletedCount / dailyTotalTracked) * 100)
+    : 0
+  const safeDailyCompletionPercent = Math.min(100, Math.max(0, dailyCompletionPercent))
+  const dailyTopContributors = Array.from(
+    dailyFinalizationRows.reduce((acc, row) => {
+      const contributor = String(row.completedBy || '').trim() || 'Não informado'
+      const current = acc.get(contributor) || { name: contributor, count: 0 }
+      current.count += 1
+      acc.set(contributor, current)
+      return acc
+    }, new Map()).values(),
+  ).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'pt-BR'))
+  const dailyReportDateLabel = parseIsoDateToBr(todayIso)
   const getKanbanLaneKey = (row) => {
     const displayStatus = getTaskDisplayStatus(row)
     const isCompleted = isCompletedTaskStatus(displayStatus.status)
@@ -6421,6 +6546,7 @@ function App() {
                     (screen === 'super-admin' && item === 'Super Admin') ||
                     (screen === 'dashboard' && item === 'Visão Geral') ||
                     (screen === 'operational' && item === 'Visão Geral') ||
+                    (screen === 'daily-report' && item === 'Visão Geral') ||
                     (screen === 'kanban' && item === 'Visão Geral') ||
                     ((screen === 'tasks' || screen === 'task-detail') && item === 'Tarefas') ||
                     (screen === 'reports' && item === 'Relatórios') ||
@@ -6477,7 +6603,7 @@ function App() {
                   <span className="search-icon" />
                   <input type="search" placeholder="Digite aqui para começar a pesquisa..." />
                 </div>
-                {!isSuperAdmin && (screen === 'dashboard' || screen === 'kanban') ? (
+                {!isSuperAdmin && (screen === 'dashboard' || screen === 'kanban' || screen === 'daily-report') ? (
                   <span className="welcome-tenant-pill" title={`Tenant: ${tenantDisplayName}`}>
                     Bem Vindo {tenantDisplayName}
                   </span>
@@ -6498,7 +6624,7 @@ function App() {
                     <button className="chip primary" type="button" onClick={openCreateModal}>
                       {isTenantRestrictedUser ? 'Nova Solicitação' : 'Criar Tarefas'}
                     </button>
-                    <button className="chip" type="button">
+                    <button className="chip" type="button" onClick={openDailyReportScreen}>
                       Relatório do dia
                     </button>
                     <button className="chip" type="button" onClick={openKanbanScreen}>
@@ -7126,6 +7252,126 @@ function App() {
                   ))}
                 </section>
 
+              </div>
+            ) : screen === 'daily-report' ? (
+              <div className="daily-report-view">
+                <section className="card daily-report-intro" style={{ '--delay': '0.06s' }}>
+                  <div>
+                    <h4>Relatório do Dia</h4>
+                    <p>Painel das tarefas finalizadas em {dailyReportDateLabel || '-'}. </p>
+                  </div>
+                  <button type="button" className="chip small" onClick={() => setScreen('dashboard')}>
+                    Voltar para Visão Geral
+                  </button>
+                </section>
+
+                <section className="daily-report-grid">
+                  <article className="card daily-report-performance" style={{ '--delay': '0.12s' }}>
+                    <header>
+                      <h4>Performance do Dia</h4>
+                      <span>{dailyReportDateLabel || '-'}</span>
+                    </header>
+                    <div className="performance-body">
+                      <div className="metric metric-left">
+                        <strong>{dailyCompletedCount}</strong>
+                        <span>Tarefas Finalizadas</span>
+                      </div>
+                      <div className="speedometer-wrap">
+                        <span className="speedometer-title">Meta de Conclusão</span>
+                        <div
+                          className="speedometer"
+                          style={{
+                            '--completed-angle': `${safeDailyCompletionPercent * 1.8}deg`,
+                            '--needle-angle': `${safeDailyCompletionPercent * 1.8 - 90}deg`,
+                          }}
+                        >
+                          <div className="speedometer-arc" />
+                          <div className="speedometer-inner" />
+                          <div className="speedometer-needle" />
+                          <div className="speedometer-pin" />
+                          <div className="speedometer-center">
+                            <div className="speedometer-value">{safeDailyCompletionPercent}%</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="metric metric-right">
+                        <strong>{dailyRemainingCount}</strong>
+                        <span>Tarefas Restantes</span>
+                      </div>
+                    </div>
+                    <div className="daily-report-performance-foot">
+                      <span>
+                        Total monitorado hoje: <strong>{dailyTotalTracked}</strong>
+                      </span>
+                    </div>
+                  </article>
+
+                  <article className="card daily-report-contributors" style={{ '--delay': '0.18s' }}>
+                    <header>
+                      <h4>Quem Finalizou</h4>
+                      <span>{dailyTopContributors.length} pessoa(s)</span>
+                    </header>
+                    <div className="daily-contributors-list">
+                      {dailyTopContributors.length ? (
+                        dailyTopContributors.map((item) => (
+                          <div className="daily-contributor-row" key={`daily-contributor-${item.name}`}>
+                            <span title={item.name}>{item.name}</span>
+                            <strong>{item.count}</strong>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="daily-empty">Nenhuma finalização registrada hoje.</div>
+                      )}
+                    </div>
+                  </article>
+                </section>
+
+                <section className="card daily-report-panel" style={{ '--delay': '0.24s' }}>
+                  <header className="daily-report-panel-head">
+                    <div>
+                      <h5>Relação de Finalizações</h5>
+                      <span>Responsável, horário e status das finalizações do dia.</span>
+                    </div>
+                    <span>{dailyFinalizationRows.length} registro(s)</span>
+                  </header>
+                  <div className="daily-report-table">
+                    <div className="daily-report-head">
+                      <span>Hora</span>
+                      <span>Quem Finalizou</span>
+                      <span>Tarefa</span>
+                      <span>Cliente</span>
+                      <span>Tipo</span>
+                      <span>Status</span>
+                    </div>
+                    <div className="daily-report-body">
+                      {dailyFinalizationRows.length ? (
+                        dailyFinalizationRows.map((row) => (
+                          <button
+                            type="button"
+                            className="daily-report-row"
+                            key={row.reportKey || `${row.reportSource || 'task'}-${row.id}`}
+                            onClick={() => openTaskDetail(row.id, row.reportSource || 'task')}
+                            title={`Abrir detalhes da ${row.taskType || 'Tarefa'} #${row.id}`}
+                          >
+                            <span>{row.completionTime || '--:--'}</span>
+                            <span title={row.completedBy}>{row.completedBy}</span>
+                            <span title={row.subject}>{row.subject}</span>
+                            <span title={`${row.client || ''} ${row.cnpj || ''}`}>
+                              {row.client || '-'}
+                              {row.cnpj ? ` • ${row.cnpj}` : ''}
+                            </span>
+                            <span>{row.taskType || (row.reportSource === 'solicitation' ? 'Solicitação' : 'Tarefa')}</span>
+                            <span className={`status-pill ${row.displayStatus.tag}`} title={row.displayStatus.status}>
+                              {row.displayStatus.status}
+                            </span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="daily-report-empty">Nenhuma tarefa finalizada hoje.</div>
+                      )}
+                    </div>
+                  </div>
+                </section>
               </div>
             ) : screen === 'kanban' ? (
               <div className="kanban-view">
