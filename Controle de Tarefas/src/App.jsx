@@ -6091,19 +6091,7 @@ function App() {
         row.completionDateIso === todayIso,
     )
     .sort((a, b) => (b.completionSortKey || '').localeCompare(a.completionSortKey || ''))
-  const dailyTrackedRows = taskReportRows.filter((row) => {
-    const actionIso = normalizeAnyDateToIso(getTaggedReportDate(row.dates, 'A'))
-    const metaIso = normalizeAnyDateToIso(getTaggedReportDate(row.dates, 'M'))
-    const dueIso = normalizeAnyDateToIso(getTaggedReportDate(row.dates, 'V'))
-    const completionMeta = resolveCompletionMeta(row)
-    return (
-      actionIso === todayIso ||
-      metaIso === todayIso ||
-      dueIso === todayIso ||
-      completionMeta.completionDateIso === todayIso
-    )
-  })
-  const dailyRemainingRows = dailyTrackedRows.filter(
+  const dailyRemainingRows = filteredOverviewRows.filter(
     (row) => !isCompletedTaskStatus(getTaskDisplayStatus(row).status),
   )
   const dailyCompletedCount = dailyFinalizationRows.length
@@ -7301,7 +7289,7 @@ function App() {
                     </div>
                     <div className="daily-report-performance-foot">
                       <span>
-                        Total monitorado hoje: <strong>{dailyTotalTracked}</strong>
+                        Total considerado no andamento: <strong>{dailyTotalTracked}</strong>
                       </span>
                     </div>
                   </article>
