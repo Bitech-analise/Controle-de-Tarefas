@@ -3651,6 +3651,10 @@ function App() {
     setScreen('solicitations')
   }
 
+  const openKanbanScreen = () => {
+    setScreen('kanban')
+  }
+
   const handleTaskFilterChange = (field, value) => {
     setTaskFilters((prev) => ({ ...prev, [field]: value }))
   }
@@ -5994,6 +5998,66 @@ function App() {
       ],
     },
   ]
+  const getKanbanLaneKey = (row) => {
+    const displayStatus = getTaskDisplayStatus(row)
+    const isCompleted = isCompletedTaskStatus(displayStatus.status)
+    if (isCompleted) return 'done'
+
+    const actionIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'A'))
+    const metaIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'M'))
+    const dueIso = parseBrDateToIso(getTaggedReportDate(row.dates, 'V'))
+    const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
+    const progressColumn = getTaskProgressColumnKey({
+      todayIso,
+      actionIso,
+      metaIso,
+      dueIso,
+      isCompleted,
+      hasDeliveryDate,
+    })
+
+    if (progressColumn === 'doing' || progressColumn === 'review') return 'progress'
+    return 'todo'
+  }
+  const sortKanbanRows = (rows) =>
+    [...rows].sort((a, b) => {
+      const aDue = parseBrDateToIso(getTaggedReportDate(a.dates, 'V')) || '9999-12-31'
+      const bDue = parseBrDateToIso(getTaggedReportDate(b.dates, 'V')) || '9999-12-31'
+      if (aDue !== bDue) return aDue.localeCompare(bDue)
+      return String(a.subject || '').localeCompare(String(b.subject || ''), 'pt-BR')
+    })
+  const kanbanBuckets = filteredOverviewRows.reduce(
+    (acc, row) => {
+      const laneKey = getKanbanLaneKey(row)
+      acc[laneKey].push(row)
+      return acc
+    },
+    { todo: [], progress: [], done: [] },
+  )
+  const kanbanColumns = [
+    {
+      key: 'todo',
+      title: 'A Fazer',
+      subtitle: 'Não iniciadas e pendentes',
+      tone: 'todo',
+      rows: sortKanbanRows(kanbanBuckets.todo),
+    },
+    {
+      key: 'progress',
+      title: 'Em Progresso',
+      subtitle: 'Em andamento e revisão',
+      tone: 'progress',
+      rows: sortKanbanRows(kanbanBuckets.progress),
+    },
+    {
+      key: 'done',
+      title: 'Feito',
+      subtitle: 'Concluídas e finalizadas',
+      tone: 'done',
+      rows: sortKanbanRows(kanbanBuckets.done),
+    },
+  ]
+  const kanbanTotalCards = filteredOverviewRows.length
   const departmentsInSystem = Array.from(
     new Set(
       [
@@ -6357,6 +6421,7 @@ function App() {
                     (screen === 'super-admin' && item === 'Super Admin') ||
                     (screen === 'dashboard' && item === 'Visão Geral') ||
                     (screen === 'operational' && item === 'Visão Geral') ||
+                    (screen === 'kanban' && item === 'Visão Geral') ||
                     ((screen === 'tasks' || screen === 'task-detail') && item === 'Tarefas') ||
                     (screen === 'reports' && item === 'Relatórios') ||
                     (screen === 'solicitations' && item === 'Solicitações') ||
@@ -6412,7 +6477,7 @@ function App() {
                   <span className="search-icon" />
                   <input type="search" placeholder="Digite aqui para começar a pesquisa..." />
                 </div>
-                {!isSuperAdmin && screen === 'dashboard' ? (
+                {!isSuperAdmin && (screen === 'dashboard' || screen === 'kanban') ? (
                   <span className="welcome-tenant-pill" title={`Tenant: ${tenantDisplayName}`}>
                     Bem Vindo {tenantDisplayName}
                   </span>
@@ -6436,7 +6501,7 @@ function App() {
                     <button className="chip" type="button">
                       Relatório do dia
                     </button>
-                    <button className="chip" type="button" onClick={openObligationsScreen}>
+                    <button className="chip" type="button" onClick={openKanbanScreen}>
                       Quadro Kanban
                     </button>
                   </>
@@ -7061,6 +7126,93 @@ function App() {
                   ))}
                 </section>
 
+              </div>
+            ) : screen === 'kanban' ? (
+              <div className="kanban-view">
+                <section className="card kanban-intro" style={{ '--delay': '0.06s' }}>
+                  <div className="kanban-intro-copy">
+                    <h4>Quadro Kanban</h4>
+                    <p>Painel principal simplificado para acompanhar o fluxo das tarefas.</p>
+                  </div>
+                  <div className="kanban-intro-actions">
+                    <span className="kanban-period">{overviewPeriodLabel || '-'}</span>
+                    <button type="button" className="chip small" onClick={() => setScreen('dashboard')}>
+                      Voltar para Visão Geral
+                    </button>
+                  </div>
+                </section>
+
+                <section className="kanban-summary">
+                  {kanbanColumns.map((column, index) => (
+                    <article
+                      key={`kanban-summary-${column.key}`}
+                      className={`kanban-summary-card tone-${column.tone}`}
+                      style={{ '--delay': `${0.12 + index * 0.06}s` }}
+                    >
+                      <span>{column.title}</span>
+                      <strong>{column.rows.length}</strong>
+                    </article>
+                  ))}
+                  <article className="kanban-summary-card tone-total" style={{ '--delay': '0.3s' }}>
+                    <span>Total</span>
+                    <strong>{kanbanTotalCards}</strong>
+                  </article>
+                </section>
+
+                <section className="kanban-board">
+                  {kanbanColumns.map((column, columnIndex) => (
+                    <article
+                      key={`kanban-column-${column.key}`}
+                      className={`card kanban-column kanban-column-${column.tone}`}
+                      style={{ '--delay': `${0.16 + columnIndex * 0.08}s` }}
+                    >
+                      <header className="kanban-column-head">
+                        <div>
+                          <h5>{column.title}</h5>
+                          <span>{column.subtitle}</span>
+                        </div>
+                        <span className="kanban-badge">{column.rows.length}</span>
+                      </header>
+                      <div className="kanban-column-body">
+                        {column.rows.length ? (
+                          column.rows.map((row) => {
+                            const displayStatus = getTaskDisplayStatus(row)
+                            const taskTypeLabel =
+                              row.taskType || (row.reportSource === 'solicitation' ? 'Solicitação' : 'Tarefa')
+                            return (
+                              <button
+                                type="button"
+                                key={row.reportKey || `${row.reportSource || 'task'}-${row.id}`}
+                                className="kanban-card"
+                                onClick={() => openTaskDetail(row.id, row.reportSource || 'task')}
+                              >
+                                <div className="kanban-card-top">
+                                  <span className={`status-pill ${displayStatus.tag}`} title={displayStatus.status}>
+                                    {displayStatus.status}
+                                  </span>
+                                  <span className="kanban-card-type">{taskTypeLabel}</span>
+                                </div>
+                                <strong title={row.subject}>{row.subject || `Registro #${row.id}`}</strong>
+                                <p title={`${row.client || ''} ${row.cnpj || ''}`}>
+                                  {row.client || 'Sem cliente'}
+                                  {row.cnpj ? ` • ${row.cnpj}` : ''}
+                                </p>
+                                <div className="kanban-card-meta">
+                                  <span title={getDepartmentLabel(row.dept)}>
+                                    {getDepartmentLabel(row.dept) || 'Sem departamento'}
+                                  </span>
+                                  <span>Venc: {getTaggedReportDate(row.dates, 'V') || '-'}</span>
+                                </div>
+                              </button>
+                            )
+                          })
+                        ) : (
+                          <div className="kanban-empty">Nenhum item nessa coluna para os filtros atuais.</div>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </section>
               </div>
             ) : screen === 'operational' ? (
               <div className="operational-view">
