@@ -1658,6 +1658,13 @@ const renderSidebarIcon = (label) => {
           <path d="M19 12a7 7 0 0 0-.06-.9l2-1.55-2-3.46-2.4.8a7.7 7.7 0 0 0-1.56-.9L14.5 3h-5l-.48 2.99c-.55.22-1.08.52-1.56.9l-2.4-.8-2 3.46 2 1.55a7 7 0 0 0 0 1.8l-2 1.55 2 3.46 2.4-.8c.48.38 1.01.68 1.56.9L9.5 21h5l.48-2.99c.55-.22 1.08-.52 1.56-.9l2.4.8 2-3.46-2-1.55c.04-.3.06-.6.06-.9z" />
         </svg>
       )
+    case 'Onboarding':
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 4.5h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H8l-5 3v-16a2 2 0 0 1 2-2z" />
+          <path d="M8 9h8M8 12.5h6M8 16h4" />
+        </svg>
+      )
     default:
       return null
   }
@@ -6524,6 +6531,7 @@ function App() {
                     'Solicitações',
                     'Clientes',
                     ...(canManageTenantUsers ? ['Configurações'] : []),
+                    'Onboarding',
                   ]
               ).map((item, index) => (
                 <button
@@ -6540,7 +6548,8 @@ function App() {
                     (screen === 'reports' && item === 'Relatórios') ||
                     (screen === 'solicitations' && item === 'Solicitações') ||
                     (screen === 'clients' && item === 'Clientes') ||
-                    (screen === 'settings' && item === 'Configurações')
+                    (screen === 'settings' && item === 'Configurações') ||
+                    (screen === 'onboarding' && item === 'Onboarding')
                       ? 'active'
                       : ''
                   }`.trim()}
@@ -6561,6 +6570,8 @@ function App() {
                     } else if (item === 'Configurações') {
                       setSettingsTab('users')
                       setScreen('settings')
+                    } else if (item === 'Onboarding') {
+                      setScreen('onboarding')
                     }
                   }}
                   style={{ '--delay': `${index * 0.05}s` }}
@@ -8523,6 +8534,22 @@ function App() {
                     </button>
                   </section>
                 )}
+              </div>
+            ) : screen === 'onboarding' ? (
+              <div className="settings-view">
+                <header className="settings-header card">
+                  <div>
+                    <h4>Onboarding</h4>
+                    <p>Painel inicial para orientar novos clientes e equipes.</p>
+                  </div>
+                </header>
+                <section className="card settings-card">
+                  <h5>Próximos passos</h5>
+                  <p>
+                    Use este espaço para concentrar checklists de entrada, documentos obrigatórios, responsáveis
+                    e progresso de implantação por cliente.
+                  </p>
+                </section>
               </div>
             ) : screen === 'settings' ? (
               <div className="settings-view">

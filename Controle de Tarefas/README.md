@@ -64,10 +64,10 @@ docker compose up -d
 1. Build e push das imagens:
 
 ```bash
-docker build -t seu-registro/hive-tarefas-web:latest .
-docker build -t seu-registro/hive-tarefas-api:latest ./backend
-docker push seu-registro/hive-tarefas-web:latest
-docker push seu-registro/hive-tarefas-api:latest
+docker build -t bitechgestao/tarefas-web:1.1 -f Dockerfile .
+docker build -t bitechgestao/tarefas:1.1 -f backend/Dockerfile backend
+docker push bitechgestao/tarefas-web:1.1
+docker push bitechgestao/tarefas:1.1
 ```
 
 2. Criar arquivo `.env.prod` baseado em `.env.prod.example`.
