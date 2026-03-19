@@ -208,6 +208,56 @@ const clientChecklistOptions = [
   'Folha de Pagamento Ultimo Dia',
   'Pró-Labore',
 ]
+const onboardingStepTemplates = [
+  {
+    id: 'onboarding-call',
+    title: 'Contato inicial com o cliente',
+    confirmations: [
+      { id: 'onboarding-call-phone', title: 'Ligação telefônica' },
+      { id: 'onboarding-call-welcome', title: 'Boas-vindas' },
+      { id: 'onboarding-call-process', title: 'Explicação do processo' },
+    ],
+  },
+  {
+    id: 'onboarding-docs',
+    title: 'Recebimento da documentação inicial',
+    confirmations: [
+      { id: 'onboarding-docs-cnpj', title: 'CNPJ' },
+      { id: 'onboarding-docs-contract', title: 'Contrato social' },
+      { id: 'onboarding-docs-ie-im', title: 'Inscrição estadual e municipal' },
+      { id: 'onboarding-docs-address', title: 'Comprovante de endereço' },
+      { id: 'onboarding-docs-digital-cert', title: 'Certificado digital com senha' },
+      { id: 'onboarding-docs-city-hall-access', title: 'Acesso a prefeitura' },
+      { id: 'onboarding-docs-govbr-password', title: 'Senha Gov.BR' },
+    ],
+  },
+  {
+    id: 'onboarding-validation',
+    title: 'Validação cadastral e fiscal',
+    confirmations: [
+      { id: 'onboarding-validation-rg', title: 'RG' },
+      { id: 'onboarding-validation-cpf', title: 'CPF' },
+      { id: 'onboarding-validation-address', title: 'Comprovante de residência' },
+      { id: 'onboarding-validation-taxes', title: 'Guias de impostos Federais e Estaduais' },
+      { id: 'onboarding-validation-payroll', title: 'Folha de pagamento últimos 6 meses' },
+      { id: 'onboarding-validation-bank', title: 'Extratos bancários' },
+      { id: 'onboarding-validation-balance', title: 'Balancete atualizado' },
+      { id: 'onboarding-validation-prev-declarations', title: 'Declarações anteriores' },
+      { id: 'onboarding-validation-registration-status', title: 'Situação Cadastral' },
+      { id: 'onboarding-validation-debt-survey', title: 'Levantamento de Débitos' },
+    ],
+  },
+  {
+    id: 'onboarding-start',
+    title: 'Confirmação de início da operação',
+    confirmations: [
+      { id: 'onboarding-start-begin', title: 'Início do cliente' },
+      { id: 'onboarding-start-taxation', title: 'Tributação' },
+      { id: 'onboarding-start-competence', title: 'Competência inicial' },
+      { id: 'onboarding-start-departments', title: 'Departamentos contratados' },
+    ],
+  },
+]
 const brazilUfOptions = [
   'Todos',
   'AC',
@@ -488,6 +538,52 @@ const parseBrDateTimeParts = (value) => {
   }
 }
 
+const formatDateToDateTimeLocalInput = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hour}:${minute}`
+}
+
+const getNowDateTimeLocalInput = () => formatDateToDateTimeLocalInput(new Date())
+
+const normalizeDateTimeLocalInput = (value, fallback = '') => {
+  const text = String(value || '').trim()
+  if (!text) return fallback
+
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) return text
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text)) return text.slice(0, 16)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return `${text}T00:00`
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) {
+    const isoDate = parseBrDateToIso(text)
+    return isoDate ? `${isoDate}T00:00` : fallback
+  }
+
+  const parsedDateTime = parseBrDateTimeParts(text)
+  if (parsedDateTime?.isoDate && parsedDateTime?.time) {
+    return `${parsedDateTime.isoDate}T${parsedDateTime.time}`
+  }
+
+  const nativeDate = new Date(text)
+  if (Number.isNaN(nativeDate.getTime())) return fallback
+  return formatDateToDateTimeLocalInput(nativeDate)
+}
+
+const addHoursToDateTimeLocalInput = (value, hours = 48) => {
+  const normalized = normalizeDateTimeLocalInput(value)
+  if (!normalized) return ''
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return ''
+  date.setHours(date.getHours() + Number(hours || 0))
+  return formatDateToDateTimeLocalInput(date)
+}
+
+const getOnboardingDeadlineDateTime = (registrationDateValue) =>
+  addHoursToDateTimeLocalInput(registrationDateValue, 48)
+
 const normalizeAnyDateToIso = (value) => {
   const text = String(value || '').trim()
   if (!text) return ''
@@ -601,6 +697,118 @@ const normalizeFreeText = (value) =>
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+
+const normalizeOnboardingStepConfirmations = (confirmations, templateConfirmations) => {
+  const source = Array.isArray(confirmations) ? confirmations : []
+  const templateItems = Array.isArray(templateConfirmations) ? templateConfirmations : []
+  const byId = new Map(source.map((item, index) => [String(item?.id || `item-${index + 1}`), item]))
+
+  return templateItems.map((template) => {
+    const byTemplateId = byId.get(template.id)
+    const byTitle = source.find(
+      (item) =>
+        normalizeFreeText(item?.title || item?.label || '') === normalizeFreeText(template.title),
+    )
+    const matched = byTemplateId || byTitle || null
+    return {
+      id: template.id,
+      title: template.title,
+      done: Boolean(matched?.done || matched?.checked),
+      doneAt: String(matched?.doneAt || matched?.completedAt || '').trim(),
+      doneBy: String(matched?.doneBy || matched?.completedBy || '').trim(),
+    }
+  })
+}
+
+const getDefaultOnboardingSteps = () =>
+  onboardingStepTemplates.map((step) => ({
+    id: step.id,
+    title: step.title,
+    done: false,
+    doneAt: '',
+    doneBy: '',
+    confirmations: normalizeOnboardingStepConfirmations([], step.confirmations),
+  }))
+
+const normalizeOnboardingSteps = (steps) => {
+  const source = Array.isArray(steps) ? steps : []
+  const byId = new Map(source.map((item, index) => [String(item?.id || `step-${index + 1}`), item]))
+
+  return onboardingStepTemplates.map((template) => {
+    const byTemplateId = byId.get(template.id)
+    const byTitle = source.find(
+      (item) =>
+        normalizeFreeText(item?.title || item?.label || '') === normalizeFreeText(template.title),
+    )
+    const matched = byTemplateId || byTitle || null
+    const hasStoredConfirmations = Array.isArray(matched?.confirmations) && matched.confirmations.length > 0
+    const rawConfirmations = hasStoredConfirmations
+      ? matched.confirmations
+      : Array.isArray(matched?.checklist)
+        ? matched.checklist
+        : []
+    let confirmations = normalizeOnboardingStepConfirmations(rawConfirmations, template.confirmations)
+    if (!hasStoredConfirmations && Boolean(matched?.done || matched?.checked)) {
+      const fallbackDoneAt = String(matched?.doneAt || matched?.completedAt || '').trim()
+      const fallbackDoneBy = String(matched?.doneBy || matched?.completedBy || '').trim()
+      confirmations = confirmations.map((item) => ({
+        ...item,
+        done: true,
+        doneAt: item.doneAt || fallbackDoneAt,
+        doneBy: item.doneBy || fallbackDoneBy,
+      }))
+    }
+    const doneByConfirmations =
+      confirmations.length > 0 && confirmations.every((confirmation) => Boolean(confirmation.done))
+    return {
+      id: template.id,
+      title: template.title,
+      done: Boolean(matched?.done || matched?.checked || doneByConfirmations),
+      doneAt: String(matched?.doneAt || matched?.completedAt || '').trim(),
+      doneBy: String(matched?.doneBy || matched?.completedBy || '').trim(),
+      confirmations,
+    }
+  })
+}
+
+const isOnboardingCompleted = (steps) =>
+  Array.isArray(steps) && steps.length > 0 && steps.every((step) => Boolean(step.done))
+
+const normalizeOnboardingRecord = (record) => {
+  const fallbackIdSeed = String(
+    record?.clientName || record?.nome || record?.clientCnpj || record?.cnpj || '',
+  ).trim()
+  const normalizedClientId = String(record?.clientId ?? record?.id ?? fallbackIdSeed).trim()
+  const steps = normalizeOnboardingSteps(record?.steps)
+  const completed = isOnboardingCompleted(steps)
+  const createdAt = String(record?.createdAt || record?.startedAt || '').trim()
+  const registrationDate = normalizeDateTimeLocalInput(
+    record?.registrationDate || record?.registeredAt || record?.dataCadastro || createdAt,
+    '',
+  )
+  const deadlineDate = normalizeDateTimeLocalInput(
+    record?.deadlineDate || record?.dueAt || record?.dataLimite || '',
+    getOnboardingDeadlineDateTime(registrationDate),
+  )
+  return {
+    clientId: normalizedClientId,
+    clientName: String(record?.clientName || record?.nome || '').trim(),
+    clientCnpj: String(record?.clientCnpj || record?.cnpj || record?.inscricao || '').trim(),
+    clientPhone: formatPhoneValue(record?.clientPhone || record?.phone || record?.telefone || ''),
+    clientContact: String(record?.clientContact || record?.contact || record?.contato || '').trim(),
+    registrationDate,
+    deadlineDate,
+    createdAt,
+    createdBy: String(record?.createdBy || '').trim(),
+    completedAt: completed ? String(record?.completedAt || '').trim() : '',
+    completedBy: completed ? String(record?.completedBy || '').trim() : '',
+    completionSolicitationId: String(
+      record?.completionSolicitationId || record?.onboardingSolicitationId || '',
+    ).trim(),
+    completionSolicitationCreatedAt: String(record?.completionSolicitationCreatedAt || '').trim(),
+    steps,
+  }
+}
 
 const checklistMatchingRules = [
   { checklist: 'Iss', terms: ['iss'] },
@@ -930,6 +1138,78 @@ const normalizeLogoDataUrl = async (file) => {
 }
 
 const extractDigits = (value) => String(value || '').replace(/\D/g, '')
+
+const removeClientDocumentFromName = (clientName, clientDocument) => {
+  const rawName = String(clientName || '').trim()
+  if (!rawName) return ''
+
+  const rawDocument = String(clientDocument || '').trim()
+
+  let nextName = rawName
+  if (rawDocument) {
+    const escapedDocument = rawDocument.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    nextName = nextName.replace(new RegExp(`\\s*${escapedDocument}\\s*$`, 'i'), '').trim()
+
+    const documentDigits = extractDigits(rawDocument)
+    if (documentDigits) {
+      const escapedDigits = documentDigits.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      nextName = nextName.replace(
+        new RegExp(`\\s*(?:CNPJ|CPF|CNPJ/CPF)?\\s*${escapedDigits}\\s*$`, 'i'),
+        '',
+      )
+      if (documentDigits.length === 14) {
+        nextName = nextName.replace(/\s*\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\s*$/i, '')
+      }
+      if (documentDigits.length === 11) {
+        nextName = nextName.replace(/\s*\d{3}\.?\d{3}\.?\d{3}-?\d{2}\s*$/i, '')
+      }
+    }
+  }
+
+  nextName = nextName.replace(/\s+(?:CNPJ|CPF|CNPJ\/CPF)?\s*\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\s*$/i, '')
+  nextName = nextName.replace(/\s+(?:CNPJ|CPF|CNPJ\/CPF)?\s*\d{3}\.?\d{3}\.?\d{3}-?\d{2}\s*$/i, '')
+
+  nextName = nextName.replace(/[\s•-]+$/, '').trim()
+
+  const genericDocumentSuffixMatch = nextName.match(
+    /^(.*?)(?:\s+(?:CNPJ|CPF|CNPJ\/CPF))?\s+([0-9][0-9./-]{5,})$/i,
+  )
+  if (genericDocumentSuffixMatch) {
+    const suffixDigits = extractDigits(genericDocumentSuffixMatch[2] || '')
+    if (suffixDigits.length >= 8 || /[./-]/.test(genericDocumentSuffixMatch[2] || '')) {
+      nextName = String(genericDocumentSuffixMatch[1] || '').trim()
+    }
+  }
+
+  return nextName || rawName
+}
+
+const stripTrailingClientDocument = (value) =>
+  String(value || '')
+    .replace(/\s+(?:CNPJ|CPF|CNPJ\/CPF)?\s*\d{2}\.?\d{3}\.?\d{3}\/?\d{1,4}-?\d{2}\s*$/i, '')
+    .replace(/\s+(?:CNPJ|CPF|CNPJ\/CPF)?\s*\d{3}\.?\d{3}\.?\d{3}-?\d{2}\s*$/i, '')
+    .replace(/[\s•-]+$/, '')
+    .trim()
+
+const getDisplayClientName = (clientName, clientDocument) =>
+  stripTrailingClientDocument(removeClientDocumentFromName(clientName, clientDocument))
+
+const formatPhoneValue = (value) => {
+  const digits = extractDigits(value).slice(0, 11)
+  if (!digits) return ''
+
+  const areaCode = digits.slice(0, 2)
+  if (digits.length <= 2) return `(${areaCode}`
+  if (digits.length <= 6) return `(${areaCode})${digits.slice(2)}`
+
+  if (digits.length <= 10) {
+    const middle = digits.slice(2, 6)
+    const suffix = digits.slice(6)
+    return suffix ? `(${areaCode})${middle}-${suffix}` : `(${areaCode})${middle}`
+  }
+
+  return `(${areaCode})${digits.slice(2, 7)}-${digits.slice(7)}`
+}
 
 const formatCnpjValue = (value) => {
   const digits = String(value || '')
@@ -1602,6 +1882,26 @@ const getEmptySolicitationForm = () => {
   }
 }
 
+const getEmptyOnboardingClientForm = () => {
+  const registrationDate = getNowDateTimeLocalInput()
+  return {
+    cnpj: '',
+    name: '',
+    phone: '',
+    contact: '',
+    registrationDate,
+    deadlineDate: getOnboardingDeadlineDateTime(registrationDate),
+  }
+}
+
+const getOnboardingRecordId = () => `onb-${Date.now()}-${Math.round(Math.random() * 100000)}`
+const getNextNumericId = (records) =>
+  records.reduce((maxId, record) => {
+    const numericId = Number(record?.id)
+    if (!Number.isFinite(numericId)) return maxId
+    return Math.max(maxId, numericId)
+  }, 0) + 1
+
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
 
 const STORAGE_KEYS = {
@@ -1808,14 +2108,25 @@ function App() {
   const [taskActionLogs, setTaskActionLogs] = useState([])
   const [taskActionError, setTaskActionError] = useState('')
   const [taskEmailSending, setTaskEmailSending] = useState(false)
+  const [reportEmailCard, setReportEmailCard] = useState(null)
   const [solicitationForm, setSolicitationForm] = useState(() => getEmptySolicitationForm())
   const [solicitationFeedback, setSolicitationFeedback] = useState('')
   const [solicitationRecords, setSolicitationRecords] = useState([])
+  const [onboardingRecords, setOnboardingRecords] = useState([])
+  const [selectedOnboardingClientId, setSelectedOnboardingClientId] = useState('')
+  const [activeOnboardingStepId, setActiveOnboardingStepId] = useState('')
+  const [onboardingAddOpen, setOnboardingAddOpen] = useState(false)
+  const [onboardingClientFilter, setOnboardingClientFilter] = useState('Todos')
+  const [onboardingNewClientForm, setOnboardingNewClientForm] = useState(() =>
+    getEmptyOnboardingClientForm(),
+  )
+  const [onboardingFeedback, setOnboardingFeedback] = useState('')
   const [solicitationClientSearch, setSolicitationClientSearch] = useState('')
   const [solicitationClientsOpen, setSolicitationClientsOpen] = useState(false)
   const solicitationClientsRef = useRef(null)
   const [clientCepLookupLoading, setClientCepLookupLoading] = useState(false)
   const [clientCepLookupMessage, setClientCepLookupMessage] = useState('')
+  const [clientRegistrationContext, setClientRegistrationContext] = useState(null)
   const [clientForm, setClientForm] = useState(emptyClientForm)
   const [clientMode, setClientMode] = useState('create')
   const [editingId, setEditingId] = useState(null)
@@ -1916,10 +2227,12 @@ function App() {
       )
     : tasksRows
   const solicitationRecordsForCurrentUser = isTenantRestrictedUser
-    ? solicitationRecords.filter((record) =>
-        isAllowedByAuthClientScope(record.clientId, record.clientName) &&
-        isAllowedByAuthDepartmentScope(record.departamento),
-      )
+    ? solicitationRecords.filter((record) => {
+        const allowedByDepartment = isAllowedByAuthDepartmentScope(record.departamento)
+        if (!allowedByDepartment) return false
+        if (isAllowedByAuthClientScope(record.clientId, record.clientName)) return true
+        return Boolean(record?.allowDepartmentVisibility)
+      })
     : solicitationRecords
 
   useEffect(() => {
@@ -1986,6 +2299,19 @@ function App() {
     document.addEventListener('mousedown', handleOutsideClick)
     return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [solicitationClientsOpen])
+
+  useEffect(() => {
+    if (!reportEmailCard) return
+
+    const handleEscClose = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setReportEmailCard(null)
+    }
+
+    window.addEventListener('keydown', handleEscClose)
+    return () => window.removeEventListener('keydown', handleEscClose)
+  }, [reportEmailCard])
 
   useEffect(() => {
     const openedNow = taskCreateOpen && !wasTaskCreateOpenRef.current
@@ -2117,6 +2443,13 @@ function App() {
       setSettingsLogoDraftDataUrl('')
       setSettingsLogoDraftName('')
       setSettingsLogoFeedback('')
+      setOnboardingAddOpen(false)
+      setOnboardingClientFilter('Todos')
+      setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+      setSelectedOnboardingClientId('')
+      setActiveOnboardingStepId('')
+      setOnboardingFeedback('')
+      setClientRegistrationContext(null)
       return
     }
     loadTenantState()
@@ -2145,6 +2478,7 @@ function App() {
       tasksRows,
       taskBlueprints,
       solicitationRecords,
+      onboardingRecords,
       taskActionLogs,
     }
 
@@ -2173,6 +2507,7 @@ function App() {
     tasksRows,
     taskBlueprints,
     solicitationRecords,
+    onboardingRecords,
     taskActionLogs,
     companyLogoDataUrl,
     companyLogoName,
@@ -2628,7 +2963,7 @@ function App() {
           authUserId: String(item?.authUserId || item?.id || ''),
           nome: String(item?.nome || item?.name || '').trim(),
           departamento: String(item?.departamento || '').trim(),
-          telefone: String(item?.telefone || '').trim(),
+          telefone: formatPhoneValue(item?.telefone),
           email: String(item?.email || '').trim(),
           senha: String(item?.senha || '').trim(),
           clientIds: Array.isArray(item?.clientIds) ? item.clientIds : [],
@@ -2658,7 +2993,7 @@ function App() {
               authUserId: String(backendUser.id || ''),
               nome: String(localMeta?.nome || backendUser.name || '').trim(),
               departamento: String(localMeta?.departamento || '').trim(),
-              telefone: String(localMeta?.telefone || '').trim(),
+              telefone: formatPhoneValue(localMeta?.telefone),
               email: String(backendUser.email || localMeta?.email || '').trim(),
               senha: String(localMeta?.senha || '').trim(),
               clientIds: Array.isArray(backendUser.clientIds) ? backendUser.clientIds : [],
@@ -2680,16 +3015,35 @@ function App() {
       }
 
       setUsers(normalizedUsers.length ? normalizedUsers : [fallbackUser])
-      setClients(Array.isArray(state.clients) ? state.clients : [])
+      setClients(
+        Array.isArray(state.clients)
+          ? state.clients.map((client) => ({
+              ...client,
+              telefone: formatPhoneValue(client?.telefone),
+            }))
+          : [],
+      )
       setTasksRows(Array.isArray(state.tasksRows) ? state.tasksRows : [])
       setTaskBlueprints(Array.isArray(state.taskBlueprints) ? state.taskBlueprints : [])
       setSolicitationRecords(Array.isArray(state.solicitationRecords) ? state.solicitationRecords : [])
+      setOnboardingRecords(
+        Array.isArray(state.onboardingRecords)
+          ? state.onboardingRecords.map((record) => normalizeOnboardingRecord(record))
+          : [],
+      )
       setTaskActionLogs(Array.isArray(state.taskActionLogs) ? state.taskActionLogs : [])
       setCompanyLogoDataUrl(logoDataUrl)
       setCompanyLogoName(logoName)
       setSettingsLogoDraftDataUrl('')
       setSettingsLogoDraftName('')
       setSettingsLogoFeedback('')
+      setOnboardingAddOpen(false)
+      setOnboardingClientFilter('Todos')
+      setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+      setSelectedOnboardingClientId('')
+      setActiveOnboardingStepId('')
+      setOnboardingFeedback('')
+      setClientRegistrationContext(null)
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) {
         setAuthSession(null)
@@ -2704,12 +3058,20 @@ function App() {
       setTasksRows([])
       setTaskBlueprints([])
       setSolicitationRecords([])
+      setOnboardingRecords([])
       setTaskActionLogs([])
       setCompanyLogoDataUrl('')
       setCompanyLogoName('')
       setSettingsLogoDraftDataUrl('')
       setSettingsLogoDraftName('')
       setSettingsLogoFeedback('')
+      setOnboardingAddOpen(false)
+      setOnboardingClientFilter('Todos')
+      setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+      setSelectedOnboardingClientId('')
+      setActiveOnboardingStepId('')
+      setOnboardingFeedback('')
+      setClientRegistrationContext(null)
     } finally {
       setTenantStateHydrated(true)
     }
@@ -2731,6 +3093,7 @@ function App() {
       tasksRows,
       taskBlueprints,
       solicitationRecords,
+      onboardingRecords,
       taskActionLogs,
     }
     await apiRequest('/tenant/state', {
@@ -2886,10 +3249,10 @@ function App() {
     setSolicitationOpen(true)
   }
 
-  const openClientModal = (mode = 'create', client = null) => {
+  const openClientModal = (mode = 'create', client = null, options = {}) => {
     if (mode === 'edit' && !canManageClients) return
 
-    const nextClientForm = client
+    const baseClientForm = client
       ? {
           ...client,
           tipoEmpresa: normalizeClientCompanyTypes(client.tipoEmpresa),
@@ -2897,8 +3260,31 @@ function App() {
             formatMonthYearInput(String(client.competenceStart || '').trim()) ||
             getMonthYearFromIso(client.dataInicio) ||
             getMonthYearFromIso(getTodayIsoLocal()),
+          telefone: formatPhoneValue(client.telefone),
         }
       : { ...emptyClientForm }
+    const formOverrides =
+      options && typeof options.formOverrides === 'object' && options.formOverrides !== null
+        ? options.formOverrides
+        : null
+    const nextClientForm = formOverrides
+      ? {
+          ...baseClientForm,
+          ...formOverrides,
+          tipoEmpresa: normalizeClientCompanyTypes(formOverrides.tipoEmpresa ?? baseClientForm.tipoEmpresa),
+          grupos: Array.isArray(formOverrides.grupos)
+            ? formOverrides.grupos.map((group) => String(group || '').trim()).filter(Boolean)
+            : baseClientForm.grupos,
+          checklist: Array.isArray(formOverrides.checklist)
+            ? formOverrides.checklist.map((item) => String(item || '').trim()).filter(Boolean)
+            : baseClientForm.checklist,
+          competenceStart:
+            formatMonthYearInput(String(formOverrides.competenceStart || '').trim()) ||
+            baseClientForm.competenceStart ||
+            getMonthYearFromIso(getTodayIsoLocal()),
+          telefone: formatPhoneValue(formOverrides.telefone ?? baseClientForm.telefone),
+        }
+      : baseClientForm
 
     setClientMode(mode)
     setEditingId(client ? client.id : null)
@@ -2911,6 +3297,26 @@ function App() {
     setChecklistOpen(false)
     setClientOpen(true)
     setCreateOpen(false)
+  }
+
+  const closeClientModal = () => {
+    const shouldReturnToTaskDetail = Boolean(clientRegistrationContext)
+    setClientOpen(false)
+    setGroupsOpen(false)
+    setTaxOpen(false)
+    setClientCompanyTypesOpen(false)
+    setChecklistOpen(false)
+    setClientCepLookupLoading(false)
+    setClientCepLookupMessage('')
+    setEditingId(null)
+    setClientMode('create')
+    setClientForm({ ...emptyClientForm })
+    if (shouldReturnToTaskDetail) {
+      setClientRegistrationContext(null)
+      setTaskEditMode(false)
+      setTaskActionError('')
+      setScreen('task-detail')
+    }
   }
 
   const handleModalBackdropMouseDown = (event) => {
@@ -2951,6 +3357,12 @@ function App() {
         return {
           ...prev,
           cep: formatCepValue(value),
+        }
+      }
+      if (field === 'telefone') {
+        return {
+          ...prev,
+          telefone: formatPhoneValue(value),
         }
       }
       if (field === 'competenceStart') {
@@ -3068,17 +3480,85 @@ function App() {
           getMonthYearFromIso(getTodayIsoLocal())
     const payload = {
       ...clientForm,
+      telefone: formatPhoneValue(clientForm.telefone),
       tipoEmpresa: normalizeClientCompanyTypes(clientForm.tipoEmpresa),
       competenceStart: validCompetenceStart,
     }
+    let savedClient = null
 
     if (clientMode === 'edit' && editingId !== null) {
+      savedClient = { ...payload, id: editingId }
       setClients((prev) =>
-        prev.map((client) => (client.id === editingId ? { ...payload, id: editingId } : client)),
+        prev.map((client) => (client.id === editingId ? savedClient : client)),
       )
     } else {
       const nextId = clients.reduce((maxId, client) => Math.max(maxId, client.id), 0) + 1
-      setClients((prev) => [...prev, { ...payload, id: nextId }])
+      savedClient = { ...payload, id: nextId }
+      setClients((prev) => [...prev, savedClient])
+    }
+
+    const shouldFinalizeTaskAfterSave = Boolean(
+      clientRegistrationContext &&
+        clientRegistrationContext.taskSource === 'solicitation' &&
+        savedClient,
+    )
+
+    if (shouldFinalizeTaskAfterSave) {
+      const normalizedResponsibleName = String(clientRegistrationContext.taskResponsible || '').trim()
+      if (normalizedResponsibleName) {
+        const responsibleKey = normalizeFreeText(normalizedResponsibleName)
+        setUsers((prev) =>
+          prev.map((user) => {
+            if (normalizeFreeText(user.nome || '') !== responsibleKey) return user
+            const currentClientIds = Array.isArray(user.clientIds)
+              ? user.clientIds.map((id) => String(id))
+              : []
+            const nextClientIds = Array.from(new Set([...currentClientIds, String(savedClient.id)]))
+            return {
+              ...user,
+              clientIds: nextClientIds,
+            }
+          }),
+        )
+      }
+
+      const taskId = clientRegistrationContext.taskId
+      const taskDepartment = getDepartmentLabel(clientRegistrationContext.taskDepartment) || 'Sucesso do Cliente'
+      const baixaTimestamp = logTaskAction(
+        {
+          id: taskId,
+          reportSource: 'solicitation',
+          subject: clientRegistrationContext.taskSubject || 'Solicitação',
+        },
+        'Finalizar',
+      )
+      const autoJustification = 'Cadastro de cliente concluído pela ação "Cadastro de clientes".'
+
+      setSolicitationRecords((prev) =>
+        prev.map((item) => {
+          if (item.id !== taskId) return item
+          return {
+            ...item,
+            departamento: taskDepartment,
+            clientId: savedClient.id,
+            clientName: savedClient.nome || item.clientName || '',
+            responsavel: normalizedResponsibleName || item.responsavel,
+            deliveryDate: getNowBrDate(),
+            conclusionDate: getNowBrDate(),
+            status: 'Finalizado',
+            etapa: 'Concluída',
+            tag: 'lime',
+            baixaAt: baixaTimestamp,
+            baixaAction: 'Finalizar',
+            justification: String(item.justification || '').trim() || autoJustification,
+          }
+        }),
+      )
+      setSelectedTaskRef({ id: taskId, source: 'solicitation' })
+      setTaskEditMode(false)
+      setTaskActionError('')
+      setScreen('task-detail')
+      setClientRegistrationContext(null)
     }
 
     setClientOpen(false)
@@ -3606,6 +4086,9 @@ function App() {
       const idsToDelete = pendingDelete.map((client) => String(client.id))
       const idsToDeleteSet = new Set(idsToDelete)
       setClients((prev) => prev.filter((client) => !idsToDeleteSet.has(String(client.id))))
+      setOnboardingRecords((prev) =>
+        prev.filter((record) => !idsToDeleteSet.has(String(record?.clientId || '').trim())),
+      )
       setSelectedClientIds((prev) =>
         prev
           .map((id) => String(id))
@@ -3691,6 +4174,374 @@ function App() {
     setScreen('daily-report')
   }
 
+  const openOnboardingScreen = () => {
+    setSelectedOnboardingClientId('')
+    setActiveOnboardingStepId('')
+    setOnboardingAddOpen(false)
+    setOnboardingClientFilter('Todos')
+    setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+    setOnboardingFeedback('')
+    setScreen('onboarding')
+  }
+
+  const openOnboardingDetail = (clientId) => {
+    setSelectedOnboardingClientId(String(clientId))
+    setActiveOnboardingStepId('')
+    setOnboardingFeedback('')
+    setScreen('onboarding-detail')
+  }
+
+  const handleOnboardingClientFormChange = (field, value) => {
+    setOnboardingNewClientForm((prev) => {
+      if (field === 'cnpj') {
+        return {
+          ...prev,
+          cnpj: formatCnpjValue(value),
+        }
+      }
+
+      if (field === 'registrationDate') {
+        const registrationDate = normalizeDateTimeLocalInput(value, prev.registrationDate)
+        return {
+          ...prev,
+          registrationDate,
+          deadlineDate: getOnboardingDeadlineDateTime(registrationDate),
+        }
+      }
+      if (field === 'phone') {
+        return {
+          ...prev,
+          phone: formatPhoneValue(value),
+        }
+      }
+
+      return {
+        ...prev,
+        [field]: value,
+      }
+    })
+    setOnboardingFeedback('')
+  }
+
+  const openOnboardingAddForm = () => {
+    setOnboardingAddOpen(true)
+    setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+    setOnboardingFeedback('')
+  }
+
+  const cancelOnboardingAddForm = () => {
+    setOnboardingAddOpen(false)
+    setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+    setOnboardingFeedback('')
+  }
+
+  const addClientToOnboarding = () => {
+    const name = String(onboardingNewClientForm.name || '').trim()
+    const cnpj = formatCnpjValue(onboardingNewClientForm.cnpj)
+    const cnpjDigits = extractDigits(cnpj)
+    const phone = formatPhoneValue(onboardingNewClientForm.phone)
+    const contact = String(onboardingNewClientForm.contact || '').trim()
+    const registrationDate = normalizeDateTimeLocalInput(onboardingNewClientForm.registrationDate)
+    const deadlineDate = getOnboardingDeadlineDateTime(registrationDate)
+
+    if (!name || !cnpj || !phone || !contact || !registrationDate) {
+      setOnboardingFeedback('Preencha CNPJ, Nome, Telefone, Contato e Data de cadastro para adicionar.')
+      return
+    }
+
+    if (cnpjDigits.length !== 14) {
+      setOnboardingFeedback('Informe um CNPJ válido com 14 dígitos.')
+      return
+    }
+
+    if (!deadlineDate) {
+      setOnboardingFeedback('Não foi possível calcular a data limite a partir da data de cadastro.')
+      return
+    }
+
+    const alreadyAdded = onboardingRecords.some(
+      (record) => {
+        const normalizedRecord = normalizeOnboardingRecord(record)
+        if (cnpjDigits && extractDigits(normalizedRecord.clientCnpj || '') === cnpjDigits) return true
+        return normalizeFreeText(normalizedRecord.clientName || '') === normalizeFreeText(name)
+      },
+    )
+    if (alreadyAdded) {
+      setOnboardingFeedback('Esse cliente já está cadastrado no onboarding.')
+      return
+    }
+
+    const now = getNowBrTimestamp()
+    const actor = loggedUserDisplayName || 'Usuário'
+    const newRecord = normalizeOnboardingRecord({
+      clientId: getOnboardingRecordId(),
+      clientName: name,
+      clientCnpj: cnpj,
+      clientPhone: phone,
+      clientContact: contact,
+      registrationDate,
+      deadlineDate,
+      createdAt: now,
+      createdBy: actor,
+      steps: getDefaultOnboardingSteps(),
+    })
+
+    setOnboardingRecords((prev) => [newRecord, ...prev])
+    setOnboardingAddOpen(false)
+    setOnboardingNewClientForm(getEmptyOnboardingClientForm())
+    setOnboardingFeedback(`Cliente "${name}" adicionado ao onboarding.`)
+  }
+
+  const removeClientFromOnboarding = (clientId) => {
+    const normalizedClientId = String(clientId || '').trim()
+    if (!normalizedClientId) return
+
+    const targetRecord = onboardingRecords
+      .map((record) => normalizeOnboardingRecord(record))
+      .find((record) => String(record?.clientId || '').trim() === normalizedClientId)
+    const confirmed = window.confirm(
+      `Deseja remover ${targetRecord?.clientName || 'este cliente'} da lista de onboarding?`,
+    )
+    if (!confirmed) return
+
+    setOnboardingRecords((prev) =>
+      prev.filter((record) => String(record?.clientId || '').trim() !== normalizedClientId),
+    )
+    setOnboardingClientFilter((prev) =>
+      String(prev || '').trim() === normalizedClientId ? 'Todos' : prev,
+    )
+    if (String(selectedOnboardingClientId || '') === normalizedClientId) {
+      setSelectedOnboardingClientId('')
+      setActiveOnboardingStepId('')
+      setScreen('onboarding')
+    }
+    setOnboardingFeedback('Cliente removido do onboarding.')
+  }
+
+  const openOnboardingStep = (stepId, blocked = false, alreadyDone = false) => {
+    if (blocked || alreadyDone) return
+    const normalizedStepId = String(stepId || '').trim()
+    if (!normalizedStepId) return
+    setActiveOnboardingStepId((prev) => (prev === normalizedStepId ? '' : normalizedStepId))
+    setOnboardingFeedback('')
+  }
+
+  const isPlaceholderResponsible = (value) => {
+    const normalized = normalizeFreeText(value)
+    return !normalized || normalized === 'a definir' || normalized === 'nao definido'
+  }
+
+  const getDepartmentResponsibleFallback = (department) => {
+    const normalizedDepartment = getDepartmentLabel(department)
+    if (!normalizedDepartment) return ''
+
+    const departmentUsers = users
+      .filter((user) => getDepartmentLabel(user.departamento) === normalizedDepartment)
+      .map((user) => String(user.nome || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }))
+
+    return departmentUsers[0] || ''
+  }
+
+  const getLinkedClientForOnboardingRecord = (record) => {
+    const normalizedRecord = normalizeOnboardingRecord(record)
+    const cnpjDigits = extractDigits(normalizedRecord.clientCnpj || '')
+    if (cnpjDigits) {
+      const byDocument = clients.find((client) => extractDigits(client.inscricao) === cnpjDigits)
+      if (byDocument) return byDocument
+    }
+
+    const normalizedClientName = normalizeFreeText(normalizedRecord.clientName || '')
+    if (normalizedClientName) {
+      const byName = clients.find(
+        (client) => normalizeFreeText(client.nome || '') === normalizedClientName,
+      )
+      if (byName) return byName
+    }
+    return null
+  }
+
+  const buildOnboardingCompletionSolicitationRecord = ({
+    solicitationId,
+    onboardingRecord,
+    timestamp,
+  }) => {
+    const normalizedRecord = normalizeOnboardingRecord(onboardingRecord)
+    const linkedClient = getLinkedClientForOnboardingRecord(normalizedRecord)
+    const departmentResponsible = getDepartmentResponsibleFallback('Sucesso do Cliente')
+    const completionDateIso = normalizeAnyDateToIso(normalizedRecord.completedAt || timestamp) || getTodayIsoLocal()
+    const dueDateIso = normalizeAnyDateToIso(normalizedRecord.deadlineDate) || completionDateIso
+    const stepsSummary = normalizeOnboardingSteps(normalizedRecord.steps)
+      .map((step, index) => `${index + 1}. ${step.title}`)
+      .join(' | ')
+
+    return {
+      id: solicitationId,
+      departamento: 'Sucesso do Cliente',
+      processo: 'Onboarding',
+      etapa: 'Aberta',
+      assunto: `Onboarding concluído - ${normalizedRecord.clientName || 'Cliente'}`,
+      clientId: linkedClient?.id ?? null,
+      clientName: normalizedRecord.clientName || linkedClient?.nome || '',
+      actionDate: completionDateIso,
+      metaDate: completionDateIso,
+      dueDate: dueDateIso,
+      andamento: `Onboarding concluído em ${normalizedRecord.completedAt || timestamp}. Etapas: ${stepsSummary}.`,
+      responsavel: departmentResponsible || 'A definir',
+      convidados: '',
+      attachments: [],
+      notifyOpen: false,
+      notifyEnd: false,
+      notifyGuests: false,
+      replicateSubtasks: false,
+      iAmResponsible: false,
+      iAmAuthorizer: false,
+      status: 'Em andamento',
+      tag: 'success',
+      deliveryDate: '',
+      conclusionDate: '',
+      baixaAt: '',
+      baixaAction: '',
+      justification: '',
+      emailSentAt: '',
+      emailSentTo: '',
+      createdAt: timestamp,
+      source: 'onboarding',
+      allowDepartmentVisibility: true,
+      onboardingClientId: normalizedRecord.clientId,
+      onboardingClientCnpj: normalizedRecord.clientCnpj || '',
+      onboardingCompletedAt: normalizedRecord.completedAt || timestamp,
+    }
+  }
+
+  const toggleOnboardingStepConfirmation = (clientId, stepId, confirmationId) => {
+    const normalizedClientId = String(clientId || '').trim()
+    const normalizedStepId = String(stepId || '').trim()
+    const normalizedConfirmationId = String(confirmationId || '').trim()
+    if (!normalizedClientId || !normalizedStepId || !normalizedConfirmationId) return
+
+    const actor = loggedUserDisplayName || 'Usuário'
+    const now = getNowBrTimestamp()
+    let nextSolicitationId = getNextNumericId(solicitationRecords)
+    const generatedSolicitations = []
+    let nextSelectedStepDone = false
+    let nextSelectedStepTitle = ''
+    let matchedRecord = false
+
+    const nextOnboardingRecords = onboardingRecords.map((record) => {
+      const normalizedRecord = normalizeOnboardingRecord(record)
+      if (String(normalizedRecord.clientId || '').trim() !== normalizedClientId) {
+        return normalizedRecord
+      }
+      matchedRecord = true
+
+      const currentSteps = normalizeOnboardingSteps(normalizedRecord.steps)
+      const nextSteps = currentSteps.map((step) => {
+        if (step.id !== normalizedStepId) return step
+        if (step.done) return step
+
+        const stepTemplate = onboardingStepTemplates.find((template) => template.id === step.id)
+        const currentConfirmations = normalizeOnboardingStepConfirmations(
+          step.confirmations,
+          stepTemplate?.confirmations,
+        )
+        const nextConfirmations = currentConfirmations.map((item) => {
+          if (item.id !== normalizedConfirmationId) return item
+          if (item.done) {
+            return {
+              ...item,
+              done: false,
+              doneAt: '',
+              doneBy: '',
+            }
+          }
+          return {
+            ...item,
+            done: true,
+            doneAt: now,
+            doneBy: actor,
+          }
+        })
+        const stepDone =
+          nextConfirmations.length > 0 && nextConfirmations.every((item) => Boolean(item.done))
+        nextSelectedStepDone = stepDone
+        nextSelectedStepTitle = step.title
+        return {
+          ...step,
+          done: stepDone,
+          doneAt: stepDone ? (String(step.doneAt || '').trim() || now) : '',
+          doneBy: stepDone ? (String(step.doneBy || '').trim() || actor) : '',
+          confirmations: nextConfirmations,
+        }
+      })
+
+      const completed = isOnboardingCompleted(nextSteps)
+      const completedAt = completed ? String(normalizedRecord.completedAt || '').trim() || now : ''
+      const completedBy = completed ? String(normalizedRecord.completedBy || '').trim() || actor : ''
+      let completionSolicitationId = String(normalizedRecord.completionSolicitationId || '').trim()
+      let completionSolicitationCreatedAt = String(
+        normalizedRecord.completionSolicitationCreatedAt || '',
+      ).trim()
+
+      if (completed) {
+        const existingSolicitation = solicitationRecords.find((item) => {
+          const solicitationOnboardingClientId = String(item?.onboardingClientId || '').trim()
+          if (solicitationOnboardingClientId && solicitationOnboardingClientId === normalizedClientId) {
+            return true
+          }
+          return completionSolicitationId && String(item?.id || '') === completionSolicitationId
+        })
+
+        if (existingSolicitation) {
+          completionSolicitationId = String(existingSolicitation.id || '').trim()
+          completionSolicitationCreatedAt = String(existingSolicitation.createdAt || now).trim()
+        } else if (!completionSolicitationId) {
+          const solicitationId = nextSolicitationId
+          nextSolicitationId += 1
+          completionSolicitationId = String(solicitationId)
+          completionSolicitationCreatedAt = now
+          generatedSolicitations.push(
+            buildOnboardingCompletionSolicitationRecord({
+              solicitationId,
+              onboardingRecord: {
+                ...normalizedRecord,
+                steps: nextSteps,
+                completedAt,
+                completedBy,
+              },
+              timestamp: now,
+            }),
+          )
+        }
+      }
+
+      return normalizeOnboardingRecord({
+        ...normalizedRecord,
+        steps: nextSteps,
+        completedAt,
+        completedBy,
+        completionSolicitationId,
+        completionSolicitationCreatedAt,
+      })
+    })
+
+    if (!matchedRecord) return
+
+    setOnboardingRecords(nextOnboardingRecords)
+    if (generatedSolicitations.length) {
+      setSolicitationRecords((prev) => [...generatedSolicitations, ...prev])
+    }
+
+    if (nextSelectedStepDone) {
+      setActiveOnboardingStepId('')
+      setOnboardingFeedback(`Etapa "${nextSelectedStepTitle}" concluída com sucesso.`)
+      return
+    }
+
+    setOnboardingFeedback('')
+  }
+
   const handleTaskFilterChange = (field, value) => {
     setTaskFilters((prev) => ({ ...prev, [field]: value }))
   }
@@ -3769,8 +4620,10 @@ function App() {
     fallback = '',
   }) => {
     const normalizedDepartment = getDepartmentLabel(department)
+    const normalizedFallback = String(fallback || '').trim()
+    const departmentResponsible = getDepartmentResponsibleFallback(normalizedDepartment)
     if (!normalizedDepartment) {
-      return String(fallback || '').trim()
+      return normalizedFallback
     }
 
     const normalizedClientId =
@@ -3785,7 +4638,10 @@ function App() {
           )
 
     if (!normalizedClientId) {
-      return String(fallback || '').trim()
+      if (isPlaceholderResponsible(normalizedFallback) && departmentResponsible) {
+        return departmentResponsible
+      }
+      return normalizedFallback || departmentResponsible
     }
 
     const assignedUser = users.find((user) => {
@@ -3796,14 +4652,19 @@ function App() {
       return userDepartment === normalizedDepartment && userClientIds.includes(normalizedClientId)
     })
 
-    return String(assignedUser?.nome || fallback || '').trim()
+    const assignedName = String(assignedUser?.nome || '').trim()
+    if (assignedName) return assignedName
+    if (isPlaceholderResponsible(normalizedFallback) && departmentResponsible) {
+      return departmentResponsible
+    }
+    return normalizedFallback || departmentResponsible
   }
 
   const mapSolicitationRecordToReportRow = (record) => {
     const linkedClient = clientsForCurrentUser.find((client) => client.id === record.clientId)
     const clientDocument = linkedClient
       ? `${linkedClient.docType || ''} ${linkedClient.inscricao || ''}`.trim()
-      : ''
+      : String(record.onboardingClientCnpj || record.clientDocument || '').trim()
 
     return {
       id: record.id,
@@ -3836,6 +4697,7 @@ function App() {
       taskType: 'Solicitação',
       reportSource: 'solicitation',
       reportKey: `solicitation-${record.id}`,
+      source: record.source || '',
       attachments: record.attachments || [],
       baixaAt: record.baixaAt || '',
       baixaAction: record.baixaAction || '',
@@ -3905,6 +4767,78 @@ function App() {
 
   const selectedTaskRecipientEmail = selectedTask ? resolveTaskRecipientEmail(selectedTask) : ''
   const isTaskEmailSent = Boolean(selectedTask?.emailSentAt)
+  const getReportClientDisplayName = (row) => {
+    if (!row) return ''
+
+    const rowClientId =
+      row.clientId !== null && row.clientId !== undefined && String(row.clientId).trim() !== ''
+        ? String(row.clientId)
+        : ''
+
+    if (rowClientId) {
+      const linkedById = clientsForCurrentUser.find((client) => String(client.id) === rowClientId)
+      if (linkedById?.nome) {
+        return removeClientDocumentFromName(linkedById.nome, linkedById.inscricao || row.cnpj || '')
+      }
+    }
+
+    const rowDocumentDigits = extractDigits(row.cnpj || '')
+    if (rowDocumentDigits) {
+      const linkedByDocument = clientsForCurrentUser.find(
+        (client) => extractDigits(client.inscricao) === rowDocumentDigits,
+      )
+      if (linkedByDocument?.nome) {
+        return removeClientDocumentFromName(
+          linkedByDocument.nome,
+          linkedByDocument.inscricao || row.cnpj || '',
+        )
+      }
+    }
+
+    const normalizedRowClient = normalizeFreeText(row.client || '')
+    if (normalizedRowClient) {
+      const linkedByNamePrefix = clientsForCurrentUser.find((client) => {
+        const normalizedClientName = normalizeFreeText(client.nome || '')
+        if (!normalizedClientName) return false
+        return (
+          normalizedRowClient === normalizedClientName ||
+          normalizedRowClient.startsWith(`${normalizedClientName} `) ||
+          normalizedRowClient.startsWith(normalizedClientName)
+        )
+      })
+      if (linkedByNamePrefix?.nome) {
+        return removeClientDocumentFromName(
+          linkedByNamePrefix.nome,
+          linkedByNamePrefix.inscricao || row.cnpj || '',
+        )
+      }
+    }
+
+    return getDisplayClientName(row.client, row.cnpj)
+  }
+  const getReportEmailMeta = (row) => ({
+    sentTo: String(row?.emailSentTo || row?.clientEmail || '').trim(),
+    sentAt: String(row?.emailSentAt || row?.emailDeliveredAt || '').trim(),
+    viewedAt: String(row?.emailViewedAt || row?.emailOpenedAt || row?.emailReadAt || '').trim(),
+    viewedBy: String(row?.emailViewedBy || row?.emailOpenedBy || row?.emailReadBy || '').trim(),
+  })
+  const openReportEmailCard = (event, row, type, enabled = true) => {
+    event.stopPropagation()
+    if (!enabled) return
+    const emailMeta = getReportEmailMeta(row)
+    setReportEmailCard({
+      type,
+      taskId: row?.id,
+      taskName: String(row?.subject || '').trim(),
+      recipient: emailMeta.sentTo,
+      sentAt: emailMeta.sentAt,
+      viewedAt: emailMeta.viewedAt,
+      viewedBy: emailMeta.viewedBy,
+    })
+  }
+  const closeReportEmailCard = () => {
+    setReportEmailCard(null)
+  }
 
   const logTaskAction = (task, action) => {
     const timestamp = getNowBrTimestamp()
@@ -4173,6 +5107,53 @@ function App() {
     }
   }
 
+  const openClientRegistrationFromTask = () => {
+    if (!selectedTask || selectedTask.reportSource !== 'solicitation') return
+
+    const normalizedDepartment = getDepartmentLabel(selectedTask.dept) || 'Sucesso do Cliente'
+    const documentDigits = extractDigits(selectedTask.cnpj || '')
+    const inferredDocType =
+      documentDigits.length === 11
+        ? 'CPF'
+        : documentDigits.length === 14
+          ? 'CNPJ'
+          : String(selectedTask.cnpj || '').toUpperCase().includes('CPF')
+            ? 'CPF'
+            : 'CNPJ'
+    const formattedDocument = documentDigits
+      ? formatClientInscricaoByDocType(documentDigits, inferredDocType)
+      : ''
+    const normalizedClientName = String(selectedTask.client || '').trim()
+    const fallbackCompetence =
+      formatMonthYearInput(String(selectedTask.competence || '').trim()) ||
+      getMonthYearFromIso(getTodayIsoLocal())
+
+    setClientRegistrationContext({
+      taskId: selectedTask.id,
+      taskSource: selectedTask.reportSource || 'solicitation',
+      taskSubject: selectedTask.subject || '',
+      taskResponsible: selectedTask.owner || '',
+      taskDepartment: normalizedDepartment,
+    })
+    setScreen('clients')
+    openClientModal('create', null, {
+      formOverrides: {
+        ...emptyClientForm,
+        docType: inferredDocType,
+        inscricao: formattedDocument,
+        nome: normalizedClientName,
+        apelido: normalizedClientName,
+        grupos: normalizedDepartment ? [normalizedDepartment] : [],
+        contato: String(selectedTask.owner || '').trim(),
+        email: selectedTaskRecipientEmail || '',
+        competenceStart: fallbackCompetence,
+        dataInicio: getTodayIsoLocal(),
+        status: 'Ativo',
+        visibilidade: 'Geral',
+      },
+    })
+  }
+
   const handleTaskFinalize = () => {
     if (!selectedTask) return
     const entity = selectedTask.reportSource === 'solicitation' ? 'solicitação' : 'tarefa'
@@ -4338,6 +5319,12 @@ function App() {
           clientIds: Array.isArray(value) ? value.map((id) => String(id)) : [],
         }
       }
+      if (field === 'telefone') {
+        return {
+          ...prev,
+          telefone: formatPhoneValue(value),
+        }
+      }
 
       return { ...prev, [field]: value }
     })
@@ -4379,7 +5366,7 @@ function App() {
 
     const nome = userForm.nome.trim()
     const departamento = userForm.departamento.trim()
-    const telefone = userForm.telefone.trim()
+    const telefone = formatPhoneValue(userForm.telefone)
     const email = userForm.email.trim().toLowerCase()
     const senha = userForm.senha
     const eligibleClientIds = new Set(
@@ -4510,7 +5497,7 @@ function App() {
     setUserForm({
       nome: user.nome || '',
       departamento: user.departamento || '',
-      telefone: user.telefone || '',
+      telefone: formatPhoneValue(user.telefone),
       email: user.email || '',
       senha: user.senha || '',
       clientIds: currentClientIds.filter((id) => allowedClientIds.has(id)),
@@ -5096,7 +6083,7 @@ function App() {
   ]
   const taskClientOptions = [
     'Todos',
-    ...Array.from(new Set(taskReportRows.map((item) => item.client).filter(Boolean))),
+    ...Array.from(new Set(taskReportRows.map((item) => getReportClientDisplayName(item)).filter(Boolean))),
   ]
   const taskDepartmentOptions = [
     'Todos',
@@ -5375,8 +6362,11 @@ function App() {
       appliedTaskTypeFilterValue === 'Todos' || row.taskType === appliedTaskTypeFilterValue
     const matchesSubject =
       appliedTaskFilters.subject === 'Todos' || row.subject === appliedTaskFilters.subject
+    const rowClientDisplayName = getReportClientDisplayName(row)
     const matchesClient =
-      appliedTaskFilters.client === 'Todos' || row.client === appliedTaskFilters.client
+      appliedTaskFilters.client === 'Todos' ||
+      rowClientDisplayName === appliedTaskFilters.client ||
+      row.client === appliedTaskFilters.client
     const matchesDepartment =
       appliedTaskFilters.department === 'Todos' ||
       getDepartmentLabel(row.dept) === getDepartmentLabel(appliedTaskFilters.department)
@@ -5869,6 +6859,82 @@ function App() {
       matchesQuery
     )
   })
+  const clientsForCurrentUserById = new Map(
+    clientsForCurrentUser.map((client) => [String(client.id), client]),
+  )
+  const onboardingRows = onboardingRecords
+    .map((record) => normalizeOnboardingRecord(record))
+    .map((record) => {
+      const normalizedClientId = String(record.clientId || '').trim()
+      const legacyClient = clientsForCurrentUserById.get(normalizedClientId)
+      const clientName = String(record.clientName || legacyClient?.nome || 'Cliente sem nome').trim()
+      const clientCnpj = formatCnpjValue(record.clientCnpj || legacyClient?.inscricao || '')
+      const clientPhone = formatPhoneValue(record.clientPhone || legacyClient?.telefone || '')
+      const clientContact = String(record.clientContact || legacyClient?.contato || '').trim()
+      const registrationDate = normalizeDateTimeLocalInput(
+        record.registrationDate || legacyClient?.dataInicio || record.createdAt,
+        '',
+      )
+      const deadlineDate = normalizeDateTimeLocalInput(
+        record.deadlineDate || '',
+        getOnboardingDeadlineDateTime(registrationDate),
+      )
+      if (!normalizedClientId || !clientName) return null
+      const totalSteps = record.steps.length
+      const completedSteps = record.steps.filter((step) => step.done).length
+      const progressPercent = totalSteps ? Math.round((completedSteps / totalSteps) * 100) : 0
+      const completed = isOnboardingCompleted(record.steps)
+      return {
+        ...record,
+        clientName,
+        clientCnpj,
+        clientPhone,
+        clientContact,
+        registrationDate,
+        deadlineDate,
+        totalSteps,
+        completedSteps,
+        progressPercent,
+        completed,
+      }
+    })
+  .filter(Boolean)
+    .sort((a, b) => {
+      if (a.completed !== b.completed) return a.completed ? 1 : -1
+      return String(a.clientName || '').localeCompare(String(b.clientName || ''), 'pt-BR', {
+        sensitivity: 'base',
+      })
+    })
+  const onboardingClientFilterOptions = [
+    { value: 'Todos', label: 'Todos' },
+    ...Array.from(
+      onboardingRows.reduce((map, row) => {
+        if (!map.has(row.clientId)) {
+          map.set(row.clientId, row.clientName)
+        }
+        return map
+      }, new Map()),
+    )
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'pt-BR', { sensitivity: 'base' })),
+  ]
+  const filteredOnboardingRows =
+    onboardingClientFilter === 'Todos'
+      ? onboardingRows
+      : onboardingRows.filter((row) => String(row.clientId) === String(onboardingClientFilter))
+  const onboardingTotalClients = onboardingRows.length
+  const onboardingCompletedClients = onboardingRows.filter((row) => row.completed).length
+  const onboardingRemainingClients = Math.max(0, onboardingTotalClients - onboardingCompletedClients)
+  const onboardingCompletionPercent = onboardingTotalClients
+    ? Math.round((onboardingCompletedClients / onboardingTotalClients) * 100)
+    : 0
+  const safeOnboardingCompletionPercent = Math.min(100, Math.max(0, onboardingCompletionPercent))
+  const selectedOnboardingRow = onboardingRows.find(
+    (row) => String(row.clientId) === String(selectedOnboardingClientId || ''),
+  )
+  const activeOnboardingStep = selectedOnboardingRow
+    ? selectedOnboardingRow.steps.find((step) => String(step.id) === String(activeOnboardingStepId || ''))
+    : null
   const clientTaskGenerateAvailableBlueprints = clientTaskGenerateClients.length
     ? getMatchingTaskBlueprintsForClients(clientTaskGenerateClients)
     : []
@@ -5969,7 +7035,11 @@ function App() {
         acc.progress.attention[progressColumn] += 1
       }
 
-      if (deliveryIso && dueIso && deliveryIso > dueIso) {
+      const isObligationRow = row.taskType === 'Tarefa'
+      const isOverdueObligation = isObligationRow && !isCompleted && displayStatus.status === 'Vencida'
+      const isLateDeliveredObligation = isObligationRow && deliveryIso && dueIso && deliveryIso > dueIso
+
+      if (isOverdueObligation || isLateDeliveredObligation) {
         acc.generatedFine += 1
       }
 
@@ -6370,6 +7440,9 @@ function App() {
   const selectedEntityLabel = isSelectedSolicitation ? 'Solicitação' : 'Tarefa'
   const selectedEntityLabelLower = isSelectedSolicitation ? 'solicitação' : 'tarefa'
   const canManageSelectedTaskRecord = isSelectedSolicitation || canManageTaskBlueprints
+  const canOpenClientRegistrationFromTask = Boolean(
+    isSelectedSolicitation && selectedTask && selectedTask.source === 'onboarding',
+  )
   const isObligationsScreen = screen === 'reports'
   const isSolicitationsScreen = screen === 'solicitations'
   const isReportsLikeScreen = isObligationsScreen || isSolicitationsScreen
@@ -6530,8 +7603,8 @@ function App() {
                     'Relatórios',
                     'Solicitações',
                     'Clientes',
-                    ...(canManageTenantUsers ? ['Configurações'] : []),
                     'Onboarding',
+                    ...(canManageTenantUsers ? ['Configurações'] : []),
                   ]
               ).map((item, index) => (
                 <button
@@ -6549,7 +7622,7 @@ function App() {
                     (screen === 'solicitations' && item === 'Solicitações') ||
                     (screen === 'clients' && item === 'Clientes') ||
                     (screen === 'settings' && item === 'Configurações') ||
-                    (screen === 'onboarding' && item === 'Onboarding')
+                    ((screen === 'onboarding' || screen === 'onboarding-detail') && item === 'Onboarding')
                       ? 'active'
                       : ''
                   }`.trim()}
@@ -6571,7 +7644,7 @@ function App() {
                       setSettingsTab('users')
                       setScreen('settings')
                     } else if (item === 'Onboarding') {
-                      setScreen('onboarding')
+                      openOnboardingScreen()
                     }
                   }}
                   style={{ '--delay': `${index * 0.05}s` }}
@@ -7355,9 +8428,8 @@ function App() {
                             <span>{row.completionTime || '--:--'}</span>
                             <span title={row.completedBy}>{row.completedBy}</span>
                             <span title={row.subject}>{row.subject}</span>
-                            <span title={`${row.client || ''} ${row.cnpj || ''}`}>
-                              {row.client || '-'}
-                              {row.cnpj ? ` • ${row.cnpj}` : ''}
+                            <span title={getDisplayClientName(row.client, row.cnpj) || '-'}>
+                              {getDisplayClientName(row.client, row.cnpj) || '-'}
                             </span>
                             <span>{row.taskType || (row.reportSource === 'solicitation' ? 'Solicitação' : 'Tarefa')}</span>
                             <span className={`status-pill ${row.displayStatus.tag}`} title={row.displayStatus.status}>
@@ -7438,9 +8510,8 @@ function App() {
                                   <span className="kanban-card-type">{taskTypeLabel}</span>
                                 </div>
                                 <strong title={row.subject}>{row.subject || `Registro #${row.id}`}</strong>
-                                <p title={`${row.client || ''} ${row.cnpj || ''}`}>
-                                  {row.client || 'Sem cliente'}
-                                  {row.cnpj ? ` • ${row.cnpj}` : ''}
+                                <p title={getDisplayClientName(row.client, row.cnpj) || 'Sem cliente'}>
+                                  {getDisplayClientName(row.client, row.cnpj) || 'Sem cliente'}
                                 </p>
                                 <div className="kanban-card-meta">
                                   <span title={getDepartmentLabel(row.dept)}>
@@ -8172,17 +9243,25 @@ function App() {
                     <span>Nome</span>
                     <span>Competência</span>
                     <span>Cliente</span>
-                    <span>Status do Cliente</span>
+                    <span>Status</span>
                     <span>Ação</span>
                     <span>Meta</span>
                     <span>Vencimento</span>
                     <span>Conclusão</span>
                     <span>Responsável</span>
+                    <span>Envio</span>
                   </div>
                   <div className="report-body">
                     {paginatedReportRows.length ? (
                       paginatedReportRows.map((row, index) => {
                         const displayStatus = getTaskDisplayStatus(row)
+                        const reportClientDisplayName = stripTrailingClientDocument(
+                          getReportClientDisplayName(row),
+                        )
+                        const emailMeta = getReportEmailMeta(row)
+                        const isRowCompleted = isCompletedTaskStatus(displayStatus.status)
+                        const isEmailSentForRow = Boolean(emailMeta.sentAt) && isRowCompleted
+                        const isEmailViewedForRow = Boolean(emailMeta.viewedAt)
                         return (
                           <div
                             className="report-row clickable"
@@ -8210,8 +9289,8 @@ function App() {
                             <span title={formatCompetenceValue(row.competence) || '-'}>
                               {formatCompetenceValue(row.competence) || '-'}
                             </span>
-                            <span className="client-cell" title={`${row.client} ${row.cnpj}`}>
-                              {`${row.client} ${row.cnpj}`}
+                            <span className="client-cell" title={reportClientDisplayName || '-'}>
+                              {reportClientDisplayName || '-'}
                             </span>
                             <span className="client-status">{row.clientStatus}</span>
                             <span>{getTaggedReportDate(row.dates, 'A')}</span>
@@ -8219,6 +9298,45 @@ function App() {
                             <span>{getTaggedReportDate(row.dates, 'V')}</span>
                             <span>{getTaskDisplayConclusion(row)}</span>
                             <span title={row.owner}>{row.owner}</span>
+                            <span className="report-email-cell">
+                              <div className="report-email-actions">
+                                <button
+                                  type="button"
+                                  className={`report-email-btn ${isEmailSentForRow ? 'active' : ''}`}
+                                  title={
+                                    isEmailSentForRow
+                                      ? 'E-mail enviado (clique para detalhes)'
+                                      : 'E-mail ainda não enviado'
+                                  }
+                                  aria-label="Detalhes do envio por e-mail"
+                                  onClick={(event) => openReportEmailCard(event, row, 'sent', true)}
+                                >
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M3 6h18v12H3z" />
+                                    <path d="m3 7 9 7 9-7" />
+                                  </svg>
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`report-email-btn ${isEmailViewedForRow ? 'active' : ''}`}
+                                  title={
+                                    isEmailViewedForRow
+                                      ? 'E-mail visualizado (clique para detalhes)'
+                                      : 'Visualização ainda não registrada'
+                                  }
+                                  aria-label="Detalhes da visualização do e-mail"
+                                  onClick={(event) =>
+                                    openReportEmailCard(event, row, 'viewed', isEmailViewedForRow)
+                                  }
+                                  disabled={!isEmailViewedForRow}
+                                >
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M1.5 12s3.7-6.5 10.5-6.5S22.5 12 22.5 12 18.8 18.5 12 18.5 1.5 12 1.5 12z" />
+                                    <circle cx="12" cy="12" r="3.5" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </span>
                           </div>
                         )
                       })
@@ -8226,6 +9344,7 @@ function App() {
                       <div className="report-row report-empty">
                         <span>#</span>
                         <span>Sem resultados</span>
+                        <span>-</span>
                         <span>-</span>
                         <span>-</span>
                         <span>-</span>
@@ -8278,6 +9397,56 @@ function App() {
                     </button>
                   </div>
                     </footer>
+
+                    {reportEmailCard ? (
+                      <div
+                        className="modal-backdrop"
+                        onMouseDown={handleModalBackdropMouseDown}
+                        onClick={(event) => handleModalBackdropClick(event, closeReportEmailCard)}
+                      >
+                        <div className="modal-card report-email-card" onClick={(event) => event.stopPropagation()}>
+                          <header className="modal-header">
+                            <h3>
+                              {reportEmailCard.type === 'viewed'
+                                ? 'Detalhes da Visualização'
+                                : 'Detalhes do Envio'}
+                            </h3>
+                            <button
+                              className="modal-close"
+                              type="button"
+                              onClick={closeReportEmailCard}
+                              aria-label="Fechar cartão de envio"
+                            >
+                              ×
+                            </button>
+                          </header>
+                          <div className="report-email-card-grid">
+                            <p>
+                              Tarefa: <strong>{reportEmailCard.taskName || `#${reportEmailCard.taskId}`}</strong>
+                            </p>
+                            <p>
+                              E-mail: <strong>{reportEmailCard.recipient || 'Não informado'}</strong>
+                            </p>
+                            {reportEmailCard.type === 'viewed' ? (
+                              <>
+                                <p>
+                                  Visualizado em:{' '}
+                                  <strong>{reportEmailCard.viewedAt || 'Aguardando confirmação'}</strong>
+                                </p>
+                                <p>
+                                  Visualizado por:{' '}
+                                  <strong>{reportEmailCard.viewedBy || 'Cliente (não identificado)'}</strong>
+                                </p>
+                              </>
+                            ) : (
+                              <p>
+                                Enviado em: <strong>{reportEmailCard.sentAt || 'Ainda não enviado'}</strong>
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </>
                 ) : null}
               </div>
@@ -8488,6 +9657,15 @@ function App() {
                               ? 'E-mail enviado'
                               : 'Enviar por E-mail'}
                         </button>
+                        {canOpenClientRegistrationFromTask ? (
+                          <button
+                            type="button"
+                            className="chip tiny"
+                            onClick={openClientRegistrationFromTask}
+                          >
+                            Cadastro de clientes
+                          </button>
+                        ) : null}
                       </div>
                       {selectedTask.emailSentAt ? (
                         <p className="task-email-meta">
@@ -8536,20 +9714,459 @@ function App() {
                 )}
               </div>
             ) : screen === 'onboarding' ? (
-              <div className="settings-view">
-                <header className="settings-header card">
+              <div className="onboarding-view">
+                <section className="card onboarding-intro">
                   <div>
                     <h4>Onboarding</h4>
-                    <p>Painel inicial para orientar novos clientes e equipes.</p>
+                    <p>
+                      Lista de clientes em processo de entrada na contabilidade, com controle de progresso por
+                      checklist.
+                    </p>
                   </div>
-                </header>
-                <section className="card settings-card">
-                  <h5>Próximos passos</h5>
-                  <p>
-                    Use este espaço para concentrar checklists de entrada, documentos obrigatórios, responsáveis
-                    e progresso de implantação por cliente.
-                  </p>
                 </section>
+
+                <section className="onboarding-grid">
+                  <article className="card onboarding-performance" style={{ '--delay': '0.1s' }}>
+                    <header>
+                      <h4>Performance do Onboarding</h4>
+                      <span>{getNowBrDate()}</span>
+                    </header>
+                    <div className="performance-body">
+                      <div className="metric metric-left">
+                        <strong>{onboardingTotalClients}</strong>
+                        <span>Clientes em Entrada</span>
+                      </div>
+                      <div className="speedometer-wrap">
+                        <span className="speedometer-title">Processos Concluídos</span>
+                        <div
+                          className="speedometer"
+                          style={{
+                            '--completed-angle': `${safeOnboardingCompletionPercent * 1.8}deg`,
+                            '--needle-angle': `${safeOnboardingCompletionPercent * 1.8 - 90}deg`,
+                          }}
+                        >
+                          <div className="speedometer-arc" />
+                          <div className="speedometer-inner" />
+                          <div className="speedometer-needle" />
+                          <div className="speedometer-pin" />
+                          <div className="speedometer-center">
+                            <div className="speedometer-value">{safeOnboardingCompletionPercent}%</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="metric metric-right">
+                        <strong>{onboardingCompletedClients}</strong>
+                        <span>Concluídos</span>
+                      </div>
+                    </div>
+                    <div className="daily-report-performance-foot">
+                      <span>
+                        Restantes para conclusão: <strong>{onboardingRemainingClients}</strong>
+                      </span>
+                    </div>
+                  </article>
+
+                  <article className="card onboarding-manage" style={{ '--delay': '0.16s' }}>
+                    <header>
+                      <h4>Adicionar Cliente</h4>
+                      <span>{onboardingTotalClients} cadastrado(s)</span>
+                    </header>
+                    <div className="onboarding-manage-row">
+                      <label className="task-filter-field">
+                        <span>Filtro de clientes</span>
+                        <select
+                          value={onboardingClientFilter}
+                          onChange={(event) => {
+                            setOnboardingClientFilter(event.target.value)
+                            setOnboardingFeedback('')
+                          }}
+                        >
+                          {onboardingClientFilterOptions.map((option) => (
+                            <option
+                              key={`onboarding-filter-option-${option.value}`}
+                              value={String(option.value)}
+                            >
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="chip small"
+                        onClick={() => setOnboardingClientFilter('Todos')}
+                        disabled={onboardingClientFilter === 'Todos'}
+                      >
+                        Limpar filtro
+                      </button>
+                    </div>
+                    {!onboardingAddOpen ? (
+                      <div className="onboarding-manage-actions">
+                        <button type="button" className="chip primary small" onClick={openOnboardingAddForm}>
+                          Adicionar
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="onboarding-manage-form">
+                          <label className="task-filter-field">
+                            <span>CNPJ</span>
+                            <input
+                              type="text"
+                              value={onboardingNewClientForm.cnpj}
+                              onChange={(event) =>
+                                handleOnboardingClientFormChange('cnpj', event.target.value)
+                              }
+                              placeholder="00.000.000/0000-00"
+                              inputMode="numeric"
+                              maxLength={18}
+                            />
+                          </label>
+                          <label className="task-filter-field">
+                            <span>Nome</span>
+                            <input
+                              type="text"
+                              value={onboardingNewClientForm.name}
+                              onChange={(event) =>
+                                handleOnboardingClientFormChange('name', event.target.value)
+                              }
+                              placeholder="Nome do cliente"
+                            />
+                          </label>
+                          <label className="task-filter-field">
+                            <span>Telefone</span>
+                            <input
+                              type="text"
+                              value={onboardingNewClientForm.phone}
+                              onChange={(event) =>
+                                handleOnboardingClientFormChange('phone', event.target.value)
+                              }
+                              placeholder="(00)00000-0000"
+                              inputMode="numeric"
+                              maxLength={14}
+                            />
+                          </label>
+                          <label className="task-filter-field">
+                            <span>Contato</span>
+                            <input
+                              type="text"
+                              value={onboardingNewClientForm.contact}
+                              onChange={(event) =>
+                                handleOnboardingClientFormChange('contact', event.target.value)
+                              }
+                              placeholder="Pessoa de contato"
+                            />
+                          </label>
+                          <label className="task-filter-field">
+                            <span>Data de cadastro</span>
+                            <input
+                              type="datetime-local"
+                              value={onboardingNewClientForm.registrationDate}
+                              onChange={(event) =>
+                                handleOnboardingClientFormChange('registrationDate', event.target.value)
+                              }
+                            />
+                          </label>
+                          <label className="task-filter-field">
+                            <span>Data limite</span>
+                            <input
+                              type="datetime-local"
+                              value={onboardingNewClientForm.deadlineDate}
+                              readOnly
+                            />
+                          </label>
+                        </div>
+                        <div className="onboarding-manage-foot">
+                          <button type="button" className="chip small" onClick={cancelOnboardingAddForm}>
+                            Cancelar
+                          </button>
+                          <button type="button" className="chip primary small" onClick={addClientToOnboarding}>
+                            Salvar cliente
+                          </button>
+                        </div>
+                        <p className="onboarding-note">
+                          A data limite é preenchida automaticamente com 48 horas após a data de cadastro.
+                        </p>
+                      </>
+                    )}
+                    {onboardingFeedback ? (
+                      <p className="settings-feedback onboarding-feedback">{onboardingFeedback}</p>
+                    ) : null}
+                  </article>
+                </section>
+
+                <section className="card onboarding-panel" style={{ '--delay': '0.24s' }}>
+                  <header className="daily-report-panel-head">
+                    <div>
+                      <h5>Clientes em Processo de Entrada</h5>
+                      <span>Dados reais dos clientes cadastrados no onboarding.</span>
+                    </div>
+                    <span>{filteredOnboardingRows.length} registro(s)</span>
+                  </header>
+
+                  <div className="onboarding-table">
+                    <div className="onboarding-head">
+                      <span>No</span>
+                      <span>Cliente</span>
+                      <span>CNPJ</span>
+                      <span>Contato</span>
+                      <span>Telefone</span>
+                      <span>Data de Cadastro</span>
+                      <span>Data Limite</span>
+                      <span>Progresso</span>
+                      <span>Status</span>
+                      <span>Concluído em</span>
+                      <span>Ações</span>
+                    </div>
+                    <div className="onboarding-body">
+                      {filteredOnboardingRows.length ? (
+                        filteredOnboardingRows.map((row, index) => (
+                          <div
+                            className="onboarding-row clickable"
+                            key={`onboarding-row-${row.clientId}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openOnboardingDetail(row.clientId)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                openOnboardingDetail(row.clientId)
+                              }
+                            }}
+                          >
+                            <span>{index + 1}</span>
+                            <span title={row.clientName}>{row.clientName}</span>
+                            <span>{row.clientCnpj || '-'}</span>
+                            <span>{row.clientContact || '-'}</span>
+                            <span>{row.clientPhone || '-'}</span>
+                            <span>{formatIsoDateTimeToBr(row.registrationDate) || '-'}</span>
+                            <span>{formatIsoDateTimeToBr(row.deadlineDate) || '-'}</span>
+                            <span className="onboarding-progress-cell">
+                              <span>{`${row.completedSteps}/${row.totalSteps}`}</span>
+                              <span className="onboarding-progress-track" aria-hidden="true">
+                                <span
+                                  className="onboarding-progress-fill"
+                                  style={{ width: `${row.progressPercent}%` }}
+                                />
+                              </span>
+                            </span>
+                            <span className={`client-status-pill ${row.completed ? 'ok' : 'warn'}`}>
+                              {row.completed ? 'Concluído' : 'Em andamento'}
+                            </span>
+                            <span>{row.completedAt || '-'}</span>
+                            <span className="row-actions">
+                              <button
+                                type="button"
+                                className="link-btn"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openOnboardingDetail(row.clientId)
+                                }}
+                                aria-label="Abrir onboarding"
+                                title="Abrir onboarding"
+                              >
+                                Abrir
+                              </button>
+                              <button
+                                type="button"
+                                className="link-btn danger"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  removeClientFromOnboarding(row.clientId)
+                                }}
+                                aria-label="Remover do onboarding"
+                                title="Remover do onboarding"
+                              >
+                                Remover
+                              </button>
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="onboarding-row onboarding-row-empty">
+                          <span>#</span>
+                          <span>Sem clientes cadastrados no onboarding</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                          <span>-</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              </div>
+            ) : screen === 'onboarding-detail' ? (
+              <div className="onboarding-detail-view">
+                {selectedOnboardingRow ? (
+                  <>
+                    <section className="card onboarding-detail-header">
+                      <div className="onboarding-detail-title">
+                        <button type="button" className="chip small" onClick={openOnboardingScreen}>
+                          Voltar para Onboarding
+                        </button>
+                        <h4>{selectedOnboardingRow.clientName}</h4>
+                        <p>
+                          {`CNPJ: ${selectedOnboardingRow.clientCnpj || '-'} • Cadastro: ${
+                            formatIsoDateTimeToBr(selectedOnboardingRow.registrationDate) || '-'
+                          }`}
+                        </p>
+                      </div>
+                      <span
+                        className={`client-status-pill ${selectedOnboardingRow.completed ? 'ok' : 'warn'}`}
+                      >
+                        {selectedOnboardingRow.completed ? 'Concluído' : 'Em andamento'}
+                      </span>
+                    </section>
+
+                    <div className="onboarding-detail-grid">
+                      <article className="card onboarding-detail-performance">
+                        <header>
+                          <h4>Andamento do Cliente</h4>
+                          <span>{`Data limite: ${
+                            formatIsoDateTimeToBr(selectedOnboardingRow.deadlineDate) || '-'
+                          }`}</span>
+                        </header>
+                        <div className="performance-body">
+                          <div className="metric metric-left">
+                            <strong>{selectedOnboardingRow.completedSteps}</strong>
+                            <span>Passos Concluídos</span>
+                          </div>
+                          <div className="speedometer-wrap">
+                            <span className="speedometer-title">Progresso da Implantação</span>
+                            <div
+                              className="speedometer"
+                              style={{
+                                '--completed-angle': `${selectedOnboardingRow.progressPercent * 1.8}deg`,
+                                '--needle-angle': `${selectedOnboardingRow.progressPercent * 1.8 - 90}deg`,
+                              }}
+                            >
+                              <div className="speedometer-arc" />
+                              <div className="speedometer-inner" />
+                              <div className="speedometer-needle" />
+                              <div className="speedometer-pin" />
+                              <div className="speedometer-center">
+                                <div className="speedometer-value">{selectedOnboardingRow.progressPercent}%</div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="metric metric-right">
+                            <strong>{selectedOnboardingRow.totalSteps - selectedOnboardingRow.completedSteps}</strong>
+                            <span>Passos Restantes</span>
+                          </div>
+                        </div>
+                        <div className="daily-report-performance-foot">
+                          <span>
+                            Finalizado em: <strong>{selectedOnboardingRow.completedAt || '-'}</strong>
+                          </span>
+                        </div>
+                      </article>
+
+                      <article className="card onboarding-detail-steps">
+                        <header>
+                          <h4>Passo a Passo</h4>
+                          <span>{`${selectedOnboardingRow.completedSteps}/${selectedOnboardingRow.totalSteps}`}</span>
+                        </header>
+                        <p className="onboarding-note">
+                          O processo só é concluído quando todos os passos forem marcados.
+                        </p>
+                        <div className="onboarding-steps-list">
+                          {selectedOnboardingRow.steps.map((step, index) => {
+                            const confirmations = Array.isArray(step.confirmations) ? step.confirmations : []
+                            const confirmationsDone = confirmations.filter((item) => item.done).length
+                            const blockedByPreviousStep = selectedOnboardingRow.steps
+                              .slice(0, index)
+                              .some((previousStep) => !previousStep.done)
+                            const isStepActive =
+                              String(activeOnboardingStep?.id || '') === String(step.id || '')
+
+                            return (
+                              <div
+                                key={`onboarding-step-${selectedOnboardingRow.clientId}-${step.id}`}
+                                className={`onboarding-step ${step.done ? 'done' : ''} ${
+                                  isStepActive ? 'active' : ''
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  className="onboarding-step-trigger"
+                                  onClick={() =>
+                                    openOnboardingStep(step.id, blockedByPreviousStep, Boolean(step.done))
+                                  }
+                                  disabled={blockedByPreviousStep || step.done}
+                                >
+                                  <span className={`onboarding-step-check ${step.done ? 'done' : ''}`}>
+                                    {step.done ? '✓' : ''}
+                                  </span>
+                                  <span className="onboarding-step-main">
+                                    <strong>{`${index + 1}. ${step.title}`}</strong>
+                                    <small>
+                                      {step.done
+                                        ? `Concluído por ${step.doneBy || 'Usuário'} em ${step.doneAt || '-'}`
+                                        : blockedByPreviousStep
+                                          ? 'Conclua a etapa anterior para continuar.'
+                                          : `${confirmationsDone}/${confirmations.length} confirmação(ões)`}
+                                    </small>
+                                  </span>
+                                </button>
+
+                                {isStepActive && !step.done ? (
+                                  <div className="onboarding-step-confirmations">
+                                    <p>Confirme os itens desta etapa:</p>
+                                    <div className="onboarding-step-confirmation-list">
+                                      {confirmations.map((confirmation) => (
+                                        <label
+                                          key={`onboarding-confirmation-${step.id}-${confirmation.id}`}
+                                          className={`onboarding-step-confirmation ${
+                                            confirmation.done ? 'done' : ''
+                                          }`}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={confirmation.done}
+                                            onChange={() =>
+                                              toggleOnboardingStepConfirmation(
+                                                selectedOnboardingRow.clientId,
+                                                step.id,
+                                                confirmation.id,
+                                              )
+                                            }
+                                          />
+                                          <span>{confirmation.title}</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </div>
+                            )
+                          })}
+                        </div>
+                        <div className="onboarding-step-foot">
+                          <button
+                            type="button"
+                            className="danger-outline"
+                            onClick={() => removeClientFromOnboarding(selectedOnboardingRow.clientId)}
+                          >
+                            Remover Cliente do Onboarding
+                          </button>
+                        </div>
+                      </article>
+                    </div>
+                  </>
+                ) : (
+                  <section className="card task-detail-empty">
+                    <p>Cliente não encontrado no onboarding.</p>
+                    <button type="button" className="chip small" onClick={openOnboardingScreen}>
+                      Voltar para listagem
+                    </button>
+                  </section>
+                )}
               </div>
             ) : screen === 'settings' ? (
               <div className="settings-view">
@@ -8674,7 +10291,9 @@ function App() {
                           type="text"
                           value={userForm.telefone}
                           onChange={(event) => handleSettingsUserChange('telefone', event.target.value)}
-                          placeholder="(00) 9 0000-0000"
+                          placeholder="(00)00000-0000"
+                          inputMode="numeric"
+                          maxLength={14}
                           disabled={!canManageTenantUsers}
                         />
                       </label>
@@ -10670,7 +12289,7 @@ function App() {
             <div
               className="modal-backdrop"
               onMouseDown={handleModalBackdropMouseDown}
-              onClick={(event) => handleModalBackdropClick(event, () => setClientOpen(false))}
+              onClick={(event) => handleModalBackdropClick(event, closeClientModal)}
             >
               <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
                 <header className="modal-header">
@@ -10681,7 +12300,7 @@ function App() {
                         ? 'Visualizar Cliente'
                         : 'Novo Cliente'}
                   </h3>
-                  <button className="modal-close" type="button" onClick={() => setClientOpen(false)}>
+                  <button className="modal-close" type="button" onClick={closeClientModal}>
                     ×
                   </button>
                 </header>
@@ -11015,9 +12634,11 @@ function App() {
                       <label>Telefone</label>
                       <input
                         type="tel"
-                        placeholder=""
+                        placeholder="(00)00000-0000"
                         value={clientForm.telefone}
                         onChange={(event) => handleClientChange('telefone', event.target.value)}
+                        inputMode="numeric"
+                        maxLength={14}
                         readOnly={isReadOnly}
                       />
                     </div>
@@ -11216,12 +12837,12 @@ function App() {
                   </div>
                   <div className="form-actions">
                     {isReadOnly ? (
-                      <button className="chip small" type="button" onClick={() => setClientOpen(false)}>
+                      <button className="chip small" type="button" onClick={closeClientModal}>
                         Fechar
                       </button>
                     ) : (
                       <>
-                        <button className="chip small" type="button" onClick={() => setClientOpen(false)}>
+                        <button className="chip small" type="button" onClick={closeClientModal}>
                           Cancelar
                         </button>
                         <button className="primary small" type="submit">
