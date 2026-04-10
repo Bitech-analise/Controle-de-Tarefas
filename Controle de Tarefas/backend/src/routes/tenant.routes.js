@@ -67,6 +67,36 @@ const sendTaskEmailSchema = z.object({
   }),
 })
 
+const MAX_DOCS_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
+
+const docsSolicitationCreateSchema = z.object({
+  departamento: z.string().min(1),
+  processo: z.string().optional().default(''),
+  etapa: z.string().optional().default('Aberta'),
+  assunto: z.string().min(1),
+  clientIds: z.array(z.string().min(1)).optional().default([]),
+  actionDate: z.string().min(1),
+  metaDate: z.string().min(1),
+  dueDate: z.string().min(1),
+  andamento: z.string().min(1),
+  responsavel: z.string().optional().default(''),
+  attachments: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        size: z.number().int().nonnegative().max(MAX_DOCS_ATTACHMENT_SIZE_BYTES).optional().default(0),
+        type: z.string().optional().default('application/octet-stream'),
+        contentBase64: z.string().min(1),
+      }),
+    )
+    .optional()
+    .default([]),
+})
+
+const portalDocumentDownloadSchema = z.object({
+  documentKey: z.string().min(1),
+})
+
 const tenantUserCreateSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
@@ -93,7 +123,231 @@ const getEmptyTenantState = () => ({
   taskBlueprints: [],
   solicitationRecords: [],
   taskActionLogs: [],
+  docsReceivedDownloads: [],
 })
+
+const getTenantStateRecord = async (tenantId) =>
+  prisma.tenantState.findUnique({
+    where: { tenantId },
+    select: { data: true, updatedAt: true },
+  })
+
+const getTenantStateData = (stateRecord) =>
+  stateRecord?.data && typeof stateRecord.data === 'object' ? stateRecord.data : getEmptyTenantState()
+
+const normalizeLookupText = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+
+const normalizeClientDocument = (client) =>
+  String(client?.inscricao || client?.documentNumber || '')
+    .trim()
+
+const normalizeClientsFromState = (stateData) => {
+  const source = Array.isArray(stateData?.clients) ? stateData.clients : []
+  return source
+    .map((client) => ({
+      id: String(client?.id || '').trim(),
+      nome: String(client?.nome || client?.name || '').trim(),
+      status: String(client?.status || '').trim() || 'Ativo',
+      inscricao: normalizeClientDocument(client),
+      email: String(client?.email || '').trim(),
+    }))
+    .filter((client) => client.id && client.nome)
+}
+
+const findClientByUserIdentity = (clients, authUser) => {
+  const source = Array.isArray(clients) ? clients : []
+  if (!source.length) return null
+
+  const normalizedUserEmail = normalizeLookupText(authUser?.email || '')
+  if (normalizedUserEmail) {
+    const byEmail = source.find(
+      (client) => normalizeLookupText(client?.email || '') === normalizedUserEmail,
+    )
+    if (byEmail) return byEmail
+  }
+
+  const normalizedUserName = normalizeLookupText(authUser?.name || '')
+  if (!normalizedUserName) return null
+
+  const byExactName = source.find((client) => normalizeLookupText(client?.nome || '') === normalizedUserName)
+  if (byExactName) return byExactName
+
+  if (normalizedUserName.length < 5) return null
+
+  return (
+    source.find((client) => {
+      const normalizedClientName = normalizeLookupText(client?.nome || '')
+      if (!normalizedClientName) return false
+      return (
+        normalizedClientName.includes(normalizedUserName) ||
+        normalizedUserName.includes(normalizedClientName)
+      )
+    }) || null
+  )
+}
+
+const getNextSolicitationId = (records) =>
+  records.reduce((maxId, record) => {
+    const numericId = Number(record?.id)
+    return Number.isFinite(numericId) ? Math.max(maxId, numericId) : maxId
+  }, 0) + 1
+
+const normalizeDisplayDate = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch
+    return `${day}/${month}/${year}`
+  }
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+  if (brMatch) {
+    const [, day, month, year] = brMatch
+    return `${day}/${month}/${year}`
+  }
+  return text
+}
+
+const getDateFromTaggedList = (dates, tag) => {
+  const source = Array.isArray(dates) ? dates : []
+  const prefix = `${String(tag || '').trim().toUpperCase()}:`
+  const entry = source.find((item) =>
+    String(item || '')
+      .trim()
+      .toUpperCase()
+      .startsWith(prefix),
+  )
+  if (!entry) return ''
+  return normalizeDisplayDate(String(entry).slice(prefix.length).trim())
+}
+
+const getCompetenceFromActionDate = (actionDate) => {
+  const normalized = normalizeDisplayDate(actionDate)
+  const match = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (!match) return ''
+  const [, , month, year] = match
+  return `${month}/${year}`
+}
+
+const getPortalDocumentDownloadsByKey = (stateData, authUser) => {
+  const source = Array.isArray(stateData?.docsReceivedDownloads) ? stateData.docsReceivedDownloads : []
+  const authUserId = String(authUser?.id || '').trim()
+  const authUserEmail = normalizeLookupText(authUser?.email || '')
+  const map = new Map()
+
+  for (const entry of source) {
+    const key = String(entry?.key || '').trim()
+    const downloadedAt = String(entry?.downloadedAt || '').trim()
+    const entryUserId = String(entry?.userId || '').trim()
+    const entryUserEmail = normalizeLookupText(entry?.userEmail || '')
+    if (!key || !downloadedAt) continue
+
+    const sameUserById = Boolean(authUserId && entryUserId && authUserId === entryUserId)
+    const sameUserByEmail = Boolean(authUserEmail && entryUserEmail && authUserEmail === entryUserEmail)
+    if (!sameUserById && !sameUserByEmail) continue
+    map.set(key, downloadedAt)
+  }
+
+  return map
+}
+
+const buildPortalDocumentKey = ({ source, recordId, attachmentId, attachmentName, index }) =>
+  `${String(source || '').trim()}::${String(recordId || '').trim()}::${String(attachmentId || '').trim() || index}::${String(attachmentName || '').trim()}`
+
+const buildPortalDocumentsFromState = ({
+  stateData,
+  visibleClients,
+  isTenantRestrictedUser,
+  authUser,
+}) => {
+  const visibleClientIds = new Set((Array.isArray(visibleClients) ? visibleClients : []).map((client) => client.id))
+  const visibleClientNames = new Set(
+    (Array.isArray(visibleClients) ? visibleClients : [])
+      .map((client) => normalizeLookupText(client?.nome || ''))
+      .filter(Boolean),
+  )
+  const authUserId = String(authUser?.id || '').trim()
+  const authUserEmail = normalizeLookupText(authUser?.email || '')
+  const downloadsByKey = getPortalDocumentDownloadsByKey(stateData, authUser)
+
+  const isRecordVisible = ({ clientId, clientName, createdByUserId = '', createdByUserEmail = '' }) => {
+    if (!isTenantRestrictedUser) return true
+    const normalizedClientId = String(clientId || '').trim()
+    const normalizedClientName = normalizeLookupText(clientName || '')
+    const normalizedCreatedByUserId = String(createdByUserId || '').trim()
+    const normalizedCreatedByUserEmail = normalizeLookupText(createdByUserEmail || '')
+
+    if (normalizedClientId && visibleClientIds.has(normalizedClientId)) return true
+    if (normalizedClientName && visibleClientNames.has(normalizedClientName)) return true
+    if (normalizedCreatedByUserId && authUserId && normalizedCreatedByUserId === authUserId) return true
+    if (normalizedCreatedByUserEmail && authUserEmail && normalizedCreatedByUserEmail === authUserEmail) return true
+    return false
+  }
+
+  const tasksRows = Array.isArray(stateData?.tasksRows) ? stateData.tasksRows : []
+  const documents = []
+
+  for (const row of tasksRows) {
+    const rowId = String(row?.id || '').trim()
+    const attachments = Array.isArray(row?.attachments) ? row.attachments : []
+    const clientId = String(row?.clientId || '').trim()
+    const clientName = String(row?.client || row?.clientName || '').trim()
+    if (!attachments.length || !isRecordVisible({ clientId, clientName })) continue
+
+    for (let index = 0; index < attachments.length; index += 1) {
+      const attachment = attachments[index]
+      const attachmentName = String(attachment?.name || '').trim()
+      const contentBase64 = String(attachment?.contentBase64 || '').trim()
+      if (!attachmentName && !contentBase64) continue
+
+      const documentKey = buildPortalDocumentKey({
+        source: 'task',
+        recordId: rowId,
+        attachmentId: String(attachment?.id || '').trim(),
+        attachmentName,
+        index,
+      })
+      const downloadedAt = String(downloadsByKey.get(documentKey) || '').trim()
+      const actionDate = getDateFromTaggedList(row?.dates, 'A')
+      const metaDate = getDateFromTaggedList(row?.dates, 'M')
+      const dueDate = getDateFromTaggedList(row?.dates, 'V')
+
+      documents.push({
+        documentKey,
+        source: 'task',
+        taskId: rowId,
+        attachmentId: String(attachment?.id || '').trim(),
+        attachmentName: attachmentName || `anexo-${index + 1}`,
+        attachmentSize: Number(attachment?.size || 0),
+        attachmentType: String(attachment?.type || 'application/octet-stream'),
+        contentBase64,
+        status: downloadedAt ? 'Arquivo baixado' : 'Disponivel',
+        downloadedAt,
+        departamento: String(row?.dept || '').trim(),
+        nome: String(row?.subject || '').trim(),
+        competencia: String(row?.competence || '').trim() || getCompetenceFromActionDate(actionDate),
+        cliente: clientName || 'Cliente nao informado',
+        actionDate,
+        metaDate,
+        dueDate,
+        conclusionDate: normalizeDisplayDate(row?.conclusionDate || ''),
+        responsavel: String(row?.owner || '').trim(),
+      })
+    }
+  }
+
+  return documents.sort((a, b) => {
+    const aId = Number(a?.taskId || 0)
+    const bId = Number(b?.taskId || 0)
+    if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return bId - aId
+    return String(a?.attachmentName || '').localeCompare(String(b?.attachmentName || ''), 'pt-BR')
+  })
+}
 
 router.get('/users', async (req, res, next) => {
   try {
@@ -362,6 +616,11 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
 
     let stateToPersist = {
       ...incomingState,
+      docsReceivedDownloads: Array.isArray(incomingState?.docsReceivedDownloads)
+        ? incomingState.docsReceivedDownloads
+        : Array.isArray(currentState?.docsReceivedDownloads)
+          ? currentState.docsReceivedDownloads
+          : [],
       // Branding e salvo apenas pela rota /tenant/branding.
       // Isso evita que autosave com estado antigo apague a logo.
       branding:
@@ -452,6 +711,433 @@ router.put(
       })
 
       return res.json({ ok: true, updatedAt: persisted.updatedAt, branding: nextBranding })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.get('/portal/bootstrap', async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req)
+    if (!tenantId) {
+      return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+    }
+
+    const authUser = await prisma.tenantUser.findFirst({
+      where: { id: req.auth?.sub, tenantId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        clientIds: true,
+      },
+    })
+
+    if (!authUser) {
+      return res.status(403).json({ message: 'Usuário sem acesso ao tenant informado.' })
+    }
+
+    const stateRecord = await getTenantStateRecord(tenantId)
+    const stateData = getTenantStateData(stateRecord)
+    const stateClients = normalizeClientsFromState(stateData)
+    const stateSolicitations = Array.isArray(stateData?.solicitationRecords)
+      ? stateData.solicitationRecords
+      : []
+
+    const isTenantRestrictedUser = authUser.role === 'TENANT_USER'
+    const allowedClientIds = new Set(
+      (Array.isArray(authUser.clientIds) ? authUser.clientIds : [])
+        .map((clientId) => String(clientId || '').trim())
+        .filter(Boolean),
+    )
+    const fallbackClientByIdentity = findClientByUserIdentity(stateClients, authUser)
+    const effectiveAllowedClientIds =
+      isTenantRestrictedUser && allowedClientIds.size === 0 && fallbackClientByIdentity?.id
+        ? new Set([String(fallbackClientByIdentity.id).trim()])
+        : allowedClientIds
+
+    const visibleClients = isTenantRestrictedUser
+      ? stateClients.filter((client) => effectiveAllowedClientIds.has(client.id))
+      : stateClients
+
+    const visibleClientIds = new Set(visibleClients.map((client) => client.id))
+    const visibleSolicitations = stateSolicitations
+      .filter((record) => {
+        if (!isTenantRestrictedUser) return true
+        const recordClientId = String(record?.clientId || '').trim()
+        if (recordClientId) return visibleClientIds.has(recordClientId)
+
+        const createdByUserId = String(record?.createdByUserId || '').trim()
+        const createdByUserEmail = normalizeLookupText(record?.createdByUserEmail || '')
+        const authUserId = String(authUser?.id || '').trim()
+        const authUserEmail = normalizeLookupText(authUser?.email || '')
+        if (createdByUserId && authUserId && createdByUserId === authUserId) return true
+        if (createdByUserEmail && authUserEmail && createdByUserEmail === authUserEmail) return true
+
+        const recordClientName = normalizeLookupText(record?.clientName || '')
+        const fallbackClientName = normalizeLookupText(fallbackClientByIdentity?.nome || '')
+        return Boolean(recordClientName && fallbackClientName && recordClientName === fallbackClientName)
+      })
+      .map((record) => {
+        const recordClientId = String(record?.clientId || '').trim()
+        const linkedClient = visibleClients.find((client) => client.id === recordClientId)
+        return {
+          ...record,
+          clientId: recordClientId || record?.clientId || '',
+          clientName:
+            String(record?.clientName || '').trim() || linkedClient?.nome || 'Cliente não informado',
+        }
+      })
+      .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))
+
+    const visibleDocuments = buildPortalDocumentsFromState({
+      stateData,
+      visibleClients,
+      isTenantRestrictedUser,
+      authUser,
+    }).map((documentRow) => {
+      const { contentBase64, ...meta } = documentRow
+      return {
+        ...meta,
+        hasContent: Boolean(String(contentBase64 || '').trim()),
+      }
+    })
+
+    return res.json({
+      user: {
+        id: authUser.id,
+        name: authUser.name,
+        email: authUser.email,
+        role: authUser.role,
+        clientIds: Array.isArray(authUser.clientIds) ? authUser.clientIds : [],
+      },
+      clients: visibleClients,
+      solicitations: visibleSolicitations,
+      documents: visibleDocuments,
+      updatedAt: stateRecord?.updatedAt || null,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post(
+  '/portal/documents/download',
+  validateBody(portalDocumentDownloadSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId e obrigatorio para este usuario.' })
+      }
+
+      const authUser = await prisma.tenantUser.findFirst({
+        where: { id: req.auth?.sub, tenantId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          clientIds: true,
+        },
+      })
+
+      if (!authUser) {
+        return res.status(403).json({ message: 'Usuario sem acesso ao tenant informado.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const stateClients = normalizeClientsFromState(stateData)
+
+      const isTenantRestrictedUser = authUser.role === 'TENANT_USER'
+      const allowedClientIds = new Set(
+        (Array.isArray(authUser.clientIds) ? authUser.clientIds : [])
+          .map((clientId) => String(clientId || '').trim())
+          .filter(Boolean),
+      )
+      const fallbackClientByIdentity = findClientByUserIdentity(stateClients, authUser)
+      const effectiveAllowedClientIds =
+        isTenantRestrictedUser && allowedClientIds.size === 0 && fallbackClientByIdentity?.id
+          ? new Set([String(fallbackClientByIdentity.id).trim()])
+          : allowedClientIds
+
+      const visibleClients = isTenantRestrictedUser
+        ? stateClients.filter((client) => effectiveAllowedClientIds.has(client.id))
+        : stateClients
+
+      const portalDocuments = buildPortalDocumentsFromState({
+        stateData,
+        visibleClients,
+        isTenantRestrictedUser,
+        authUser,
+      })
+
+      const documentKey = String(req.body?.documentKey || '').trim()
+      const targetDocument = portalDocuments.find((item) => String(item?.documentKey || '').trim() === documentKey)
+      if (!targetDocument) {
+        return res.status(404).json({ message: 'Documento nao encontrado para este usuario.' })
+      }
+
+      const contentBase64 = String(targetDocument?.contentBase64 || '').trim()
+      if (!contentBase64) {
+        return res.status(400).json({ message: 'O anexo selecionado nao possui conteudo para download.' })
+      }
+
+      const downloadedAt = new Date().toISOString()
+      const currentDownloads = Array.isArray(stateData?.docsReceivedDownloads)
+        ? stateData.docsReceivedDownloads
+        : []
+      const authUserId = String(authUser.id || '').trim()
+      const authUserEmail = String(authUser.email || '').trim()
+      const authUserEmailNormalized = normalizeLookupText(authUserEmail)
+
+      const nextDownloads = [
+        ...currentDownloads.filter((entry) => {
+          const sameKey = String(entry?.key || '').trim() === documentKey
+          const sameUserById = String(entry?.userId || '').trim() === authUserId
+          const sameUserByEmail =
+            Boolean(authUserEmailNormalized) &&
+            normalizeLookupText(String(entry?.userEmail || '').trim()) === authUserEmailNormalized
+          return !(sameKey && (sameUserById || sameUserByEmail))
+        }),
+        {
+          key: documentKey,
+          userId: authUserId,
+          userEmail: authUserEmail,
+          downloadedAt,
+        },
+      ]
+
+      const stateToPersist = {
+        ...stateData,
+        schemaVersion: typeof stateData?.schemaVersion === 'number' ? stateData.schemaVersion : 1,
+        docsReceivedDownloads: nextDownloads,
+      }
+
+      await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+      })
+
+      return res.json({
+        ok: true,
+        downloadedAt,
+        file: {
+          name: String(targetDocument.attachmentName || 'documento'),
+          type: String(targetDocument.attachmentType || 'application/octet-stream'),
+          size: Number(targetDocument.attachmentSize || 0),
+          contentBase64,
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  '/portal/solicitations',
+  validateBody(docsSolicitationCreateSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      }
+
+      const authUser = await prisma.tenantUser.findFirst({
+        where: { id: req.auth?.sub, tenantId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          clientIds: true,
+        },
+      })
+
+      if (!authUser) {
+        return res.status(403).json({ message: 'Usuário sem acesso ao tenant informado.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const stateClients = normalizeClientsFromState(stateData)
+      const currentSolicitationRecords = Array.isArray(stateData?.solicitationRecords)
+        ? stateData.solicitationRecords
+        : []
+
+      const isTenantRestrictedUser = authUser.role === 'TENANT_USER'
+      const allowedClientIds = new Set(
+        (Array.isArray(authUser.clientIds) ? authUser.clientIds : [])
+          .map((clientId) => String(clientId || '').trim())
+          .filter(Boolean),
+      )
+
+      const requestedClientIds = Array.from(
+        new Set(
+          (Array.isArray(req.body.clientIds) ? req.body.clientIds : [])
+            .map((clientId) => String(clientId || '').trim())
+            .filter(Boolean),
+        ),
+      )
+
+      const fallbackClientByIdentity = findClientByUserIdentity(stateClients, authUser)
+      const allowedClientIdsList = Array.from(allowedClientIds)
+      const defaultClientId =
+        requestedClientIds.length > 0
+          ? ''
+          : isTenantRestrictedUser && allowedClientIdsList.length > 0
+            ? fallbackClientByIdentity?.id && allowedClientIds.has(String(fallbackClientByIdentity.id).trim())
+              ? String(fallbackClientByIdentity.id).trim()
+              : String(allowedClientIdsList[0] || '').trim()
+            : String(fallbackClientByIdentity?.id || '').trim()
+      const effectiveClientIds = requestedClientIds.length > 0 ? requestedClientIds : [defaultClientId].filter(Boolean)
+
+      let targetClients = stateClients.filter((client) => {
+        if (!effectiveClientIds.includes(client.id)) return false
+        if (!isTenantRestrictedUser) return true
+        if (allowedClientIds.size > 0) return allowedClientIds.has(client.id)
+        return true
+      })
+
+      if (!targetClients.length) {
+        if (requestedClientIds.length > 0) {
+          return res.status(400).json({
+            message: 'Nenhum cliente válido encontrado para criar a solicitação.',
+          })
+        }
+        targetClients = [
+          {
+            id: '',
+            nome: String(authUser.name || '').trim() || 'Cliente não informado',
+            status: 'Ativo',
+            inscricao: '',
+            email: String(authUser.email || '').trim(),
+          },
+        ]
+      }
+
+      let nextId = getNextSolicitationId(currentSolicitationRecords)
+      const departamento = String(req.body.departamento || '').trim()
+      const processo = String(req.body.processo || '').trim()
+      const etapa = String(req.body.etapa || '').trim() || 'Aberta'
+      const assunto = String(req.body.assunto || '').trim()
+      const actionDate = String(req.body.actionDate || '').trim()
+      const metaDate = String(req.body.metaDate || '').trim()
+      const dueDate = String(req.body.dueDate || '').trim()
+      const andamento = String(req.body.andamento || '').trim()
+      const responsavel = String(req.body.responsavel || '').trim() || String(authUser.name || '').trim()
+      const createdAt = new Date().toISOString()
+      const incomingAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : []
+      const normalizedIncomingAttachments = []
+
+      for (const attachment of incomingAttachments) {
+        const attachmentName = String(attachment?.name || 'anexo')
+        const attachmentType = String(attachment?.type || 'application/octet-stream')
+        const contentBase64 = String(attachment?.contentBase64 || '').trim()
+        let decodedSize = 0
+        try {
+          decodedSize = Buffer.byteLength(contentBase64, 'base64')
+        } catch {
+          return res.status(400).json({ message: `Anexo inválido: ${attachmentName}.` })
+        }
+
+        if (!decodedSize) {
+          return res.status(400).json({ message: `Anexo vazio: ${attachmentName}.` })
+        }
+
+        if (decodedSize > MAX_DOCS_ATTACHMENT_SIZE_BYTES) {
+          return res
+            .status(400)
+            .json({ message: `O anexo ${attachmentName} excede 25MB. Limite por documento: 25MB.` })
+        }
+
+        normalizedIncomingAttachments.push({
+          name: attachmentName,
+          type: attachmentType,
+          size: decodedSize,
+          contentBase64,
+        })
+      }
+
+      const newRecords = targetClients.map((client) => {
+        const recordId = nextId
+        const recordAttachments = normalizedIncomingAttachments.map((attachment, index) => ({
+          id: `${recordId}-${index}-${String(attachment.name || 'anexo')}`,
+          name: String(attachment.name || 'anexo'),
+          size: Number(attachment.size || 0),
+          type: String(attachment.type || 'application/octet-stream'),
+          contentBase64: String(attachment.contentBase64 || ''),
+        }))
+        const record = {
+          id: recordId,
+          departamento,
+          processo,
+          etapa,
+          assunto,
+          clientId: String(client.id || '').trim(),
+          clientName:
+            String(client.nome || '').trim() || String(authUser.name || '').trim() || 'Cliente não informado',
+          actionDate,
+          metaDate,
+          dueDate,
+          andamento,
+          responsavel,
+          convidados: '',
+          attachments: recordAttachments,
+          notifyOpen: false,
+          notifyEnd: false,
+          notifyGuests: false,
+          replicateSubtasks: false,
+          iAmResponsible: false,
+          iAmAuthorizer: false,
+          status: '',
+          tag: 'success',
+          deliveryDate: '',
+          conclusionDate: '',
+          baixaAt: '',
+          baixaAction: '',
+          justification: '',
+          emailSentAt: '',
+          emailSentTo: '',
+          createdAt,
+          createdByUserId: String(authUser.id || '').trim(),
+          createdByUserEmail: String(authUser.email || '').trim(),
+          source: 'hive-docs',
+        }
+        nextId += 1
+        return record
+      })
+
+      const stateToPersist = {
+        ...stateData,
+        schemaVersion: typeof stateData?.schemaVersion === 'number' ? stateData.schemaVersion : 1,
+        solicitationRecords: [...newRecords, ...currentSolicitationRecords],
+      }
+
+      const persisted = await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+        select: { updatedAt: true },
+      })
+
+      return res.status(201).json({
+        ok: true,
+        records: newRecords,
+        updatedAt: persisted.updatedAt,
+      })
     } catch (error) {
       return next(error)
     }

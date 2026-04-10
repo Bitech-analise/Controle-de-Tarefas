@@ -186,6 +186,8 @@ const _reportRows = [
 ]
 
 const groupOptions = ['Dep. Pessoal', 'Fiscal', 'Contábil', 'Sucesso do Cliente']
+const settingsUserDepartmentOptions = [...groupOptions, 'Cliente']
+const userVisualizationModeOptions = ['ADM', 'Clientes', 'Operador']
 const taxOptions = [
   'Simples Nacional',
   'Lucro Real',
@@ -1225,6 +1227,14 @@ const formatCnpjValue = (value) => {
   return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12)}`
 }
 
+const getDefaultUserVisualizationModeByRole = (role) =>
+  String(role || '').trim() === 'TENANT_ADMIN' ? 'ADM' : 'Operador'
+
+const normalizeUserVisualizationMode = (value, fallback = '') => {
+  const normalized = String(value || '').trim()
+  return userVisualizationModeOptions.includes(normalized) ? normalized : fallback
+}
+
 const formatCpfValue = (value) => {
   const digits = String(value || '')
     .replace(/\D/g, '')
@@ -1809,6 +1819,7 @@ const initialUsers = [
     id: 1,
     nome: 'Administrador',
     departamento: 'Fiscal',
+    visualizacao: 'ADM',
     telefone: '(35) 9 9999-0000',
     email: 'admin@hive.com',
     senha: 'Admin123',
@@ -1819,6 +1830,7 @@ const initialUsers = [
 const emptyUserForm = {
   nome: '',
   departamento: '',
+  visualizacao: '',
   telefone: '',
   email: '',
   senha: '',
@@ -2942,6 +2954,7 @@ function App() {
       authUserId: String(authSession?.user?.id || ''),
       nome: authSession?.user?.name || 'Usuário',
       departamento: '',
+      visualizacao: getDefaultUserVisualizationModeByRole(authSession?.user?.role),
       telefone: '',
       email: authSession?.user?.email || '',
       senha: '',
@@ -2963,6 +2976,7 @@ function App() {
           authUserId: String(item?.authUserId || item?.id || ''),
           nome: String(item?.nome || item?.name || '').trim(),
           departamento: String(item?.departamento || '').trim(),
+          visualizacao: normalizeUserVisualizationMode(item?.visualizacao),
           telefone: formatPhoneValue(item?.telefone),
           email: String(item?.email || '').trim(),
           senha: String(item?.senha || '').trim(),
@@ -2993,6 +3007,10 @@ function App() {
               authUserId: String(backendUser.id || ''),
               nome: String(localMeta?.nome || backendUser.name || '').trim(),
               departamento: String(localMeta?.departamento || '').trim(),
+              visualizacao: normalizeUserVisualizationMode(
+                localMeta?.visualizacao,
+                getDefaultUserVisualizationModeByRole(backendUser.role),
+              ),
               telefone: formatPhoneValue(localMeta?.telefone),
               email: String(backendUser.email || localMeta?.email || '').trim(),
               senha: String(localMeta?.senha || '').trim(),
@@ -5022,6 +5040,24 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  const handleTaskAttachmentCancel = (attachmentId) => {
+    if (!selectedTask) return
+    const normalizedAttachmentId = String(attachmentId || '').trim()
+    if (!normalizedAttachmentId) return
+
+    const shouldRemove = window.confirm('Deseja remover este anexo?')
+    if (!shouldRemove) return
+
+    updateSelectedTaskData((item) => ({
+      ...item,
+      attachments: (item.attachments || []).filter(
+        (attachment) => String(attachment.id || '') !== normalizedAttachmentId,
+      ),
+    }))
+    logTaskAction(selectedTask, 'Cancelar anexo')
+    setTaskActionError('')
+  }
+
   const updateSelectedTaskData = (updater) => {
     if (!selectedTaskRef) return
     if (selectedTaskRef.source === 'solicitation') {
@@ -5366,6 +5402,7 @@ function App() {
 
     const nome = userForm.nome.trim()
     const departamento = userForm.departamento.trim()
+    const visualizacao = normalizeUserVisualizationMode(userForm.visualizacao)
     const telefone = formatPhoneValue(userForm.telefone)
     const email = userForm.email.trim().toLowerCase()
     const senha = userForm.senha
@@ -5376,8 +5413,10 @@ function App() {
       eligibleClientIds.has(id),
     )
 
-    if (!nome || !departamento || !email || !senha) {
-      setSettingsUserFeedback('Preencha nome, departamento, e-mail e senha para salvar o usuário.')
+    if (!nome || !departamento || !visualizacao || !email || !senha) {
+      setSettingsUserFeedback(
+        'Preencha nome, departamento, visualização, e-mail e senha para salvar o usuário.',
+      )
       return
     }
 
@@ -5425,6 +5464,7 @@ function App() {
                   authUserId: String(updatedAuthUser.id || authUserId),
                   nome,
                   departamento,
+                  visualizacao,
                   telefone,
                   email: updatedAuthUser.email || email,
                   senha,
@@ -5460,6 +5500,7 @@ function App() {
             authUserId: createdId,
             nome,
             departamento,
+            visualizacao,
             telefone,
             email: createdAuthUser.email || email,
             senha,
@@ -5497,6 +5538,10 @@ function App() {
     setUserForm({
       nome: user.nome || '',
       departamento: user.departamento || '',
+      visualizacao: normalizeUserVisualizationMode(
+        user.visualizacao,
+        getDefaultUserVisualizationModeByRole(user.role),
+      ),
       telefone: formatPhoneValue(user.telefone),
       email: user.email || '',
       senha: user.senha || '',
@@ -6859,6 +6904,94 @@ function App() {
       matchesQuery
     )
   })
+  const clientExportRows = filteredClients.map((client) => ({
+    Nome: String(client.nome || '').trim() || '-',
+    Apelido: String(client.apelido || '').trim() || '-',
+    Documento: `${String(client.docType || '').trim()} ${String(client.inscricao || '').trim()}`.trim() || '-',
+    Status: String(client.status || '').trim() || '-',
+    Contato: String(client.contato || '').trim() || '-',
+    Telefone: String(client.telefone || '').trim() || '-',
+    Email: String(client.email || '').trim() || '-',
+    Grupo:
+      Array.isArray(client.grupos) && client.grupos.length
+        ? client.grupos.map((group) => String(group || '').trim()).filter(Boolean).join(', ')
+        : '-',
+    Visibilidade: String(client.visibilidade || '').trim() || '-',
+    UF: String(client.uf || '').trim().toUpperCase() || '-',
+    Tributação: String(client.tributacao || '').trim() || '-',
+  }))
+
+  const handleClientExportCsv = () => {
+    if (!clientExportRows.length) return
+    const fileName = `hive-clientes-${formatDateForFile(getTodayIsoLocal())}.csv`
+    downloadFileFromBlob(getCsvContent(clientExportRows), fileName, 'text/csv;charset=utf-8;')
+  }
+
+  const handleClientExportXlsx = () => {
+    if (!clientExportRows.length) return
+    const fileName = `hive-clientes-${formatDateForFile(getTodayIsoLocal())}.xlsx`
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(clientExportRows), 'Clientes')
+    XLSX.writeFile(workbook, fileName)
+  }
+
+  const handleClientExportPdf = () => {
+    if (!clientExportRows.length) return
+    const fileName = `hive-clientes-${formatDateForFile(getTodayIsoLocal())}.pdf`
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+
+    doc.setFontSize(14)
+    doc.text('Hive Tarefas - Relatorio de Clientes', 40, 34)
+    doc.setFontSize(9)
+    doc.text(
+      `Filtros: Status ${appliedClientTableFilters.status} | Grupo ${appliedClientTableFilters.grupo} | Visibilidade ${appliedClientTableFilters.visibilidade} | UF ${appliedClientTableFilters.uf}`,
+      40,
+      52,
+    )
+    doc.text(
+      `Tributacao ${appliedClientTableFilters.tributacao} | Documento ${appliedClientTableFilters.docType} | Busca ${appliedClientTableFilters.query || 'Todos'} | Registros: ${clientExportRows.length}`,
+      40,
+      66,
+    )
+
+    autoTable(doc, {
+      startY: 78,
+      head: [
+        [
+          'Nome',
+          'Apelido',
+          'Documento',
+          'Status',
+          'Contato',
+          'Telefone',
+          'Email',
+          'Grupo',
+          'Visibilidade',
+          'UF',
+          'Tributação',
+        ],
+      ],
+      body: clientExportRows.map((row) => [
+        row.Nome,
+        row.Apelido,
+        row.Documento,
+        row.Status,
+        row.Contato,
+        row.Telefone,
+        row.Email,
+        row.Grupo,
+        row.Visibilidade,
+        row.UF,
+        row.Tributação,
+      ]),
+      styles: { fontSize: 8, cellPadding: 4, overflow: 'linebreak' },
+      headStyles: { fillColor: [22, 33, 45] },
+      margin: { left: 24, right: 24, top: 24, bottom: 24 },
+    })
+
+    doc.save(fileName)
+  }
+
   const clientsForCurrentUserById = new Map(
     clientsForCurrentUser.map((client) => [String(client.id), client]),
   )
@@ -9605,13 +9738,22 @@ function App() {
                                 <strong>{attachment.name}</strong>
                                 <small>{formatFileSize(attachment.size)}</small>
                               </div>
-                              <button
-                                type="button"
-                                className="chip tiny"
-                                onClick={() => downloadAttachment(attachment)}
-                              >
-                                Download
-                              </button>
+                              <div className="task-attachment-actions">
+                                <button
+                                  type="button"
+                                  className="chip tiny"
+                                  onClick={() => downloadAttachment(attachment)}
+                                >
+                                  Download
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger-outline task-attachment-cancel"
+                                  onClick={() => handleTaskAttachmentCancel(attachment.id)}
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
                             </div>
                           ))
                         ) : (
@@ -10278,7 +10420,7 @@ function App() {
                           <option value="" disabled>
                             Selecione...
                           </option>
-                          {groupOptions.map((option) => (
+                          {settingsUserDepartmentOptions.map((option) => (
                             <option key={option} value={option}>
                               {option}
                             </option>
@@ -10296,6 +10438,25 @@ function App() {
                           maxLength={14}
                           disabled={!canManageTenantUsers}
                         />
+                      </label>
+                      <label className="settings-field">
+                        <span>Visualização</span>
+                        <select
+                          value={userForm.visualizacao}
+                          onChange={(event) =>
+                            handleSettingsUserChange('visualizacao', event.target.value)
+                          }
+                          disabled={!canManageTenantUsers}
+                        >
+                          <option value="" disabled>
+                            Selecione...
+                          </option>
+                          {userVisualizationModeOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                       <label className="settings-field">
                         <span>E-mail (login)</span>
@@ -10318,7 +10479,7 @@ function App() {
                         />
                       </label>
                       <label className="settings-field settings-user-clients-field">
-                        <span>Clientes</span>
+                        <span>Clientes (opcional)</span>
                         <div className="multi-select" ref={userClientsRef}>
                           <div
                             className={`multi-trigger ${userClientsOpen ? 'open' : ''}`}
@@ -10365,7 +10526,7 @@ function App() {
                             ) : (
                               <span className="placeholder">
                                 {selectedUserDepartment
-                                  ? 'Selecione os clientes...'
+                                  ? 'Selecione os clientes (opcional)...'
                                   : 'Selecione um departamento primeiro'}
                               </span>
                             )}
@@ -10422,6 +10583,7 @@ function App() {
                         <span>E-mail (login)</span>
                         <span>Senha</span>
                         <span>Ações</span>
+                        <span>Visualização</span>
                       </div>
                       <div className="settings-users-body">
                         {settingsUsersVisibleRows.map((user) => (
@@ -10477,6 +10639,9 @@ function App() {
                               ) : (
                                 <span>-</span>
                               )}
+                            </span>
+                            <span title={user.visualizacao || '-'}>
+                              {normalizeUserVisualizationMode(user.visualizacao) || '-'}
                             </span>
                           </div>
                         ))}
@@ -10957,6 +11122,30 @@ function App() {
                     }}
                   />
                   <div className="report-icons">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Exportar clientes em CSV"
+                      onClick={handleClientExportCsv}
+                    >
+                      CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Exportar clientes em XLSX"
+                      onClick={handleClientExportXlsx}
+                    >
+                      XLSX
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Exportar clientes em PDF"
+                      onClick={handleClientExportPdf}
+                    >
+                      PDF
+                    </button>
                     <button
                       type="button"
                       className="icon-btn"

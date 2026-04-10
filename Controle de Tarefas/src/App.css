@@ -2150,7 +2150,7 @@
 .settings-users-head,
 .settings-users-row {
   display: grid;
-  grid-template-columns: 0.9fr 0.85fr 1.3fr 0.95fr 1.1fr 0.75fr 0.8fr;
+  grid-template-columns: 0.85fr 0.85fr 1.25fr 0.9fr 1.05fr 0.75fr 0.82fr 0.72fr;
   gap: 8px;
   padding: 10px 12px;
   align-items: center;
@@ -3830,6 +3830,20 @@ select:disabled {
 .task-attachment-row small {
   font-size: 11px;
   color: var(--muted);
+}
+
+.task-attachment-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.task-attachment-cancel {
+  padding: 6px 10px;
+  border-radius: 10px;
+  line-height: 1;
 }
 
 .task-empty-attachments {
