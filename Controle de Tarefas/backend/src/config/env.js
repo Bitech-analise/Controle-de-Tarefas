@@ -18,8 +18,13 @@ const env = {
   smtpHost: process.env.SMTP_HOST || '',
   smtpPort: Number(process.env.SMTP_PORT || 587),
   smtpSecure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
+  smtpAuthType: String(process.env.SMTP_AUTH_TYPE || 'password').toLowerCase(),
   smtpUser: process.env.SMTP_USER || '',
   smtpPass: process.env.SMTP_PASS || '',
+  smtpClientId: process.env.SMTP_CLIENT_ID || '',
+  smtpClientSecret: process.env.SMTP_CLIENT_SECRET || '',
+  smtpRefreshToken: process.env.SMTP_REFRESH_TOKEN || '',
+  smtpAccessToken: process.env.SMTP_ACCESS_TOKEN || '',
   smtpFrom: process.env.SMTP_FROM || '',
 }
 

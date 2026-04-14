@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Autenticacao Gmail</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: Arial, sans-serif;
+        background: #0b1726;
+        color: #d9e4f2;
+      }
+      .card {
+        width: min(90vw, 420px);
+        border: 1px solid #23415d;
+        border-radius: 12px;
+        background: #102033;
+        padding: 24px;
+        text-align: center;
+      }
+      .title {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      .desc {
+        margin: 0;
+        font-size: 14px;
+        color: #a8bed4;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1 class="title">Finalizando autenticacao Gmail...</h1>
+      <p class="desc">A janela sera fechada automaticamente.</p>
+    </div>
+    <script>
+      ;(() => {
+        const params = new URLSearchParams(window.location.search)
+        const payload = {
+          source: 'hive-gmail-oauth-callback',
+          code: params.get('code') || '',
+          state: params.get('state') || '',
+          error: params.get('error') || '',
+          errorDescription: params.get('error_description') || '',
+        }
+
+        try {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(payload, window.location.origin)
+          }
+        } catch {
+          // no-op
+        }
+
+        window.setTimeout(() => {
+          window.close()
+        }, 120)
+      })()
+    </script>
+  </body>
+</html>

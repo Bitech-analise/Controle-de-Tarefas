@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
@@ -1235,6 +1235,12 @@ const normalizeUserVisualizationMode = (value, fallback = '') => {
   return userVisualizationModeOptions.includes(normalized) ? normalized : fallback
 }
 
+const getEffectiveUserVisualizationMode = (user) =>
+  normalizeUserVisualizationMode(
+    user?.visualizacao,
+    getDefaultUserVisualizationModeByRole(user?.role),
+  )
+
 const formatCpfValue = (value) => {
   const digits = String(value || '')
     .replace(/\D/g, '')
@@ -1259,6 +1265,9 @@ const formatCepValue = (value) => {
   if (digits.length <= 5) return digits
   return `${digits.slice(0, 5)}-${digits.slice(5)}`
 }
+
+const buildPortalDocumentKey = ({ source, recordId, attachmentId, attachmentName, index }) =>
+  `${String(source || '').trim()}::${String(recordId || '').trim()}::${String(attachmentId || '').trim() || index}::${String(attachmentName || '').trim()}`
 
 const getCompetenceFromDate = (isoDate, mode) => {
   if (!isoDate) return ''
@@ -1837,6 +1846,160 @@ const emptyUserForm = {
   clientIds: [],
 }
 
+const smtpAuthTypeOptions = [
+  { value: 'oauth2', label: 'Gmail OAuth2' },
+  { value: 'password', label: 'Usuário e senha' },
+]
+
+const getEmptySettingsSmtpForm = () => ({
+  host: 'smtp.gmail.com',
+  port: '587',
+  secure: false,
+  authType: 'oauth2',
+  user: '',
+  pass: '',
+  clientId: '',
+  clientSecret: '',
+  refreshToken: '',
+  accessToken: '',
+  from: '',
+  testTo: '',
+})
+
+const normalizeSettingsSmtpForm = (smtpPayload) => {
+  const source = smtpPayload && typeof smtpPayload === 'object' ? smtpPayload : {}
+  const defaults = getEmptySettingsSmtpForm()
+  const portNumber = Number(source.port)
+  const normalizedPort = Number.isFinite(portNumber) && portNumber > 0 ? String(portNumber) : defaults.port
+  const normalizedAuthType = String(source.authType || defaults.authType).toLowerCase() === 'password'
+    ? 'password'
+    : 'oauth2'
+
+  return {
+    ...defaults,
+    host: String(source.host || defaults.host),
+    port: normalizedPort,
+    secure:
+      typeof source.secure === 'boolean'
+        ? source.secure
+        : String(source.secure || '').trim().toLowerCase() === 'true',
+    authType: normalizedAuthType,
+    user: String(source.user || ''),
+    pass: String(source.pass || ''),
+    clientId: String(source.clientId || ''),
+    clientSecret: String(source.clientSecret || ''),
+    refreshToken: String(source.refreshToken || ''),
+    accessToken: String(source.accessToken || ''),
+    from: String(source.from || ''),
+    testTo: '',
+  }
+}
+
+const isValidEmailAddress = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim())
+
+const getGoogleOAuthRedirectUri = () => {
+  if (typeof window === 'undefined' || !window.location?.origin) return ''
+  return `${window.location.origin}/gmail-oauth-callback.html`
+}
+
+const openGoogleOAuthPopup = (authUrl) =>
+  new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') {
+      reject(new Error('Navegador indisponivel para autenticar com Google.'))
+      return
+    }
+
+    const width = 560
+    const height = 700
+    const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2)
+    const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2)
+    const popup = window.open(
+      authUrl,
+      'hive_gmail_oauth',
+      `width=${width},height=${height},left=${Math.round(left)},top=${Math.round(top)}`,
+    )
+
+    if (!popup) {
+      reject(
+        new Error(
+          'Nao foi possivel abrir a janela de autenticacao Google. Verifique bloqueador de popup.',
+        ),
+      )
+      return
+    }
+
+    let finished = false
+    let pollTimer = null
+    let timeoutTimer = null
+
+    const cleanup = () => {
+      window.removeEventListener('message', onMessage)
+      if (pollTimer) {
+        window.clearInterval(pollTimer)
+        pollTimer = null
+      }
+      if (timeoutTimer) {
+        window.clearTimeout(timeoutTimer)
+        timeoutTimer = null
+      }
+    }
+
+    const finish = (callback, payload) => {
+      if (finished) return
+      finished = true
+      cleanup()
+      try {
+        popup.close()
+      } catch {
+        // no-op
+      }
+      callback(payload)
+    }
+
+    const onMessage = (event) => {
+      if (event.origin !== window.location.origin) return
+      const data = event.data && typeof event.data === 'object' ? event.data : null
+      if (!data || data.source !== 'hive-gmail-oauth-callback') return
+
+      if (data.error) {
+        const errorDescription = String(data.errorDescription || '').trim()
+        finish(
+          reject,
+          new Error(errorDescription || 'A autenticacao com Google foi cancelada ou recusada.'),
+        )
+        return
+      }
+
+      const code = String(data.code || '').trim()
+      const state = String(data.state || '').trim()
+      if (!code || !state) {
+        finish(reject, new Error('Retorno invalido da autenticacao Google.'))
+        return
+      }
+
+      finish(resolve, { code, state })
+    }
+
+    window.addEventListener('message', onMessage)
+
+    pollTimer = window.setInterval(() => {
+      let wasClosed = false
+      try {
+        wasClosed = Boolean(popup.closed)
+      } catch {
+        return
+      }
+
+      if (wasClosed) {
+        finish(reject, new Error('Autenticacao Google cancelada antes da conclusao.'))
+      }
+    }, 400)
+
+    timeoutTimer = window.setTimeout(() => {
+      finish(reject, new Error('Tempo de autenticacao Google esgotado. Tente novamente.'))
+    }, 120000)
+  })
+
 const getEmptySettingsTaskForm = () => {
   const today = new Date().toISOString().slice(0, 10)
   return {
@@ -2000,7 +2163,12 @@ const apiRequest = async (path, { method = 'GET', token, body } = {}) => {
   }
 
   if (!response.ok) {
-    const message = payload?.message || 'Erro de comunicação com o servidor.'
+    const baseMessage = payload?.message || 'Erro de comunicação com o servidor.'
+    const detailMessage =
+      typeof payload?.detail === 'string' && payload.detail.trim()
+        ? ` (${payload.detail.trim()})`
+        : ''
+    const message = `${baseMessage}${detailMessage}`
     const error = new Error(message)
     error.status = response.status
     error.payload = payload
@@ -2103,6 +2271,10 @@ function App() {
   const [settingsLogoDraftName, setSettingsLogoDraftName] = useState('')
   const [settingsLogoFeedback, setSettingsLogoFeedback] = useState('')
   const [settingsLogoLoading, setSettingsLogoLoading] = useState(false)
+  const [settingsSmtpForm, setSettingsSmtpForm] = useState(() => getEmptySettingsSmtpForm())
+  const [settingsSmtpFeedback, setSettingsSmtpFeedback] = useState('')
+  const [settingsSmtpFeedbackType, setSettingsSmtpFeedbackType] = useState('')
+  const [settingsSmtpLoading, setSettingsSmtpLoading] = useState(false)
   const [users, setUsers] = useState(initialUsers)
   const [userForm, setUserForm] = useState(emptyUserForm)
   const [editingUserId, setEditingUserId] = useState(null)
@@ -2119,6 +2291,8 @@ function App() {
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
   const [taskActionError, setTaskActionError] = useState('')
+  const [taskTransferTarget, setTaskTransferTarget] = useState('')
+  const [docsReceivedDownloads, setDocsReceivedDownloads] = useState([])
   const [taskEmailSending, setTaskEmailSending] = useState(false)
   const [reportEmailCard, setReportEmailCard] = useState(null)
   const [solicitationForm, setSolicitationForm] = useState(() => getEmptySolicitationForm())
@@ -2198,12 +2372,32 @@ function App() {
   const canManageClients = isTenantAdmin || isSuperAdmin
   const canManageClientTaskGeneration = isTenantAdmin || isSuperAdmin
   const canManageTenantUsers = isTenantAdmin
+  const canManageTenantSmtp = isTenantAdmin
   const canManageTenantBranding = isTenantAdmin
   const loggedUserDisplayName = String(authSession?.user?.name || authSession?.user?.email || '')
     .trim()
   const currentTenantUserProfile = users.find(
     (user) => String(user.email || '').trim().toLowerCase() === currentAuthEmailLower,
   )
+  const currentUserVisualizationMode = normalizeUserVisualizationMode(
+    currentTenantUserProfile?.visualizacao,
+    getDefaultUserVisualizationModeByRole(authSession?.user?.role),
+  )
+  const currentUserIdentitySet = new Set(
+    [
+      currentTenantUserProfile?.nome,
+      authSession?.user?.name,
+      authSession?.user?.email,
+      currentAuthEmailLower,
+    ]
+      .map((value) => normalizeFreeText(value))
+      .filter(Boolean),
+  )
+  const isRecordAssignedToCurrentUser = (record) => {
+    const recordResponsibleKey = normalizeFreeText(record?.responsavel || '')
+    if (!recordResponsibleKey) return false
+    return currentUserIdentitySet.has(recordResponsibleKey)
+  }
   const currentTenantDepartmentKey = normalizeFreeText(
     getDepartmentLabel(currentTenantUserProfile?.departamento || ''),
   )
@@ -2240,6 +2434,7 @@ function App() {
     : tasksRows
   const solicitationRecordsForCurrentUser = isTenantRestrictedUser
     ? solicitationRecords.filter((record) => {
+        if (isRecordAssignedToCurrentUser(record)) return true
         const allowedByDepartment = isAllowedByAuthDepartmentScope(record.departamento)
         if (!allowedByDepartment) return false
         if (isAllowedByAuthClientScope(record.clientId, record.clientName)) return true
@@ -2450,11 +2645,15 @@ function App() {
   useEffect(() => {
     if (!authSession?.token || isSuperAdmin) {
       setTenantStateHydrated(false)
+      setDocsReceivedDownloads([])
       setCompanyLogoDataUrl('')
       setCompanyLogoName('')
       setSettingsLogoDraftDataUrl('')
       setSettingsLogoDraftName('')
       setSettingsLogoFeedback('')
+      setSettingsSmtpForm(getEmptySettingsSmtpForm())
+      setSettingsSmtpFeedback('')
+      setSettingsSmtpFeedbackType('')
       setOnboardingAddOpen(false)
       setOnboardingClientFilter('Todos')
       setOnboardingNewClientForm(getEmptyOnboardingClientForm())
@@ -3044,6 +3243,9 @@ function App() {
       setTasksRows(Array.isArray(state.tasksRows) ? state.tasksRows : [])
       setTaskBlueprints(Array.isArray(state.taskBlueprints) ? state.taskBlueprints : [])
       setSolicitationRecords(Array.isArray(state.solicitationRecords) ? state.solicitationRecords : [])
+      setDocsReceivedDownloads(
+        Array.isArray(state.docsReceivedDownloads) ? state.docsReceivedDownloads : [],
+      )
       setOnboardingRecords(
         Array.isArray(state.onboardingRecords)
           ? state.onboardingRecords.map((record) => normalizeOnboardingRecord(record))
@@ -3055,6 +3257,22 @@ function App() {
       setSettingsLogoDraftDataUrl('')
       setSettingsLogoDraftName('')
       setSettingsLogoFeedback('')
+      try {
+        const smtpResponse = await apiRequest('/tenant/smtp', { token: authSession.token })
+        setSettingsSmtpForm(normalizeSettingsSmtpForm(smtpResponse?.smtp))
+      } catch (smtpError) {
+        if (smtpError?.status === 404) {
+          setSettingsSmtpFeedback(
+            'A API em uso ainda nao possui a rota SMTP (/api/tenant/smtp). Atualize/reinicie o backend.',
+          )
+          setSettingsSmtpFeedbackType('error')
+        } else if (smtpError?.status !== 403) {
+          console.error('Falha ao carregar SMTP do tenant:', smtpError)
+        }
+        setSettingsSmtpForm(getEmptySettingsSmtpForm())
+      }
+      setSettingsSmtpFeedback('')
+      setSettingsSmtpFeedbackType('')
       setOnboardingAddOpen(false)
       setOnboardingClientFilter('Todos')
       setOnboardingNewClientForm(getEmptyOnboardingClientForm())
@@ -3083,6 +3301,9 @@ function App() {
       setSettingsLogoDraftDataUrl('')
       setSettingsLogoDraftName('')
       setSettingsLogoFeedback('')
+      setSettingsSmtpForm(getEmptySettingsSmtpForm())
+      setSettingsSmtpFeedback('')
+      setSettingsSmtpFeedbackType('')
       setOnboardingAddOpen(false)
       setOnboardingClientFilter('Todos')
       setOnboardingNewClientForm(getEmptyOnboardingClientForm())
@@ -3243,6 +3464,231 @@ function App() {
       setSettingsLogoLoading(false)
     }
   }
+
+  const handleSettingsSmtpChange = (field, value) => {
+    setSettingsSmtpForm((prev) => {
+      if (field === 'port') {
+        return {
+          ...prev,
+          port: String(value || '')
+            .replace(/[^\d]/g, '')
+            .slice(0, 5),
+        }
+      }
+      return { ...prev, [field]: value }
+    })
+    if (settingsSmtpFeedback) {
+      setSettingsSmtpFeedback('')
+      setSettingsSmtpFeedbackType('')
+    }
+  }
+
+  const getSettingsSmtpPayload = () => ({
+    host: String(settingsSmtpForm.host || '').trim(),
+    port: Number(settingsSmtpForm.port || 0) || 587,
+    secure: Boolean(settingsSmtpForm.secure),
+    authType: String(settingsSmtpForm.authType || 'oauth2').toLowerCase() === 'password'
+      ? 'password'
+      : 'oauth2',
+    user: String(settingsSmtpForm.user || '').trim(),
+    pass: String(settingsSmtpForm.pass || '').trim(),
+    clientId: String(settingsSmtpForm.clientId || '').trim(),
+    clientSecret: String(settingsSmtpForm.clientSecret || '').trim(),
+    refreshToken: String(settingsSmtpForm.refreshToken || '').trim(),
+    accessToken: String(settingsSmtpForm.accessToken || '').trim(),
+    from: String(settingsSmtpForm.from || '').trim(),
+  })
+
+  const validateSettingsSmtpPayload = ({ includeTestTo = false, requireOAuthTokens = true } = {}) => {
+    const payload = getSettingsSmtpPayload()
+
+    if (!payload.host) return 'Informe o host SMTP.'
+    if (!payload.from) return 'Informe o e-mail remetente.'
+    if (!payload.user) return 'Informe o usuário SMTP (e-mail do Gmail).'
+    if (payload.authType === 'oauth2') {
+      if (requireOAuthTokens && !payload.refreshToken) {
+        return 'Clique em Conectar Gmail para gerar o Refresh Token.'
+      }
+    } else if (!payload.pass) {
+      return 'No modo senha, preencha a senha SMTP.'
+    }
+
+    if (includeTestTo) {
+      const testTo = String(settingsSmtpForm.testTo || '').trim()
+      if (testTo && !isValidEmailAddress(testTo)) {
+        return 'Informe um e-mail de teste válido.'
+      }
+    }
+
+    return ''
+  }
+
+  const handleSettingsSmtpSave = async () => {
+    if (!canManageTenantSmtp) {
+      setSettingsSmtpFeedback('Somente o administrador pode alterar SMTP.')
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    const validationMessage = validateSettingsSmtpPayload({ requireOAuthTokens: false })
+    if (validationMessage) {
+      setSettingsSmtpFeedback(validationMessage)
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    try {
+      setSettingsSmtpLoading(true)
+      setSettingsSmtpFeedback('Salvando SMTP...')
+      setSettingsSmtpFeedbackType('')
+      const response = await apiRequest('/tenant/smtp', {
+        method: 'PUT',
+        token: authSession.token,
+        body: { smtp: getSettingsSmtpPayload() },
+      })
+      setSettingsSmtpForm((prev) => ({
+        ...normalizeSettingsSmtpForm(response?.smtp),
+        testTo: prev.testTo,
+      }))
+      setSettingsSmtpFeedback(response?.message || 'SMTP configurado com sucesso.')
+      setSettingsSmtpFeedbackType('success')
+    } catch (error) {
+      if (error?.status === 404) {
+        setSettingsSmtpFeedback(
+          'A API em uso nao possui as rotas SMTP. Reinicie o backend com a versao atual.',
+        )
+      } else {
+        setSettingsSmtpFeedback(error?.message || 'Não foi possível salvar SMTP.')
+      }
+      setSettingsSmtpFeedbackType('error')
+    } finally {
+      setSettingsSmtpLoading(false)
+    }
+  }
+
+  const handleSettingsSmtpTest = async () => {
+    if (!canManageTenantSmtp) {
+      setSettingsSmtpFeedback('Somente o administrador pode testar SMTP.')
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    const validationMessage = validateSettingsSmtpPayload({ includeTestTo: true })
+    if (validationMessage) {
+      setSettingsSmtpFeedback(validationMessage)
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    const testTo = String(settingsSmtpForm.testTo || '').trim()
+
+    try {
+      setSettingsSmtpLoading(true)
+      setSettingsSmtpFeedback('Testando SMTP...')
+      setSettingsSmtpFeedbackType('')
+      const response = await apiRequest('/tenant/smtp/test', {
+        method: 'POST',
+        token: authSession.token,
+        body: {
+          smtp: getSettingsSmtpPayload(),
+          testTo,
+        },
+      })
+      setSettingsSmtpFeedback(response?.message || 'Conexão SMTP validada com sucesso.')
+      setSettingsSmtpFeedbackType('success')
+    } catch (error) {
+      if (error?.status === 404) {
+        setSettingsSmtpFeedback(
+          'A API em uso nao possui as rotas SMTP. Reinicie o backend com a versao atual.',
+        )
+      } else {
+        setSettingsSmtpFeedback(error?.message || 'Falha ao testar SMTP.')
+      }
+      setSettingsSmtpFeedbackType('error')
+    } finally {
+      setSettingsSmtpLoading(false)
+    }
+  }
+
+  const handleSettingsSmtpConnectGoogle = async () => {
+    if (!canManageTenantSmtp) {
+      setSettingsSmtpFeedback('Somente o administrador pode conectar SMTP.')
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    const payload = getSettingsSmtpPayload()
+    if (payload.authType !== 'oauth2') {
+      setSettingsSmtpFeedback('Altere o tipo de autenticacao para Gmail OAuth2 para conectar.')
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    const redirectUri = getGoogleOAuthRedirectUri()
+    if (!redirectUri) {
+      setSettingsSmtpFeedback('Nao foi possivel gerar a URI de redirecionamento OAuth.')
+      setSettingsSmtpFeedbackType('error')
+      return
+    }
+
+    try {
+      setSettingsSmtpLoading(true)
+      setSettingsSmtpFeedback('Abrindo autenticacao externa do Gmail...')
+      setSettingsSmtpFeedbackType('')
+
+      const authUrlResponse = await apiRequest('/tenant/smtp/google/auth-url', {
+        method: 'POST',
+        token: authSession.token,
+        body: {
+          smtp: payload,
+          redirectUri,
+        },
+      })
+
+      const authUrl = String(authUrlResponse?.authUrl || '').trim()
+      if (!authUrl) {
+        throw new Error('Servidor nao retornou URL de autenticacao Google.')
+      }
+
+      const oauthResult = await openGoogleOAuthPopup(authUrl)
+
+      const exchangeResponse = await apiRequest('/tenant/smtp/google/exchange', {
+        method: 'POST',
+        token: authSession.token,
+        body: {
+          smtp: payload,
+          redirectUri,
+          code: oauthResult.code,
+          state: oauthResult.state,
+        },
+      })
+
+      setSettingsSmtpForm((prev) => ({
+        ...normalizeSettingsSmtpForm(exchangeResponse?.smtp),
+        testTo: prev.testTo,
+      }))
+      const connectedEmail = String(exchangeResponse?.connectedEmail || '').trim()
+      setSettingsSmtpFeedback(
+        connectedEmail
+          ? `Gmail autenticado com sucesso: ${connectedEmail}`
+          : exchangeResponse?.message || 'Gmail autenticado com sucesso.',
+      )
+      setSettingsSmtpFeedbackType('success')
+    } catch (error) {
+      if (error?.status === 404) {
+        setSettingsSmtpFeedback(
+          'A API em uso nao possui OAuth SMTP do Gmail. Reinicie o backend com a versao atual.',
+        )
+      } else {
+        setSettingsSmtpFeedback(error?.message || 'Falha na autenticacao externa do Gmail.')
+      }
+      setSettingsSmtpFeedbackType('error')
+    } finally {
+      setSettingsSmtpLoading(false)
+    }
+  }
+
+  const googleOAuthRedirectUri = getGoogleOAuthRedirectUri()
 
   const openCreateModal = () => {
     if (isTenantRestrictedUser) {
@@ -4617,6 +5063,18 @@ function App() {
     setAppliedTaskBlueprintFilters(initialTaskBlueprintFilters)
   }
 
+  const handleReportsRefresh = () => {
+    if (screen === 'tasks') {
+      applyTaskBlueprintFilters()
+    } else {
+      applyTaskFilters()
+    }
+
+    if (!isSuperAdmin && authSession?.token) {
+      loadTenantState()
+    }
+  }
+
   const openControlPanelDrilldown = (groupName, departmentName, bucket) => {
     const taskType = groupName === 'Solicitações' ? 'Solicitação' : 'Tarefa'
     const nextFilters = {
@@ -4683,6 +5141,16 @@ function App() {
     const clientDocument = linkedClient
       ? `${linkedClient.docType || ''} ${linkedClient.inscricao || ''}`.trim()
       : String(record.onboardingClientCnpj || record.clientDocument || '').trim()
+    const explicitResponsible = String(record.responsavel || '').trim()
+    const resolvedResponsible =
+      explicitResponsible && !isPlaceholderResponsible(explicitResponsible)
+        ? explicitResponsible
+        : getResponsibleByClientAndDepartment({
+            clientId: record.clientId,
+            clientName: record.clientName || linkedClient?.nome || '',
+            department: normalizeSolicitationDepartment(record.departamento),
+            fallback: explicitResponsible,
+          })
 
     return {
       id: record.id,
@@ -4702,12 +5170,7 @@ function App() {
       ],
       deliveryDate: record.deliveryDate || '',
       conclusionDate: record.conclusionDate || '',
-      owner: getResponsibleByClientAndDepartment({
-        clientId: record.clientId,
-        clientName: record.clientName || linkedClient?.nome || '',
-        department: normalizeSolicitationDepartment(record.departamento),
-        fallback: record.responsavel || '',
-      }),
+      owner: resolvedResponsible,
       authorizer: '',
       guests: record.convidados || 'Não definido',
       tag: record.tag || 'success',
@@ -4722,6 +5185,8 @@ function App() {
       justification: record.justification || '',
       emailSentAt: record.emailSentAt || '',
       emailSentTo: record.emailSentTo || '',
+      docsSentAt: record.docsSentAt || '',
+      docsSentTo: record.docsSentTo || '',
     }
   }
 
@@ -4749,6 +5214,8 @@ function App() {
             taskType: 'Tarefa',
             emailSentAt: task.emailSentAt || '',
             emailSentTo: task.emailSentTo || '',
+            docsSentAt: task.docsSentAt || '',
+            docsSentTo: task.docsSentTo || '',
             clientEmail: task.clientEmail || '',
           }
         })()
@@ -4784,7 +5251,9 @@ function App() {
   }
 
   const selectedTaskRecipientEmail = selectedTask ? resolveTaskRecipientEmail(selectedTask) : ''
-  const isTaskEmailSent = Boolean(selectedTask?.emailSentAt)
+  const selectedTaskDocsSentAt =
+    String(selectedTask?.docsSentAt || selectedTask?.emailSentAt || '').trim()
+  const isTaskDocumentSent = Boolean(selectedTaskDocsSentAt)
   const getReportClientDisplayName = (row) => {
     if (!row) return ''
 
@@ -4834,12 +5303,98 @@ function App() {
 
     return getDisplayClientName(row.client, row.cnpj)
   }
-  const getReportEmailMeta = (row) => ({
-    sentTo: String(row?.emailSentTo || row?.clientEmail || '').trim(),
-    sentAt: String(row?.emailSentAt || row?.emailDeliveredAt || '').trim(),
-    viewedAt: String(row?.emailViewedAt || row?.emailOpenedAt || row?.emailReadAt || '').trim(),
-    viewedBy: String(row?.emailViewedBy || row?.emailOpenedBy || row?.emailReadBy || '').trim(),
-  })
+  const docsDownloadMetaByKey = useMemo(() => {
+    const map = new Map()
+    const source = Array.isArray(docsReceivedDownloads) ? docsReceivedDownloads : []
+    source.forEach((entry) => {
+      const key = String(entry?.key || '').trim()
+      const downloadedAt = String(entry?.downloadedAt || '').trim()
+      if (!key || !downloadedAt) return
+
+      const previous = map.get(key)
+      const previousTime = previous ? Date.parse(String(previous.downloadedAt || '').trim()) : 0
+      const currentTime = Date.parse(downloadedAt)
+      if (Number.isNaN(currentTime) && previous) return
+      if (previous && !Number.isNaN(previousTime) && currentTime <= previousTime) return
+
+      map.set(key, {
+        downloadedAt,
+        userEmail: String(entry?.userEmail || '').trim(),
+        userId: String(entry?.userId || '').trim(),
+      })
+    })
+    return map
+  }, [docsReceivedDownloads])
+
+  const getReportDocumentViewMeta = (row) => {
+    const source = String(row?.reportSource || 'task').trim()
+    const recordId = String(row?.id || '').trim()
+    const attachments = Array.isArray(row?.attachments) ? row.attachments : []
+    if (!source || !recordId || !attachments.length) {
+      return { viewedAt: '', viewedBy: '' }
+    }
+
+    let latestView = null
+    attachments.forEach((attachment, index) => {
+      const docsSharedAt = String(attachment?.docsSharedAt || '').trim()
+      if (!docsSharedAt) return
+
+      const attachmentName = String(attachment?.name || '').trim()
+      if (!attachmentName) return
+
+      const key = buildPortalDocumentKey({
+        source,
+        recordId,
+        attachmentId: String(attachment?.id || '').trim(),
+        attachmentName,
+        index,
+      })
+      const viewMeta = docsDownloadMetaByKey.get(key)
+      if (!viewMeta) return
+
+      const viewTime = Date.parse(String(viewMeta.downloadedAt || '').trim())
+      if (!latestView) {
+        latestView = viewMeta
+        return
+      }
+
+      const latestTime = Date.parse(String(latestView.downloadedAt || '').trim())
+      if (Number.isNaN(latestTime) || (!Number.isNaN(viewTime) && viewTime > latestTime)) {
+        latestView = viewMeta
+      }
+    })
+
+    return latestView
+      ? {
+          viewedAt: String(latestView.downloadedAt || '').trim(),
+          viewedBy:
+            String(latestView.userEmail || '').trim() ||
+            String(latestView.userId || '').trim() ||
+            'Cliente',
+        }
+      : { viewedAt: '', viewedBy: '' }
+  }
+  const getReportEmailMeta = (row) => {
+    const documentViewMeta = getReportDocumentViewMeta(row)
+    return {
+      sentTo: String(row?.docsSentTo || row?.emailSentTo || row?.clientEmail || '').trim(),
+      sentAt: String(row?.docsSentAt || row?.emailSentAt || row?.emailDeliveredAt || '').trim(),
+      viewedAt: String(
+        row?.emailViewedAt ||
+          row?.emailOpenedAt ||
+          row?.emailReadAt ||
+          documentViewMeta.viewedAt ||
+          '',
+      ).trim(),
+      viewedBy: String(
+        row?.emailViewedBy ||
+          row?.emailOpenedBy ||
+          row?.emailReadBy ||
+          documentViewMeta.viewedBy ||
+          '',
+      ).trim(),
+    }
+  }
   const openReportEmailCard = (event, row, type, enabled = true) => {
     event.stopPropagation()
     if (!enabled) return
@@ -4979,9 +5534,33 @@ function App() {
   }
 
   const openTaskDetail = (taskId, source = 'task') => {
+    if (source === 'solicitation') {
+      const normalizedTaskId = String(taskId || '').trim()
+      const actingUser = loggedUserDisplayName || 'Usuário'
+      setSolicitationRecords((prev) =>
+        prev.map((item) => {
+          if (String(item?.id || '').trim() !== normalizedTaskId) return item
+
+          const currentStatus = String(item?.status || item?.etapa || '').trim()
+          const normalizedStatus = normalizeFreeText(currentStatus)
+          const isOpenStatus = normalizedStatus === 'aberta' || normalizedStatus === 'aberto'
+          if (!isOpenStatus) return item
+
+          return {
+            ...item,
+            status: 'Em andamento',
+            etapa: 'Em andamento',
+            tag: 'success',
+            responsavel: actingUser,
+          }
+        }),
+      )
+    }
+
     setSelectedTaskRef({ id: taskId, source })
     setTaskEditMode(false)
     setTaskActionError('')
+    setTaskTransferTarget('')
     setScreen('task-detail')
   }
 
@@ -5029,15 +5608,45 @@ function App() {
   }
 
   const downloadAttachment = (attachment) => {
-    if (!attachment?.file) return
-    const url = URL.createObjectURL(attachment.file)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = attachment.name || 'arquivo'
-    document.body.appendChild(anchor)
-    anchor.click()
-    document.body.removeChild(anchor)
-    URL.revokeObjectURL(url)
+    if (!attachment) return
+
+    const fileName = String(attachment.name || 'arquivo')
+    const fileType = String(attachment.type || 'application/octet-stream')
+
+    if (attachment.file instanceof File) {
+      const url = URL.createObjectURL(attachment.file)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = fileName
+      document.body.appendChild(anchor)
+      anchor.click()
+      document.body.removeChild(anchor)
+      URL.revokeObjectURL(url)
+      setTaskActionError('')
+      return
+    }
+
+    const rawBase64 = String(attachment.contentBase64 || '').trim()
+    const normalizedBase64 = rawBase64.includes('base64,')
+      ? rawBase64.split('base64,')[1] || ''
+      : rawBase64
+
+    if (!normalizedBase64) {
+      setTaskActionError('O anexo selecionado não está disponível para download.')
+      return
+    }
+
+    try {
+      const binary = atob(normalizedBase64)
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index)
+      }
+      downloadFileFromBlob(bytes, fileName, fileType)
+      setTaskActionError('')
+    } catch {
+      setTaskActionError('Não foi possível baixar o anexo selecionado.')
+    }
   }
 
   const handleTaskAttachmentCancel = (attachmentId) => {
@@ -5070,25 +5679,15 @@ function App() {
     setTasksRows((prev) => prev.map((item) => (item.id === selectedTaskRef.id ? updater(item) : item)))
   }
 
-  const handleTaskSendEmail = async () => {
+  const handleTaskSendDocuments = async () => {
     if (!selectedTask) return
-    if (!authSession?.token) {
-      setTaskActionError('Faça login no backend para enviar e-mails.')
-      return
-    }
-
-    const recipientEmail = selectedTaskRecipientEmail
-    if (!recipientEmail) {
-      setTaskActionError('Cliente sem e-mail cadastrado. Atualize o cadastro do cliente e tente novamente.')
-      return
-    }
 
     const newestAttachment = [...(selectedTask.attachments || [])]
       .reverse()
       .find((attachment) => attachment?.contentBase64 || attachment?.file)
 
     if (!newestAttachment) {
-      setTaskActionError('Anexe um arquivo para enviar por e-mail.')
+      setTaskActionError('Anexe um arquivo para enviar ao Hive Docs.')
       return
     }
 
@@ -5103,41 +5702,33 @@ function App() {
         }
 
         contentBase64 = await fileToBase64(newestAttachment.file)
-        updateSelectedTaskData((item) => ({
-          ...item,
-          attachments: (item.attachments || []).map((attachment) =>
-            attachment.id === newestAttachment.id ? { ...attachment, contentBase64 } : attachment,
-          ),
-        }))
       }
 
-      await apiRequest('/tenant/send-task-email', {
-        method: 'POST',
-        token: authSession.token,
-        body: {
-          to: recipientEmail,
-          subject: `Hive Tarefas - ${selectedTask.subject}`,
-          message: `Envio automático da ${selectedTask.taskType || 'Tarefa'} #${selectedTask.id}.`,
-          taskId: selectedTask.id,
-          taskSource: selectedTask.reportSource || 'task',
-          attachment: {
-            name: newestAttachment.name || 'anexo',
-            type: newestAttachment.type || 'application/octet-stream',
-            contentBase64,
-          },
-        },
-      })
-
       const sentAt = getNowBrTimestamp()
+      const sentAtIso = new Date().toISOString()
+      const sentBy =
+        String(authSession?.user?.name || authSession?.user?.email || '').trim() || 'Usuário'
       updateSelectedTaskData((item) => ({
         ...item,
         emailSentAt: sentAt,
-        emailSentTo: recipientEmail,
+        emailSentTo: 'Hive Docs',
+        docsSentAt: sentAt,
+        docsSentTo: 'Hive Docs',
+        attachments: (item.attachments || []).map((attachment) =>
+          attachment.id === newestAttachment.id
+            ? {
+                ...attachment,
+                contentBase64,
+                docsSharedAt: sentAtIso,
+                docsSharedBy: sentBy,
+              }
+            : attachment,
+        ),
       }))
-      logTaskAction(selectedTask, 'Enviar por E-mail')
+      logTaskAction(selectedTask, 'Enviar Documentos')
       setTaskActionError('')
     } catch (error) {
-      setTaskActionError(error.message || 'Não foi possível enviar o e-mail.')
+      setTaskActionError(error.message || 'Não foi possível enviar o documento ao Hive Docs.')
     } finally {
       setTaskEmailSending(false)
     }
@@ -7576,6 +8167,81 @@ function App() {
   const canOpenClientRegistrationFromTask = Boolean(
     isSelectedSolicitation && selectedTask && selectedTask.source === 'onboarding',
   )
+  const transferResponsibleOptions = useMemo(() => {
+    if (currentUserVisualizationMode === 'Clientes') return []
+
+    const availableModesForCurrentUser =
+      currentUserVisualizationMode === 'ADM' ? new Set(['ADM', 'Operador']) : new Set(['Operador'])
+
+    const uniqueByName = new Map()
+    users.forEach((user) => {
+      const name = String(user?.nome || '').trim()
+      if (!name || user?.isActive === false) return
+
+      const mode = getEffectiveUserVisualizationMode(user)
+      if (mode === 'Clientes') return
+      if (!availableModesForCurrentUser.has(mode)) return
+
+      const key = normalizeFreeText(name)
+      if (!key || uniqueByName.has(key)) return
+      uniqueByName.set(key, { name, mode })
+    })
+
+    return Array.from(uniqueByName.values()).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+  }, [users, currentUserVisualizationMode])
+
+  const handleTaskTransfer = () => {
+    if (!selectedTaskRef || selectedTaskRef.source !== 'solicitation') return
+    if (!taskTransferTarget) {
+      setTaskActionError('Selecione um usuário para transferir a solicitação.')
+      return
+    }
+
+    const normalizedTarget = normalizeFreeText(taskTransferTarget)
+    const allowedTargets = new Set(
+      transferResponsibleOptions.map((option) => normalizeFreeText(option.name)).filter(Boolean),
+    )
+    if (!allowedTargets.has(normalizedTarget)) {
+      setTaskActionError('Você não tem permissão para transferir para este usuário.')
+      return
+    }
+
+    const currentRecord = solicitationRecords.find((item) => item.id === selectedTaskRef.id)
+    if (!currentRecord) return
+
+    const currentResponsible = String(currentRecord?.responsavel || '').trim()
+    if (normalizeFreeText(currentResponsible) === normalizedTarget) {
+      setTaskActionError('A solicitação já está com esse responsável.')
+      return
+    }
+
+    const now = getNowBrTimestamp()
+    setSolicitationRecords((prev) =>
+      prev.map((item) =>
+        item.id === selectedTaskRef.id
+          ? {
+              ...item,
+              responsavel: taskTransferTarget,
+              status: item.status || 'Em andamento',
+              etapa: item.etapa || 'Em andamento',
+              allowDepartmentVisibility: true,
+              updatedAt: now,
+            }
+          : item,
+      ),
+    )
+
+    logTaskAction(
+      {
+        id: currentRecord.id,
+        reportSource: 'solicitation',
+        subject: currentRecord.assunto || 'Solicitação',
+      },
+      `Transferir para ${taskTransferTarget}`,
+    )
+    setTaskTransferTarget('')
+    setTaskActionError(`Solicitação transferida para ${taskTransferTarget}.`)
+  }
   const isObligationsScreen = screen === 'reports'
   const isSolicitationsScreen = screen === 'solicitations'
   const isReportsLikeScreen = isObligationsScreen || isSolicitationsScreen
@@ -9033,7 +9699,7 @@ function App() {
                     <button
                       type="button"
                       className="chip tiny"
-                      onClick={screen === 'tasks' ? applyTaskBlueprintFilters : applyTaskFilters}
+                      onClick={handleReportsRefresh}
                     >
                       Atualizar
                     </button>
@@ -9665,15 +10331,58 @@ function App() {
                             onChange={(event) => updateTaskField('cnpj', event.target.value)}
                           />
                         </label>
-                        <label className="task-detail-field">
-                          <span>Responsável</span>
-                          <input
-                            type="text"
-                            value={selectedTask.owner}
-                            readOnly={!taskEditMode}
-                            onChange={(event) => updateTaskField('owner', event.target.value)}
-                          />
-                        </label>
+                        {isSelectedSolicitation && currentUserVisualizationMode !== 'Clientes' ? (
+                          <div className="task-detail-inline-fields">
+                            <label className="task-detail-field">
+                              <span>Responsável</span>
+                              <input
+                                type="text"
+                                value={selectedTask.owner}
+                                readOnly
+                                onChange={(event) => updateTaskField('owner', event.target.value)}
+                              />
+                            </label>
+                            <label className="task-detail-field">
+                              <span>Transferência</span>
+                              <div className="task-transfer-inline">
+                                <select
+                                  value={taskTransferTarget}
+                                  onChange={(event) => setTaskTransferTarget(event.target.value)}
+                                  disabled={!transferResponsibleOptions.length}
+                                >
+                                  <option value="">
+                                    {transferResponsibleOptions.length
+                                      ? 'Selecione...'
+                                      : 'Nenhum usuário disponível'}
+                                  </option>
+                                  {transferResponsibleOptions.map((option) => (
+                                    <option key={option.name} value={option.name}>
+                                      {option.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  className="chip tiny"
+                                  onClick={handleTaskTransfer}
+                                  disabled={!taskTransferTarget}
+                                >
+                                  Transferir
+                                </button>
+                              </div>
+                            </label>
+                          </div>
+                        ) : (
+                          <label className="task-detail-field">
+                            <span>Responsável</span>
+                            <input
+                              type="text"
+                              value={selectedTask.owner}
+                              readOnly={!taskEditMode}
+                              onChange={(event) => updateTaskField('owner', event.target.value)}
+                            />
+                          </label>
+                        )}
                         <label className="task-detail-field">
                           <span>Ação</span>
                           <input
@@ -9727,7 +10436,7 @@ function App() {
                             ? 'Anexar arquivo da solicitação'
                             : 'Anexar arquivo da tarefa'}
                         </span>
-                        <input type="file" onChange={handleTaskAttachmentAdd} />
+                        <input type="file" multiple onChange={handleTaskAttachmentAdd} />
                       </label>
 
                       <div className="task-attachments">
@@ -9784,20 +10493,16 @@ function App() {
                         ) : null}
                         <button
                           type="button"
-                          className={`chip tiny task-email-button ${isTaskEmailSent ? 'sent' : ''}`}
-                          onClick={handleTaskSendEmail}
+                          className={`chip tiny task-email-button ${isTaskDocumentSent ? 'sent' : ''}`}
+                          onClick={handleTaskSendDocuments}
                           disabled={taskEmailSending}
-                          title={
-                            selectedTaskRecipientEmail
-                              ? `Enviar para ${selectedTaskRecipientEmail}`
-                              : 'Cliente sem e-mail cadastrado'
-                          }
+                          title="Enviar o anexo para Documentos Recebidos no Hive Docs"
                         >
                           {taskEmailSending
                             ? 'Enviando...'
-                            : isTaskEmailSent
-                              ? 'E-mail enviado'
-                              : 'Enviar por E-mail'}
+                            : isTaskDocumentSent
+                              ? 'Documento enviado'
+                              : 'Enviar Documentos'}
                         </button>
                         {canOpenClientRegistrationFromTask ? (
                           <button
@@ -9809,10 +10514,10 @@ function App() {
                           </button>
                         ) : null}
                       </div>
-                      {selectedTask.emailSentAt ? (
+                      {selectedTaskDocsSentAt ? (
                         <p className="task-email-meta">
-                          Enviado para <strong>{selectedTask.emailSentTo || selectedTaskRecipientEmail}</strong> em{' '}
-                          {selectedTask.emailSentAt}
+                          Enviado para <strong>{selectedTask.docsSentTo || selectedTask.emailSentTo || 'Hive Docs'}</strong>{' '}
+                          em {selectedTaskDocsSentAt}
                         </p>
                       ) : null}
 
@@ -10243,7 +10948,7 @@ function App() {
                                   disabled={blockedByPreviousStep || step.done}
                                 >
                                   <span className={`onboarding-step-check ${step.done ? 'done' : ''}`}>
-                                    {step.done ? '✓' : ''}
+                                    {step.done ? '?' : ''}
                                   </span>
                                   <span className="onboarding-step-main">
                                     <strong>{`${index + 1}. ${step.title}`}</strong>
@@ -10389,6 +11094,156 @@ function App() {
                         <p className="settings-feedback">
                           Somente o administrador do tenant pode alterar a logo.
                         </p>
+                      ) : null}
+                    </div>
+
+                    <div className="settings-smtp-panel">
+                      <div className="settings-logo-head">
+                        <h6>SMTP (Gmail OAuth2)</h6>
+                        <p>
+                          Configure o envio de e-mails por Gmail OAuth2 com autenticacao externa.
+                          Nao e necessario inserir tokens manualmente.
+                        </p>
+                      </div>
+                      <div className="settings-form-grid settings-smtp-grid">
+                        <label className="settings-field">
+                          <span>Autenticação</span>
+                          <select
+                            value={settingsSmtpForm.authType}
+                            onChange={(event) =>
+                              handleSettingsSmtpChange('authType', event.target.value)
+                            }
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          >
+                            {smtpAuthTypeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>Host SMTP</span>
+                          <input
+                            type="text"
+                            value={settingsSmtpForm.host}
+                            onChange={(event) => handleSettingsSmtpChange('host', event.target.value)}
+                            placeholder="smtp.gmail.com"
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>Porta</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={settingsSmtpForm.port}
+                            onChange={(event) => handleSettingsSmtpChange('port', event.target.value)}
+                            placeholder="587"
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>Conexão segura</span>
+                          <select
+                            value={settingsSmtpForm.secure ? 'true' : 'false'}
+                            onChange={(event) =>
+                              handleSettingsSmtpChange('secure', event.target.value === 'true')
+                            }
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          >
+                            <option value="false">Não (STARTTLS/587)</option>
+                            <option value="true">Sim (SSL/465)</option>
+                          </select>
+                        </label>
+                        <label className="settings-field">
+                          <span>Usuário SMTP (Gmail)</span>
+                          <input
+                            type="email"
+                            value={settingsSmtpForm.user}
+                            onChange={(event) => handleSettingsSmtpChange('user', event.target.value)}
+                            placeholder="empresa@gmail.com"
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>Remetente (From)</span>
+                          <input
+                            type="email"
+                            value={settingsSmtpForm.from}
+                            onChange={(event) => handleSettingsSmtpChange('from', event.target.value)}
+                            placeholder="empresa@gmail.com"
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          />
+                        </label>
+                        {settingsSmtpForm.authType === 'password' ? (
+                          <label className="settings-field settings-smtp-wide">
+                            <span>Senha SMTP</span>
+                            <input
+                              type="password"
+                              value={settingsSmtpForm.pass}
+                              onChange={(event) => handleSettingsSmtpChange('pass', event.target.value)}
+                              placeholder="Senha de app do Gmail"
+                              disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                            />
+                          </label>
+                        ) : (
+                          <p className="settings-feedback settings-smtp-full">
+                            Clique em <strong>Conectar Gmail</strong> para autorizar a conta no Google.
+                            O token sera salvo automaticamente para este tenant.
+                          </p>
+                        )}
+                        <label className="settings-field settings-smtp-wide">
+                          <span>E-mail para teste (opcional)</span>
+                          <input
+                            type="email"
+                            value={settingsSmtpForm.testTo}
+                            onChange={(event) => handleSettingsSmtpChange('testTo', event.target.value)}
+                            placeholder="destinatario@empresa.com"
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          />
+                        </label>
+                      </div>
+                      <div className="settings-actions-row">
+                        {settingsSmtpForm.authType === 'oauth2' ? (
+                          <button
+                            type="button"
+                            className="chip small"
+                            onClick={handleSettingsSmtpConnectGoogle}
+                            disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                          >
+                            Conectar Gmail
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="chip small"
+                          onClick={handleSettingsSmtpTest}
+                          disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                        >
+                          Testar conexão
+                        </button>
+                        <button
+                          type="button"
+                          className="primary small"
+                          onClick={handleSettingsSmtpSave}
+                          disabled={!canManageTenantSmtp || settingsSmtpLoading}
+                        >
+                          Salvar SMTP
+                        </button>
+                      </div>
+                      {settingsSmtpForm.authType === 'oauth2' ? (
+                        <p className="settings-feedback">
+                          Redirect URI Google OAuth: {googleOAuthRedirectUri || '-'}
+                        </p>
+                      ) : null}
+                      {settingsSmtpFeedback ? (
+                        <p className={`settings-feedback ${settingsSmtpFeedbackType ? `is-${settingsSmtpFeedbackType}` : ''}`}>
+                          {settingsSmtpFeedback}
+                        </p>
+                      ) : null}
+                      {!canManageTenantSmtp ? (
+                        <p className="settings-feedback">Somente o administrador pode alterar SMTP.</p>
                       ) : null}
                     </div>
 
@@ -13247,6 +14102,7 @@ function App() {
 }
 
 export default App
+
 
 
 

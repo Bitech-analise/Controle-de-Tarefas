@@ -1622,6 +1622,27 @@
   gap: 10px;
 }
 
+.settings-smtp-panel {
+  border: 1px solid #d8dee7;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-smtp-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.settings-smtp-wide {
+  grid-column: span 2;
+}
+
+.settings-smtp-full {
+  grid-column: 1 / -1;
+}
+
 .settings-logo-head h6 {
   margin: 0;
   font-size: 14px;
@@ -1919,6 +1940,18 @@
   border: 1px solid #c7e6ff;
   border-radius: 10px;
   padding: 8px 10px;
+}
+
+.settings-feedback.is-success {
+  color: #14532d;
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.settings-feedback.is-error {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fca5a5;
 }
 
 .client-task-generate-modal {
@@ -3738,6 +3771,12 @@ select:disabled {
   gap: 10px;
 }
 
+.task-detail-inline-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .task-detail-field {
   display: grid;
   gap: 6px;
@@ -3772,6 +3811,20 @@ select:disabled {
   color: #475569;
   opacity: 1;
   background: #f8fafc;
+}
+
+.task-transfer-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-transfer-inline select {
+  flex: 1;
+}
+
+.task-transfer-inline .chip {
+  white-space: nowrap;
 }
 
 .task-detail-baixa {
@@ -4568,6 +4621,10 @@ select:disabled {
     grid-template-columns: 1fr;
   }
 
+  .task-detail-inline-fields {
+    grid-template-columns: 1fr;
+  }
+
   .task-detail-field.wide {
     grid-column: span 1;
   }
@@ -4582,6 +4639,11 @@ select:disabled {
   }
 
   .settings-user-clients-field {
+    grid-column: auto;
+  }
+
+  .settings-smtp-wide,
+  .settings-smtp-full {
     grid-column: auto;
   }
 

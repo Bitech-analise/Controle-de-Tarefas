@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import './docs.css'
 
-const API_BASE_URL = String(import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/$/, '')
+const API_BASE_URL = String(import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
 
 const STORAGE_KEYS = {
   session: 'hive_docs_session',
@@ -68,6 +68,35 @@ const isFinalStatus = (value) => {
   return ['finaliz', 'conclu', 'dispensad', 'encerrad'].some((keyword) => normalized.includes(keyword))
 }
 
+const isOpenSolicitationStatus = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .includes('abert')
+
+const getStatusBadgeTone = (value) => {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+
+  if (!normalized) return 'warn'
+  if (normalized.includes('andamento')) return 'progress'
+  if (normalized.includes('abert')) return 'danger'
+  if (
+    normalized.includes('disponivel') ||
+    normalized.includes('baixad') ||
+    normalized.includes('finaliz') ||
+    normalized.includes('conclu')
+  ) {
+    return 'ok'
+  }
+
+  return 'warn'
+}
+
 const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -119,7 +148,13 @@ const getEmptySolicitationForm = (responsavel = '') => {
 const getErrorMessage = async (response) => {
   try {
     const payload = await response.json()
-    if (payload && typeof payload.message === 'string') return payload.message
+    if (payload && typeof payload.message === 'string') {
+      const detail =
+        typeof payload.detail === 'string' && payload.detail.trim()
+          ? ` (${payload.detail.trim()})`
+          : ''
+      return `${payload.message}${detail}`
+    }
   } catch {
     // ignore parsing error
   }
@@ -174,9 +209,11 @@ function DocsApp() {
   const [activeSection, setActiveSection] = useState(DOCS_SECTION.SOLICITATIONS)
   const [solicitationOpen, setSolicitationOpen] = useState(false)
   const [solicitationForm, setSolicitationForm] = useState(getEmptySolicitationForm())
+  const [editingSolicitationId, setEditingSolicitationId] = useState('')
   const [solicitationLoading, setSolicitationLoading] = useState(false)
   const [solicitationError, setSolicitationError] = useState('')
-  const [solicitationAttachmentDraft, setSolicitationAttachmentDraft] = useState(null)
+  const [solicitationActionError, setSolicitationActionError] = useState('')
+  const [solicitationAttachmentDrafts, setSolicitationAttachmentDrafts] = useState([])
   const [solicitationAttachmentFeedback, setSolicitationAttachmentFeedback] = useState('')
   const solicitationAttachmentInputRef = useRef(null)
 
@@ -192,6 +229,7 @@ function DocsApp() {
       setSolicitations(Array.isArray(payload?.solicitations) ? payload.solicitations : [])
       setDocuments(Array.isArray(payload?.documents) ? payload.documents : [])
       setDocumentsActionError('')
+      setSolicitationActionError('')
     } catch (error) {
       setBootstrapError(error?.message || 'Nao foi possivel carregar dados do HIVE DOCS.')
     } finally {
@@ -203,7 +241,11 @@ function DocsApp() {
     if (!session?.token) return
     loadBootstrap(session)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.token])
+  }, [session?.token, activeSection])
+
+  const handleSectionChange = (section) => {
+    setActiveSection(section)
+  }
 
   const handleLogin = async (event) => {
     event.preventDefault()
@@ -256,7 +298,9 @@ function DocsApp() {
     setDownloadingDocumentKey('')
     setActiveSection(DOCS_SECTION.SOLICITATIONS)
     setSolicitationOpen(false)
+    setEditingSolicitationId('')
     setSolicitationError('')
+    setSolicitationActionError('')
   }
 
   const departmentOptions = useMemo(
@@ -348,8 +392,65 @@ function DocsApp() {
     activeSection === DOCS_SECTION.DOCUMENTS ? documentPendingCount : solicitationOpenCount
 
   const openCreateSolicitation = () => {
+    setEditingSolicitationId('')
     setSolicitationForm(getEmptySolicitationForm(String(user?.name || '').trim()))
-    setSolicitationAttachmentDraft(null)
+    setSolicitationAttachmentDrafts([])
+    setSolicitationAttachmentFeedback('')
+    if (solicitationAttachmentInputRef.current) {
+      solicitationAttachmentInputRef.current.value = ''
+    }
+    setSolicitationError('')
+    setSolicitationActionError('')
+    setSolicitationOpen(true)
+  }
+
+  const closeSolicitationModal = () => {
+    setSolicitationOpen(false)
+    setEditingSolicitationId('')
+    setSolicitationError('')
+    setSolicitationActionError('')
+    setSolicitationAttachmentDrafts([])
+    setSolicitationAttachmentFeedback('')
+    if (solicitationAttachmentInputRef.current) {
+      solicitationAttachmentInputRef.current.value = ''
+    }
+  }
+
+  const openEditSolicitation = (record) => {
+    const statusLabel = getStatusLabel(record)
+    if (!isOpenSolicitationStatus(statusLabel)) {
+      setSolicitationActionError(
+        'Esta solicitacao nao pode mais ser editada porque nao esta com status aberto.',
+      )
+      return
+    }
+
+    const recordId = String(record?.id || '').trim()
+    if (!recordId) return
+
+    setSolicitationActionError('')
+    setEditingSolicitationId(recordId)
+    setSolicitationForm({
+      departamento: String(record?.departamento || '').trim(),
+      processo: String(record?.processo || '').trim(),
+      etapa: String(record?.etapa || '').trim() || 'Aberta',
+      assunto: String(record?.assunto || '').trim(),
+      actionDate: String(record?.actionDate || '').trim(),
+      metaDate: String(record?.metaDate || '').trim(),
+      dueDate: String(record?.dueDate || '').trim(),
+      andamento: String(record?.andamento || '').trim(),
+      responsavel: String(record?.responsavel || user?.name || '').trim(),
+      attachments: (Array.isArray(record?.attachments) ? record.attachments : []).map(
+        (attachment, index) => ({
+          id: String(attachment?.id || `${recordId}-${index}`),
+          name: String(attachment?.name || 'anexo'),
+          size: Number(attachment?.size || 0),
+          type: String(attachment?.type || 'application/octet-stream'),
+          contentBase64: String(attachment?.contentBase64 || ''),
+        }),
+      ),
+    })
+    setSolicitationAttachmentDrafts([])
     setSolicitationAttachmentFeedback('')
     if (solicitationAttachmentInputRef.current) {
       solicitationAttachmentInputRef.current.value = ''
@@ -403,77 +504,117 @@ function DocsApp() {
   }
 
   const handleSolicitationAttachmentDraftChange = (event) => {
-    const file = Array.from(event.target.files || [])[0] || null
-    if (file && Number(file.size || 0) > MAX_ATTACHMENT_SIZE_BYTES) {
-      setSolicitationAttachmentDraft(null)
-      setSolicitationAttachmentFeedback('Arquivo excede 25MB. O limite e de 25MB por documento.')
+    const selectedFiles = Array.from(event.target.files || [])
+    if (!selectedFiles.length) {
+      setSolicitationAttachmentDrafts([])
+      setSolicitationAttachmentFeedback('')
+      return
+    }
+
+    const validFiles = []
+    let oversizedCount = 0
+    selectedFiles.forEach((file) => {
+      if (Number(file.size || 0) > MAX_ATTACHMENT_SIZE_BYTES) {
+        oversizedCount += 1
+        return
+      }
+      validFiles.push(file)
+    })
+
+    setSolicitationAttachmentDrafts(validFiles)
+
+    if (!validFiles.length && oversizedCount) {
+      setSolicitationAttachmentFeedback(
+        'Nenhum arquivo foi selecionado. Todos os arquivos excedem 25MB.',
+      )
       if (solicitationAttachmentInputRef.current) {
         solicitationAttachmentInputRef.current.value = ''
       }
       return
     }
-    setSolicitationAttachmentDraft(file)
-    setSolicitationAttachmentFeedback(file ? `Arquivo selecionado: ${file.name}` : '')
+
+    if (oversizedCount) {
+      setSolicitationAttachmentFeedback(
+        `${validFiles.length} arquivo(s) selecionado(s). ${oversizedCount} ignorado(s) por exceder 25MB.`,
+      )
+      return
+    }
+
+    setSolicitationAttachmentFeedback(
+      `${validFiles.length} arquivo(s) selecionado(s). Clique em Incluir para confirmar.`,
+    )
   }
 
   const includeSolicitationAttachment = async () => {
-    if (!(solicitationAttachmentDraft instanceof File)) {
-      setSolicitationAttachmentFeedback('Selecione um arquivo antes de incluir.')
-      return
-    }
-    if (Number(solicitationAttachmentDraft.size || 0) > MAX_ATTACHMENT_SIZE_BYTES) {
-      setSolicitationAttachmentFeedback('Arquivo excede 25MB. O limite e de 25MB por documento.')
+    if (!solicitationAttachmentDrafts.length) {
+      setSolicitationAttachmentFeedback('Selecione ao menos um arquivo antes de incluir.')
       return
     }
 
-    const shouldInclude = window.confirm(`Confirmar inclusao do anexo "${solicitationAttachmentDraft.name}"?`)
+    const shouldInclude = window.confirm(
+      `Confirmar inclusao de ${solicitationAttachmentDrafts.length} anexo(s)?`,
+    )
     if (!shouldInclude) return
 
     try {
-      const contentBase64 = await fileToBase64(solicitationAttachmentDraft)
-      if (!contentBase64) {
-        setSolicitationAttachmentFeedback('Nao foi possivel incluir o arquivo selecionado.')
+      const draftAttachments = await Promise.allSettled(
+        solicitationAttachmentDrafts.map(async (draftFile, index) => {
+          const contentBase64 = await fileToBase64(draftFile)
+          if (!contentBase64) return null
+          return {
+            id: `${Date.now()}-${index}-${draftFile.name}`,
+            name: draftFile.name,
+            size: draftFile.size,
+            type: draftFile.type || 'application/octet-stream',
+            contentBase64,
+          }
+        }),
+      )
+
+      const validAttachments = draftAttachments
+        .filter((result) => result.status === 'fulfilled' && result.value)
+        .map((result) => result.value)
+      const failedCount = solicitationAttachmentDrafts.length - validAttachments.length
+      if (!validAttachments.length) {
+        setSolicitationAttachmentFeedback('Nao foi possivel incluir os arquivos selecionados.')
         return
       }
 
-      const attachmentId = `${Date.now()}-${solicitationAttachmentDraft.name}`
       setSolicitationForm((prev) => ({
         ...prev,
-        attachments: [
-          {
-            id: attachmentId,
-            name: solicitationAttachmentDraft.name,
-            size: solicitationAttachmentDraft.size,
-            type: solicitationAttachmentDraft.type || 'application/octet-stream',
-            contentBase64,
-          },
-        ],
+        attachments: [...(Array.isArray(prev.attachments) ? prev.attachments : []), ...validAttachments],
       }))
-      setSolicitationAttachmentFeedback(`Anexo "${solicitationAttachmentDraft.name}" incluido com sucesso.`)
-      setSolicitationAttachmentDraft(null)
+      if (failedCount > 0) {
+        setSolicitationAttachmentFeedback(
+          `${validAttachments.length} anexo(s) incluido(s). ${failedCount} nao puderam ser incluidos.`,
+        )
+      } else {
+        setSolicitationAttachmentFeedback(`${validAttachments.length} anexo(s) incluido(s) com sucesso.`)
+      }
+      setSolicitationAttachmentDrafts([])
       if (solicitationAttachmentInputRef.current) {
         solicitationAttachmentInputRef.current.value = ''
       }
     } catch {
-      setSolicitationAttachmentFeedback('Nao foi possivel incluir o arquivo selecionado.')
+      setSolicitationAttachmentFeedback('Nao foi possivel incluir os arquivos selecionados.')
     }
   }
 
   const removeSolicitationAttachment = () => {
-    if (!solicitationForm.attachments.length && !solicitationAttachmentDraft) {
+    if (!solicitationForm.attachments.length && !solicitationAttachmentDrafts.length) {
       setSolicitationAttachmentFeedback('Nenhum anexo para excluir.')
       return
     }
 
-    const shouldRemove = window.confirm('Deseja excluir o anexo selecionado?')
+    const shouldRemove = window.confirm('Deseja excluir todos os anexos selecionados?')
     if (!shouldRemove) return
 
     setSolicitationForm((prev) => ({ ...prev, attachments: [] }))
-    setSolicitationAttachmentDraft(null)
+    setSolicitationAttachmentDrafts([])
     if (solicitationAttachmentInputRef.current) {
       solicitationAttachmentInputRef.current.value = ''
     }
-    setSolicitationAttachmentFeedback('Anexo removido. Voce pode incluir um novo arquivo.')
+    setSolicitationAttachmentFeedback('Anexos removidos. Voce pode incluir novos arquivos.')
   }
 
   const saveSolicitation = async (event) => {
@@ -512,43 +653,63 @@ function DocsApp() {
     setSolicitationLoading(true)
     setSolicitationError('')
     try {
-      const payload = await apiRequest('/tenant/portal/solicitations', {
-        method: 'POST',
-        token: session.token,
-        body: {
-          departamento,
-          processo: String(solicitationForm.processo || '').trim(),
-          etapa: String(solicitationForm.etapa || '').trim() || 'Aberta',
-          assunto,
-          clientIds: [],
-          actionDate: solicitationForm.actionDate,
-          metaDate: solicitationForm.metaDate,
-          dueDate: solicitationForm.dueDate,
-          andamento,
-          responsavel,
-          attachments: (Array.isArray(solicitationForm.attachments)
-            ? solicitationForm.attachments
-            : []
-          ).map((attachment) => ({
-            name: String(attachment.name || 'anexo'),
-            size: Number(attachment.size || 0),
-            type: String(attachment.type || 'application/octet-stream'),
-            contentBase64: String(attachment.contentBase64 || ''),
-          })),
+      const isEditing = Boolean(editingSolicitationId)
+      const payload = await apiRequest(
+        isEditing
+          ? `/tenant/portal/solicitations/${encodeURIComponent(editingSolicitationId)}`
+          : '/tenant/portal/solicitations',
+        {
+          method: isEditing ? 'PUT' : 'POST',
+          token: session.token,
+          body: {
+            departamento,
+            processo: String(solicitationForm.processo || '').trim(),
+            etapa: String(solicitationForm.etapa || '').trim() || 'Aberta',
+            assunto,
+            clientIds: [],
+            actionDate: solicitationForm.actionDate,
+            metaDate: solicitationForm.metaDate,
+            dueDate: solicitationForm.dueDate,
+            andamento,
+            responsavel,
+            attachments: (Array.isArray(solicitationForm.attachments)
+              ? solicitationForm.attachments
+              : []
+            ).map((attachment) => ({
+              name: String(attachment.name || 'anexo'),
+              size: Number(attachment.size || 0),
+              type: String(attachment.type || 'application/octet-stream'),
+              contentBase64: String(attachment.contentBase64 || ''),
+            })),
+          },
         },
-      })
+      )
 
-      const createdRecords = Array.isArray(payload?.records) ? payload.records : []
-      setSolicitations((prev) => [...createdRecords, ...prev])
-      setSolicitationOpen(false)
-      setSolicitationForm(getEmptySolicitationForm(String(user?.name || '').trim()))
-      setSolicitationAttachmentDraft(null)
-      setSolicitationAttachmentFeedback('')
-      if (solicitationAttachmentInputRef.current) {
-        solicitationAttachmentInputRef.current.value = ''
+      if (isEditing) {
+        const updatedRecord = payload?.record || null
+        if (updatedRecord) {
+          setSolicitations((prev) =>
+            prev.map((item) =>
+              String(item?.id || '').trim() === String(updatedRecord?.id || '').trim()
+                ? updatedRecord
+                : item,
+            ),
+          )
+        }
+      } else {
+        const createdRecords = Array.isArray(payload?.records) ? payload.records : []
+        setSolicitations((prev) => [...createdRecords, ...prev])
       }
+
+      closeSolicitationModal()
+      setSolicitationForm(getEmptySolicitationForm(String(user?.name || '').trim()))
     } catch (error) {
-      setSolicitationError(error?.message || 'Nao foi possivel criar a solicitacao.')
+      setSolicitationError(
+        error?.message ||
+          (editingSolicitationId
+            ? 'Nao foi possivel editar a solicitacao.'
+            : 'Nao foi possivel criar a solicitacao.'),
+      )
     } finally {
       setSolicitationLoading(false)
     }
@@ -593,7 +754,8 @@ function DocsApp() {
                 checked={remember}
                 onChange={(event) => setRemember(event.target.checked)}
               />
-              <span>Manter conectado</span>
+              <span className="docs-login-switch" aria-hidden="true" />
+              <span className="docs-login-remember-text">Manter conectado</span>
             </label>
             <button type="submit" disabled={loginLoading}>
               {loginLoading ? 'Entrando...' : 'Entrar'}
@@ -628,14 +790,14 @@ function DocsApp() {
         <button
           type="button"
           className={`docs-menu-item ${activeSection === DOCS_SECTION.SOLICITATIONS ? 'active' : ''}`}
-          onClick={() => setActiveSection(DOCS_SECTION.SOLICITATIONS)}
+          onClick={() => handleSectionChange(DOCS_SECTION.SOLICITATIONS)}
         >
           Solicitacoes
         </button>
         <button
           type="button"
           className={`docs-menu-item ${activeSection === DOCS_SECTION.DOCUMENTS ? 'active' : ''}`}
-          onClick={() => setActiveSection(DOCS_SECTION.DOCUMENTS)}
+          onClick={() => handleSectionChange(DOCS_SECTION.DOCUMENTS)}
         >
           Documentos Recebidos
         </button>
@@ -726,12 +888,30 @@ function DocsApp() {
                   ? visibleSolicitations.length
                     ? visibleSolicitations.map((record) => {
                         const statusLabel = getStatusLabel(record)
-                        const finished = isFinalStatus(statusLabel)
+                        const statusTone = getStatusBadgeTone(statusLabel)
+                        const canEdit = isOpenSolicitationStatus(statusLabel)
                         return (
-                          <div className="docs-table-row" key={`docs-sol-${record.id}`}>
+                          <div
+                            className={`docs-table-row ${canEdit ? 'editable' : ''}`}
+                            key={`docs-sol-${record.id}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openEditSolicitation(record)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                                openEditSolicitation(record)
+                              }
+                            }}
+                            title={
+                              canEdit
+                                ? 'Clique para editar esta solicitacao'
+                                : 'Somente solicitacoes abertas podem ser editadas'
+                            }
+                          >
                             <span>{record.id}</span>
                             <span>
-                              <mark className={finished ? 'ok' : 'warn'}>{statusLabel}</mark>
+                              <mark className={statusTone}>{statusLabel}</mark>
                             </span>
                             <span title={record.departamento || '-'}>{record.departamento || '-'}</span>
                             <span title={record.assunto || '-'}>{record.assunto || '-'}</span>
@@ -753,6 +933,7 @@ function DocsApp() {
                         const downloadedAt = String(row?.downloadedAt || '').trim()
                         const isDownloaded = Boolean(downloadedAt)
                         const statusLabel = isDownloaded ? 'Arquivo baixado' : 'Disponivel'
+                        const statusTone = getStatusBadgeTone(statusLabel)
                         const statusTitle = isDownloaded ? `Baixado em ${parseIsoDateTimeToBr(downloadedAt)}` : ''
                         const isDownloading =
                           downloadingDocumentKey &&
@@ -761,7 +942,7 @@ function DocsApp() {
                           <div className="docs-table-row docs-table-row-documents" key={row.documentKey}>
                             <span>{row.taskId || '-'}</span>
                             <span>
-                              <mark className={isDownloaded ? 'ok' : 'warn'} title={statusTitle}>
+                              <mark className={statusTone} title={statusTitle}>
                                 {statusLabel}
                               </mark>
                             </span>
@@ -796,16 +977,17 @@ function DocsApp() {
           </div>
         </section>
 
+        {solicitationActionError ? <p className="docs-feedback error">{solicitationActionError}</p> : null}
         {documentsActionError ? <p className="docs-feedback error">{documentsActionError}</p> : null}
         {bootstrapError ? <p className="docs-feedback error">{bootstrapError}</p> : null}
       </main>
 
       {solicitationOpen ? (
-        <div className="docs-modal-backdrop" onClick={() => setSolicitationOpen(false)}>
+        <div className="docs-modal-backdrop" onClick={closeSolicitationModal}>
           <div className="docs-modal" onClick={(event) => event.stopPropagation()}>
             <div className="docs-modal-head">
-              <h3>Nova Solicitacao</h3>
-              <button type="button" onClick={() => setSolicitationOpen(false)}>
+              <h3>{editingSolicitationId ? 'Editar Solicitacao' : 'Nova Solicitacao'}</h3>
+              <button type="button" onClick={closeSolicitationModal}>
                 A—
               </button>
             </div>
@@ -915,6 +1097,7 @@ function DocsApp() {
                 <input
                   ref={solicitationAttachmentInputRef}
                   type="file"
+                  multiple
                   onChange={handleSolicitationAttachmentDraftChange}
                 />
               </label>
@@ -941,13 +1124,24 @@ function DocsApp() {
                 </button>
               </div>
 
+              {solicitationAttachmentDrafts.length ? (
+                <p className="wide docs-note">
+                  Prontos para incluir ({solicitationAttachmentDrafts.length}):{' '}
+                  {solicitationAttachmentDrafts.map((file) => file.name).join(', ')}
+                </p>
+              ) : null}
               {solicitationForm.attachments.length ? (
-                <div className="wide docs-attachments-list">
-                  {solicitationForm.attachments.map((attachment) => (
-                    <span key={String(attachment.id || attachment.name)}>
-                      {attachment.name}
-                    </span>
-                  ))}
+                <div className="wide docs-attachments-wrap">
+                  <strong className="docs-attachments-title">
+                    Anexos incluidos ({solicitationForm.attachments.length})
+                  </strong>
+                  <div className="docs-attachments-list">
+                    {solicitationForm.attachments.map((attachment) => (
+                      <span key={String(attachment.id || attachment.name)}>
+                        {attachment.name}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               ) : null}
               {solicitationAttachmentFeedback ? (
@@ -969,13 +1163,17 @@ function DocsApp() {
                 <button
                   type="button"
                   className="ghost"
-                  onClick={() => setSolicitationOpen(false)}
+                  onClick={closeSolicitationModal}
                   disabled={solicitationLoading}
                 >
                   Cancelar
                 </button>
                 <button type="submit" className="primary" disabled={solicitationLoading}>
-                  {solicitationLoading ? 'Salvando...' : 'Salvar Solicitacao'}
+                  {solicitationLoading
+                    ? 'Salvando...'
+                    : editingSolicitationId
+                      ? 'Salvar Edicao'
+                      : 'Salvar Solicitacao'}
                 </button>
               </div>
             </form>

@@ -1,9 +1,15 @@
-import { Router } from 'express'
+﻿import { Router } from 'express'
 import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
 import { z } from 'zod'
 import prisma from '../lib/prisma.js'
 import env from '../config/env.js'
-import { sendTaskEmail } from '../lib/mailer.js'
+import {
+  isSmtpConfigReady,
+  normalizeSmtpConfig,
+  sendTaskEmail,
+  verifySmtpConnection,
+} from '../lib/mailer.js'
 import { requireAuth, requireRole, resolveTenantFromAuth } from '../middlewares/auth.js'
 import { validateBody, validateQuery } from '../middlewares/validate.js'
 
@@ -54,6 +60,27 @@ const tenantBrandingBodySchema = z.object({
   branding: z.object({}).passthrough(),
 })
 
+const tenantSmtpBodySchema = z.object({
+  smtp: z.object({}).passthrough(),
+})
+
+const tenantSmtpTestBodySchema = z.object({
+  smtp: z.object({}).passthrough().optional(),
+  testTo: z.string().email().optional().or(z.literal('')),
+})
+
+const tenantSmtpGoogleAuthUrlBodySchema = z.object({
+  smtp: z.object({}).passthrough().optional(),
+  redirectUri: z.string().url(),
+})
+
+const tenantSmtpGoogleExchangeBodySchema = z.object({
+  smtp: z.object({}).passthrough().optional(),
+  code: z.string().min(1),
+  state: z.string().min(1),
+  redirectUri: z.string().url(),
+})
+
 const sendTaskEmailSchema = z.object({
   to: z.string().email(),
   subject: z.string().min(3),
@@ -68,6 +95,8 @@ const sendTaskEmailSchema = z.object({
 })
 
 const MAX_DOCS_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
+const GOOGLE_OAUTH_SCOPE = 'https://mail.google.com/'
+const GOOGLE_OAUTH_STATE_TYPE = 'tenant-smtp-google-oauth'
 
 const docsSolicitationCreateSchema = z.object({
   departamento: z.string().min(1),
@@ -115,6 +144,94 @@ const tenantUserUpdateSchema = z.object({
   isActive: z.boolean().optional(),
 })
 
+const getDefaultTenantSmtpSettings = () => ({
+  provider: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false,
+  authType: 'oauth2',
+  user: '',
+  pass: '',
+  clientId: '',
+  clientSecret: '',
+  refreshToken: '',
+  accessToken: '',
+  from: '',
+})
+
+const normalizeTenantSmtpSettings = (rawSettings) => {
+  const defaults = getDefaultTenantSmtpSettings()
+  const normalized = normalizeSmtpConfig({
+    ...defaults,
+    ...(rawSettings && typeof rawSettings === 'object' ? rawSettings : {}),
+  })
+
+  return {
+    provider: 'gmail',
+    host: String(normalized.host || defaults.host),
+    port: Number(normalized.port || defaults.port),
+    secure: Boolean(normalized.secure),
+    authType: String(normalized.authType || defaults.authType),
+    user: String(normalized.user || ''),
+    pass: String(normalized.pass || ''),
+    clientId: String(normalized.clientId || ''),
+    clientSecret: String(normalized.clientSecret || ''),
+    refreshToken: String(normalized.refreshToken || ''),
+    accessToken: String(normalized.accessToken || ''),
+    from: String(normalized.from || ''),
+  }
+}
+
+const getSmtpValidationMessage = (smtpSettings, options = {}) => {
+  const requireAuthTokens = options?.requireAuthTokens !== false
+  const requireOAuthClientCredentials = options?.requireOAuthClientCredentials !== false
+  const settings = normalizeTenantSmtpSettings(smtpSettings)
+  if (!settings.host) return 'Informe o host SMTP.'
+  if (!settings.from) return 'Informe o e-mail remetente (SMTP_FROM).'
+  if (!settings.user) return 'Informe o usuario SMTP (e-mail do Gmail).'
+  if (settings.authType === 'oauth2') {
+    const oauthClientId = String(settings.clientId || env.smtpClientId || '').trim()
+    const oauthClientSecret = String(settings.clientSecret || env.smtpClientSecret || '').trim()
+    if (requireOAuthClientCredentials && (!oauthClientId || !oauthClientSecret)) {
+      return 'OAuth do Gmail nao configurado no servidor (SMTP_CLIENT_ID / SMTP_CLIENT_SECRET).'
+    }
+    if (requireAuthTokens && !settings.refreshToken) {
+      return 'Conecte com o Google para gerar o Refresh Token OAuth2.'
+    }
+    return ''
+  }
+  if (!settings.pass) return 'No modo senha, preencha a senha SMTP.'
+  return ''
+}
+
+const mergeSmtpSettingsPreservingSecrets = (baseSettings, incomingSettings) => {
+  const base = normalizeTenantSmtpSettings(baseSettings)
+  const incoming = normalizeTenantSmtpSettings(incomingSettings)
+  const keepWhenEmpty = (incomingValue, baseValue) =>
+    String(incomingValue || '').trim() ? incomingValue : baseValue
+
+  return normalizeTenantSmtpSettings({
+    ...base,
+    ...incoming,
+    clientId: keepWhenEmpty(incoming.clientId, base.clientId),
+    clientSecret: keepWhenEmpty(incoming.clientSecret, base.clientSecret),
+    refreshToken: keepWhenEmpty(incoming.refreshToken, base.refreshToken),
+    accessToken: keepWhenEmpty(incoming.accessToken, base.accessToken),
+    pass: incoming.authType === 'password' ? keepWhenEmpty(incoming.pass, base.pass) : incoming.pass,
+  })
+}
+
+const getSmtpRuntimeErrorMessage = (error) => {
+  const rawMessage = String(error?.message || '').trim()
+  if (!rawMessage) return 'Falha ao validar SMTP.'
+
+  if (rawMessage === 'MAILER_NOT_CONFIGURED') {
+    return 'SMTP nao configurado corretamente para envio.'
+  }
+
+  return rawMessage
+}
+
 const getEmptyTenantState = () => ({
   schemaVersion: 1,
   users: [],
@@ -124,6 +241,7 @@ const getEmptyTenantState = () => ({
   solicitationRecords: [],
   taskActionLogs: [],
   docsReceivedDownloads: [],
+  smtpSettings: getDefaultTenantSmtpSettings(),
 })
 
 const getTenantStateRecord = async (tenantId) =>
@@ -135,12 +253,122 @@ const getTenantStateRecord = async (tenantId) =>
 const getTenantStateData = (stateRecord) =>
   stateRecord?.data && typeof stateRecord.data === 'object' ? stateRecord.data : getEmptyTenantState()
 
+const getStoredTenantSmtpSettings = (stateData) =>
+  normalizeTenantSmtpSettings(stateData?.smtpSettings)
+
+const getEffectiveTenantSmtpSettings = (stateData) => {
+  const stored = getStoredTenantSmtpSettings(stateData)
+  const effective = normalizeTenantSmtpSettings({
+    ...stored,
+    clientId: String(stored.clientId || '').trim() || String(env.smtpClientId || '').trim(),
+    clientSecret:
+      String(stored.clientSecret || '').trim() || String(env.smtpClientSecret || '').trim(),
+  })
+
+  return {
+    settings: effective,
+    source:
+      String(stored.clientId || '').trim() && String(stored.clientSecret || '').trim()
+        ? 'tenant'
+        : 'server',
+  }
+}
+
+const normalizeGoogleRedirectUri = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  let parsedUrl
+  try {
+    parsedUrl = new URL(raw)
+  } catch {
+    return ''
+  }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) return ''
+  return parsedUrl.toString()
+}
+
+const buildGoogleOAuthStateToken = ({ tenantId, userId, redirectUri }) =>
+  jwt.sign(
+    {
+      type: GOOGLE_OAUTH_STATE_TYPE,
+      tenantId: String(tenantId || '').trim(),
+      userId: String(userId || '').trim(),
+      redirectUri: String(redirectUri || '').trim(),
+    },
+    env.jwtSecret,
+    { expiresIn: '10m' },
+  )
+
+const requestGoogleOAuthToken = async ({
+  code,
+  clientId,
+  clientSecret,
+  redirectUri,
+}) => {
+  const payload = new URLSearchParams({
+    code: String(code || '').trim(),
+    client_id: String(clientId || '').trim(),
+    client_secret: String(clientSecret || '').trim(),
+    redirect_uri: String(redirectUri || '').trim(),
+    grant_type: 'authorization_code',
+  })
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: payload.toString(),
+  })
+
+  let data = null
+  try {
+    data = await response.json()
+  } catch {
+    data = null
+  }
+
+  if (!response.ok) {
+    const description =
+      String(data?.error_description || data?.error || '').trim() ||
+      'Nao foi possivel autenticar no Google.'
+    const error = new Error(description)
+    error.status = response.status
+    throw error
+  }
+
+  return data || {}
+}
+
+const fetchGoogleAccountEmail = async (accessToken) => {
+  const token = String(accessToken || '').trim()
+  if (!token) return ''
+
+  try {
+    const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (!response.ok) return ''
+    const data = await response.json()
+    return String(data?.email || '').trim().toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
 const normalizeLookupText = (value) =>
   String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim()
     .toLowerCase()
+
+const isOpenStatusLabel = (value) => {
+  const normalized = normalizeLookupText(value).replace(/\s+/g, ' ')
+  return normalized.includes('abert')
+}
 
 const normalizeClientDocument = (client) =>
   String(client?.inscricao || client?.documentNumber || '')
@@ -256,6 +484,25 @@ const getPortalDocumentDownloadsByKey = (stateData, authUser) => {
   return map
 }
 
+const getLatestActionActorByRecord = ({ stateData, source, recordId, fallback = '' }) => {
+  const normalizedSource = String(source || '').trim()
+  const normalizedRecordId = String(recordId || '').trim()
+  const normalizedFallback = String(fallback || '').trim()
+  if (!normalizedSource || !normalizedRecordId) return normalizedFallback
+
+  const logs = Array.isArray(stateData?.taskActionLogs) ? stateData.taskActionLogs : []
+  for (const log of logs) {
+    const logSource = String(log?.taskSource || '').trim()
+    const logRecordId = String(log?.taskId || '').trim()
+    if (logSource !== normalizedSource || logRecordId !== normalizedRecordId) continue
+
+    const actor = String(log?.actor || '').trim()
+    if (actor) return actor
+  }
+
+  return normalizedFallback
+}
+
 const buildPortalDocumentKey = ({ source, recordId, attachmentId, attachmentName, index }) =>
   `${String(source || '').trim()}::${String(recordId || '').trim()}::${String(attachmentId || '').trim() || index}::${String(attachmentName || '').trim()}`
 
@@ -289,62 +536,115 @@ const buildPortalDocumentsFromState = ({
     return false
   }
 
-  const tasksRows = Array.isArray(stateData?.tasksRows) ? stateData.tasksRows : []
   const documents = []
+  const appendDocumentRows = ({ rows, source }) => {
+    for (const row of rows) {
+      const rowId = String(row?.id || '').trim()
+      const attachments = Array.isArray(row?.attachments) ? row.attachments : []
+      const clientId = String(row?.clientId || '').trim()
+      const clientName =
+        source === 'solicitation'
+          ? String(row?.clientName || '').trim()
+          : String(row?.client || row?.clientName || '').trim()
+      if (!attachments.length || !isRecordVisible({ clientId, clientName })) continue
 
-  for (const row of tasksRows) {
-    const rowId = String(row?.id || '').trim()
-    const attachments = Array.isArray(row?.attachments) ? row.attachments : []
-    const clientId = String(row?.clientId || '').trim()
-    const clientName = String(row?.client || row?.clientName || '').trim()
-    if (!attachments.length || !isRecordVisible({ clientId, clientName })) continue
+      for (let index = 0; index < attachments.length; index += 1) {
+        const attachment = attachments[index]
+        const docsSharedAt = String(attachment?.docsSharedAt || '').trim()
+        if (!docsSharedAt) continue
 
-    for (let index = 0; index < attachments.length; index += 1) {
-      const attachment = attachments[index]
-      const attachmentName = String(attachment?.name || '').trim()
-      const contentBase64 = String(attachment?.contentBase64 || '').trim()
-      if (!attachmentName && !contentBase64) continue
+        const attachmentName = String(attachment?.name || '').trim()
+        const contentBase64 = String(attachment?.contentBase64 || '').trim()
+        if (!attachmentName && !contentBase64) continue
 
-      const documentKey = buildPortalDocumentKey({
-        source: 'task',
-        recordId: rowId,
-        attachmentId: String(attachment?.id || '').trim(),
-        attachmentName,
-        index,
-      })
-      const downloadedAt = String(downloadsByKey.get(documentKey) || '').trim()
-      const actionDate = getDateFromTaggedList(row?.dates, 'A')
-      const metaDate = getDateFromTaggedList(row?.dates, 'M')
-      const dueDate = getDateFromTaggedList(row?.dates, 'V')
+        const actionDate =
+          source === 'solicitation'
+            ? normalizeDisplayDate(row?.actionDate || '')
+            : getDateFromTaggedList(row?.dates, 'A')
+        const metaDate =
+          source === 'solicitation'
+            ? normalizeDisplayDate(row?.metaDate || '')
+            : getDateFromTaggedList(row?.dates, 'M')
+        const dueDate =
+          source === 'solicitation'
+            ? normalizeDisplayDate(row?.dueDate || '')
+            : getDateFromTaggedList(row?.dates, 'V')
+        const nome =
+          source === 'solicitation'
+            ? String(row?.assunto || row?.processo || 'Solicitacao').trim()
+            : String(row?.subject || '').trim()
+        const responsavelByAction = getLatestActionActorByRecord({
+          stateData,
+          source,
+          recordId: rowId,
+          fallback: '',
+        })
+        const responsavel =
+          source === 'solicitation'
+            ? responsavelByAction || String(row?.responsavel || '').trim()
+            : responsavelByAction ||
+              String(attachment?.docsSharedBy || '').trim() ||
+              String(row?.owner || '').trim() ||
+              String(row?.responsavel || '').trim()
+        const departamento =
+          source === 'solicitation'
+            ? String(row?.departamento || '').trim()
+            : String(row?.dept || '').trim()
+        const conclusionDate =
+          source === 'solicitation'
+            ? normalizeDisplayDate(row?.conclusionDate || row?.deliveryDate || '')
+            : normalizeDisplayDate(row?.conclusionDate || '')
 
-      documents.push({
-        documentKey,
-        source: 'task',
-        taskId: rowId,
-        attachmentId: String(attachment?.id || '').trim(),
-        attachmentName: attachmentName || `anexo-${index + 1}`,
-        attachmentSize: Number(attachment?.size || 0),
-        attachmentType: String(attachment?.type || 'application/octet-stream'),
-        contentBase64,
-        status: downloadedAt ? 'Arquivo baixado' : 'Disponivel',
-        downloadedAt,
-        departamento: String(row?.dept || '').trim(),
-        nome: String(row?.subject || '').trim(),
-        competencia: String(row?.competence || '').trim() || getCompetenceFromActionDate(actionDate),
-        cliente: clientName || 'Cliente nao informado',
-        actionDate,
-        metaDate,
-        dueDate,
-        conclusionDate: normalizeDisplayDate(row?.conclusionDate || ''),
-        responsavel: String(row?.owner || '').trim(),
-      })
+        const documentKey = buildPortalDocumentKey({
+          source,
+          recordId: rowId,
+          attachmentId: String(attachment?.id || '').trim(),
+          attachmentName,
+          index,
+        })
+        const downloadedAt = String(downloadsByKey.get(documentKey) || '').trim()
+
+        documents.push({
+          documentKey,
+          source,
+          taskId: rowId,
+          attachmentId: String(attachment?.id || '').trim(),
+          attachmentName: attachmentName || `anexo-${index + 1}`,
+          attachmentSize: Number(attachment?.size || 0),
+          attachmentType: String(attachment?.type || 'application/octet-stream'),
+          contentBase64,
+          status: downloadedAt ? 'Arquivo baixado' : 'Disponivel',
+          downloadedAt,
+          departamento,
+          nome,
+          competencia: String(row?.competence || '').trim() || getCompetenceFromActionDate(actionDate),
+          cliente: clientName || 'Cliente nao informado',
+          actionDate,
+          metaDate,
+          dueDate,
+          conclusionDate,
+          responsavel,
+        })
+      }
     }
   }
+
+  appendDocumentRows({
+    rows: Array.isArray(stateData?.tasksRows) ? stateData.tasksRows : [],
+    source: 'task',
+  })
+  appendDocumentRows({
+    rows: Array.isArray(stateData?.solicitationRecords) ? stateData.solicitationRecords : [],
+    source: 'solicitation',
+  })
 
   return documents.sort((a, b) => {
     const aId = Number(a?.taskId || 0)
     const bId = Number(b?.taskId || 0)
     if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return bId - aId
+    if (String(a?.source || '') !== String(b?.source || '')) {
+      return String(a?.source || '').localeCompare(String(b?.source || ''))
+    }
     return String(a?.attachmentName || '').localeCompare(String(b?.attachmentName || ''), 'pt-BR')
   })
 }
@@ -353,7 +653,7 @@ router.get('/users', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
     }
 
     const users = await prisma.tenantUser.findMany({
@@ -385,7 +685,7 @@ router.post(
     try {
       const tenantId = getTenantId(req)
       if (!tenantId) {
-        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+        return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
       }
 
       const email = String(req.body.email || '')
@@ -398,12 +698,12 @@ router.post(
       const candidateClientIds = Array.isArray(req.body.clientIds) ? req.body.clientIds : []
 
       if (!name || !email || !password) {
-        return res.status(400).json({ message: 'Informe nome, e-mail e senha para cadastrar o usuÃ¡rio.' })
+        return res.status(400).json({ message: 'Informe nome, e-mail e senha para cadastrar o usuÃƒÆ’Ã‚Â¡rio.' })
       }
 
       const emailInUse = await prisma.tenantUser.findUnique({ where: { email } })
       if (emailInUse) {
-        return res.status(409).json({ message: 'JÃ¡ existe um usuÃ¡rio com esse e-mail.' })
+        return res.status(409).json({ message: 'JÃƒÆ’Ã‚Â¡ existe um usuÃƒÆ’Ã‚Â¡rio com esse e-mail.' })
       }
 
       const clientIds = Array.from(
@@ -451,7 +751,7 @@ router.patch(
     try {
       const tenantId = getTenantId(req)
       if (!tenantId) {
-        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+        return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
       }
 
       const target = await prisma.tenantUser.findFirst({
@@ -459,7 +759,7 @@ router.patch(
       })
 
       if (!target) {
-        return res.status(404).json({ message: 'UsuÃ¡rio nÃ£o encontrado para este tenant.' })
+        return res.status(404).json({ message: 'UsuÃƒÆ’Ã‚Â¡rio nÃƒÆ’Ã‚Â£o encontrado para este tenant.' })
       }
 
       const nextEmail = req.body.email
@@ -471,7 +771,7 @@ router.patch(
       if (nextEmail && nextEmail !== target.email) {
         const emailInUse = await prisma.tenantUser.findUnique({ where: { email: nextEmail } })
         if (emailInUse) {
-          return res.status(409).json({ message: 'JÃ¡ existe um usuÃ¡rio com esse e-mail.' })
+          return res.status(409).json({ message: 'JÃƒÆ’Ã‚Â¡ existe um usuÃƒÆ’Ã‚Â¡rio com esse e-mail.' })
         }
       }
 
@@ -522,7 +822,7 @@ router.delete(
     try {
       const tenantId = getTenantId(req)
       if (!tenantId) {
-        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+        return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
       }
 
       const target = await prisma.tenantUser.findFirst({
@@ -530,11 +830,11 @@ router.delete(
       })
 
       if (!target) {
-        return res.status(404).json({ message: 'UsuÃ¡rio nÃ£o encontrado para este tenant.' })
+        return res.status(404).json({ message: 'UsuÃƒÆ’Ã‚Â¡rio nÃƒÆ’Ã‚Â£o encontrado para este tenant.' })
       }
 
       if (req.auth?.sub === target.id) {
-        return res.status(400).json({ message: 'NÃ£o Ã© permitido excluir o usuÃ¡rio atualmente logado.' })
+        return res.status(400).json({ message: 'NÃƒÆ’Ã‚Â£o ÃƒÆ’Ã‚Â© permitido excluir o usuÃƒÆ’Ã‚Â¡rio atualmente logado.' })
       }
 
       await prisma.tenantUser.delete({
@@ -552,7 +852,7 @@ router.get('/summary', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
     }
 
     const [clientsTotal, clientsActive, tasksTotal, tasksOpen] = await Promise.all([
@@ -578,7 +878,7 @@ router.get('/state', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© obrigatÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³rio para este usuÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡rio.' })
     }
 
     const state = await prisma.tenantState.findUnique({
@@ -629,6 +929,14 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
           : incomingState?.branding && typeof incomingState.branding === 'object'
             ? incomingState.branding
             : {},
+      // SMTP e salvo apenas pela rota /tenant/smtp.
+      // Isso evita que autosave com estado antigo apague credenciais.
+      smtpSettings:
+        currentState?.smtpSettings && typeof currentState.smtpSettings === 'object'
+          ? currentState.smtpSettings
+          : incomingState?.smtpSettings && typeof incomingState.smtpSettings === 'object'
+            ? incomingState.smtpSettings
+            : getDefaultTenantSmtpSettings(),
     }
 
     if (req.auth?.role === 'TENANT_USER') {
@@ -672,7 +980,7 @@ router.put(
     try {
       const tenantId = getTenantId(req)
       if (!tenantId) {
-        return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+        return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
       }
 
       const currentStateRecord = await prisma.tenantState.findUnique({
@@ -717,11 +1025,335 @@ router.put(
   },
 )
 
+router.get('/smtp', requireRole('TENANT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+  try {
+    const tenantId = getTenantId(req)
+    if (!tenantId) {
+      return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
+    }
+
+    const stateRecord = await getTenantStateRecord(tenantId)
+    const stateData = getTenantStateData(stateRecord)
+    const storedSettings = getStoredTenantSmtpSettings(stateData)
+    const effectiveSettings = getEffectiveTenantSmtpSettings(stateData)
+
+    return res.json({
+      smtp: storedSettings,
+      tenantConfigured: isSmtpConfigReady(storedSettings),
+      activeConfigured: isSmtpConfigReady(effectiveSettings.settings),
+      activeSource: effectiveSettings.source,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.put(
+  '/smtp',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantSmtpBodySchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
+      }
+
+      const currentStateRecord = await prisma.tenantState.findUnique({
+        where: { tenantId },
+        select: { data: true },
+      })
+      const currentState =
+        currentStateRecord?.data && typeof currentStateRecord.data === 'object'
+          ? currentStateRecord.data
+          : getEmptyTenantState()
+
+      const currentStoredSmtpSettings = getStoredTenantSmtpSettings(currentState)
+      const nextSmtpSettings = mergeSmtpSettingsPreservingSecrets(
+        currentStoredSmtpSettings,
+        req.body?.smtp,
+      )
+      const validationMessage = getSmtpValidationMessage(nextSmtpSettings, {
+        requireAuthTokens: false,
+      })
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage })
+      }
+
+      const stateToPersist = {
+        ...currentState,
+        schemaVersion: typeof currentState?.schemaVersion === 'number' ? currentState.schemaVersion : 1,
+        smtpSettings: nextSmtpSettings,
+      }
+
+      const persisted = await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+        select: { updatedAt: true },
+      })
+
+      return res.json({
+        ok: true,
+        message: 'SMTP configurado com sucesso.',
+        updatedAt: persisted.updatedAt,
+        smtp: nextSmtpSettings,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  '/smtp/google/auth-url',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantSmtpGoogleAuthUrlBodySchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      }
+
+      const redirectUri = normalizeGoogleRedirectUri(req.body?.redirectUri)
+      if (!redirectUri) {
+        return res.status(400).json({ message: 'Redirect URI invalida para autenticacao Google.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const mergedSettings = mergeSmtpSettingsPreservingSecrets(
+        getEffectiveTenantSmtpSettings(stateData).settings,
+        req.body?.smtp,
+      )
+      const oauthClientId = String(mergedSettings.clientId || env.smtpClientId || '').trim()
+      const oauthClientSecret = String(
+        mergedSettings.clientSecret || env.smtpClientSecret || '',
+      ).trim()
+
+      if (!oauthClientId || !oauthClientSecret) {
+        return res.status(400).json({
+          message:
+            'OAuth do Gmail nao configurado no servidor. Defina SMTP_CLIENT_ID e SMTP_CLIENT_SECRET.',
+        })
+      }
+
+      const stateToken = buildGoogleOAuthStateToken({
+        tenantId,
+        userId: req.auth?.sub,
+        redirectUri,
+      })
+
+      const params = new URLSearchParams({
+        response_type: 'code',
+        client_id: oauthClientId,
+        redirect_uri: redirectUri,
+        scope: GOOGLE_OAUTH_SCOPE,
+        access_type: 'offline',
+        prompt: 'consent',
+        include_granted_scopes: 'true',
+        state: stateToken,
+      })
+
+      return res.json({
+        ok: true,
+        authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  '/smtp/google/exchange',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantSmtpGoogleExchangeBodySchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      }
+
+      const redirectUri = normalizeGoogleRedirectUri(req.body?.redirectUri)
+      if (!redirectUri) {
+        return res.status(400).json({ message: 'Redirect URI invalida para autenticacao Google.' })
+      }
+
+      let decodedState = null
+      try {
+        decodedState = jwt.verify(String(req.body?.state || ''), env.jwtSecret)
+      } catch {
+        return res.status(400).json({ message: 'Token de autenticacao Google invalido ou expirado.' })
+      }
+
+      if (
+        decodedState?.type !== GOOGLE_OAUTH_STATE_TYPE ||
+        String(decodedState?.tenantId || '').trim() !== String(tenantId || '').trim() ||
+        String(decodedState?.userId || '').trim() !== String(req.auth?.sub || '').trim() ||
+        String(decodedState?.redirectUri || '').trim() !== redirectUri
+      ) {
+        return res.status(403).json({ message: 'Sessao de autenticacao Google nao corresponde ao usuario atual.' })
+      }
+
+      const currentStateRecord = await prisma.tenantState.findUnique({
+        where: { tenantId },
+        select: { data: true },
+      })
+      const currentState =
+        currentStateRecord?.data && typeof currentStateRecord.data === 'object'
+          ? currentStateRecord.data
+          : getEmptyTenantState()
+
+      const mergedSettings = mergeSmtpSettingsPreservingSecrets(
+        getStoredTenantSmtpSettings(currentState),
+        req.body?.smtp,
+      )
+      const oauthClientId = String(mergedSettings.clientId || env.smtpClientId || '').trim()
+      const oauthClientSecret = String(
+        mergedSettings.clientSecret || env.smtpClientSecret || '',
+      ).trim()
+
+      if (!oauthClientId || !oauthClientSecret) {
+        return res.status(400).json({
+          message:
+            'OAuth do Gmail nao configurado no servidor. Defina SMTP_CLIENT_ID e SMTP_CLIENT_SECRET.',
+        })
+      }
+
+      const tokenData = await requestGoogleOAuthToken({
+        code: req.body?.code,
+        clientId: oauthClientId,
+        clientSecret: oauthClientSecret,
+        redirectUri,
+      })
+
+      const refreshToken =
+        String(tokenData?.refresh_token || '').trim() || String(mergedSettings.refreshToken || '').trim()
+      if (!refreshToken) {
+        return res.status(400).json({
+          message:
+            'Google nao retornou refresh token. Revogue o acesso anterior e tente novamente com consentimento.',
+        })
+      }
+
+      const accessToken = String(tokenData?.access_token || '').trim()
+      const connectedEmail = await fetchGoogleAccountEmail(accessToken)
+
+      const nextSmtpSettings = normalizeTenantSmtpSettings({
+        ...mergedSettings,
+        provider: 'gmail',
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        authType: 'oauth2',
+        refreshToken,
+        accessToken,
+        user: connectedEmail || mergedSettings.user,
+        from: mergedSettings.from || connectedEmail || mergedSettings.user,
+      })
+      const verificationSmtpSettings = normalizeTenantSmtpSettings({
+        ...nextSmtpSettings,
+        clientId: oauthClientId,
+        clientSecret: oauthClientSecret,
+      })
+
+      const validationMessage = getSmtpValidationMessage(verificationSmtpSettings)
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage })
+      }
+
+      await verifySmtpConnection({ smtpConfig: verificationSmtpSettings })
+
+      const stateToPersist = {
+        ...currentState,
+        schemaVersion: typeof currentState?.schemaVersion === 'number' ? currentState.schemaVersion : 1,
+        smtpSettings: nextSmtpSettings,
+      }
+
+      const persisted = await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+        select: { updatedAt: true },
+      })
+
+      return res.json({
+        ok: true,
+        message: 'Conta Gmail autenticada com sucesso.',
+        updatedAt: persisted.updatedAt,
+        connectedEmail: connectedEmail || nextSmtpSettings.user,
+        smtp: nextSmtpSettings,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
+router.post(
+  '/smtp/test',
+  requireRole('TENANT_ADMIN', 'SUPER_ADMIN'),
+  validateBody(tenantSmtpTestBodySchema),
+  async (req, res) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const effectiveSettings = getEffectiveTenantSmtpSettings(stateData)
+      const mergedForTest = mergeSmtpSettingsPreservingSecrets(
+        effectiveSettings.settings,
+        req.body?.smtp,
+      )
+
+      const validationMessage = getSmtpValidationMessage(mergedForTest)
+      if (validationMessage) {
+        return res.status(400).json({ message: validationMessage })
+      }
+
+      await verifySmtpConnection({ smtpConfig: mergedForTest })
+
+      const testTo = String(req.body?.testTo || '').trim()
+      if (testTo) {
+        await sendTaskEmail({
+          smtpConfig: mergedForTest,
+          to: testTo,
+          subject: 'Teste SMTP - Hive Tarefas',
+          text: 'Sua configuracao SMTP foi validada com sucesso no Hive Tarefas.',
+        })
+        return res.json({
+          ok: true,
+          message: `Conexao validada e e-mail de teste enviado para ${testTo}.`,
+        })
+      }
+
+      return res.json({
+        ok: true,
+        message: 'Conexao SMTP validada com sucesso.',
+      })
+    } catch (error) {
+      return res.status(400).json({ message: getSmtpRuntimeErrorMessage(error) })
+    }
+  },
+)
+
 router.get('/portal/bootstrap', async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
     }
 
     const authUser = await prisma.tenantUser.findFirst({
@@ -736,7 +1368,7 @@ router.get('/portal/bootstrap', async (req, res, next) => {
     })
 
     if (!authUser) {
-      return res.status(403).json({ message: 'Usuário sem acesso ao tenant informado.' })
+      return res.status(403).json({ message: 'UsuÃƒÂ¡rio sem acesso ao tenant informado.' })
     }
 
     const stateRecord = await getTenantStateRecord(tenantId)
@@ -783,11 +1415,18 @@ router.get('/portal/bootstrap', async (req, res, next) => {
       .map((record) => {
         const recordClientId = String(record?.clientId || '').trim()
         const linkedClient = visibleClients.find((client) => client.id === recordClientId)
+        const resolvedResponsible = getLatestActionActorByRecord({
+          stateData,
+          source: 'solicitation',
+          recordId: record?.id,
+          fallback: String(record?.responsavel || '').trim() || 'A definir',
+        })
         return {
           ...record,
           clientId: recordClientId || record?.clientId || '',
           clientName:
-            String(record?.clientName || '').trim() || linkedClient?.nome || 'Cliente não informado',
+            String(record?.clientName || '').trim() || linkedClient?.nome || 'Cliente nÃƒÂ£o informado',
+          responsavel: resolvedResponsible,
         }
       })
       .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))
@@ -949,7 +1588,7 @@ router.post(
     try {
       const tenantId = getTenantId(req)
       if (!tenantId) {
-        return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+        return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
       }
 
       const authUser = await prisma.tenantUser.findFirst({
@@ -964,7 +1603,7 @@ router.post(
       })
 
       if (!authUser) {
-        return res.status(403).json({ message: 'Usuário sem acesso ao tenant informado.' })
+        return res.status(403).json({ message: 'UsuÃƒÂ¡rio sem acesso ao tenant informado.' })
       }
 
       const stateRecord = await getTenantStateRecord(tenantId)
@@ -1011,13 +1650,13 @@ router.post(
       if (!targetClients.length) {
         if (requestedClientIds.length > 0) {
           return res.status(400).json({
-            message: 'Nenhum cliente válido encontrado para criar a solicitação.',
+            message: 'Nenhum cliente vÃƒÂ¡lido encontrado para criar a solicitaÃƒÂ§ÃƒÂ£o.',
           })
         }
         targetClients = [
           {
             id: '',
-            nome: String(authUser.name || '').trim() || 'Cliente não informado',
+            nome: String(authUser.name || '').trim() || 'Cliente nÃƒÂ£o informado',
             status: 'Ativo',
             inscricao: '',
             email: String(authUser.email || '').trim(),
@@ -1047,7 +1686,7 @@ router.post(
         try {
           decodedSize = Buffer.byteLength(contentBase64, 'base64')
         } catch {
-          return res.status(400).json({ message: `Anexo inválido: ${attachmentName}.` })
+          return res.status(400).json({ message: `Anexo invÃƒÂ¡lido: ${attachmentName}.` })
         }
 
         if (!decodedSize) {
@@ -1085,7 +1724,7 @@ router.post(
           assunto,
           clientId: String(client.id || '').trim(),
           clientName:
-            String(client.nome || '').trim() || String(authUser.name || '').trim() || 'Cliente não informado',
+            String(client.nome || '').trim() || String(authUser.name || '').trim() || 'Cliente nÃƒÂ£o informado',
           actionDate,
           metaDate,
           dueDate,
@@ -1144,17 +1783,206 @@ router.post(
   },
 )
 
+router.put(
+  '/portal/solicitations/:id',
+  validateBody(docsSolicitationCreateSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
+      }
+
+      const authUser = await prisma.tenantUser.findFirst({
+        where: { id: req.auth?.sub, tenantId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          clientIds: true,
+        },
+      })
+
+      if (!authUser) {
+        return res.status(403).json({ message: 'UsuÃƒÂ¡rio sem acesso ao tenant informado.' })
+      }
+
+      const targetId = String(req.params?.id || '').trim()
+      if (!targetId) {
+        return res.status(400).json({ message: 'ID da solicitaÃƒÂ§ÃƒÂ£o invÃƒÂ¡lido.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const stateClients = normalizeClientsFromState(stateData)
+      const currentSolicitationRecords = Array.isArray(stateData?.solicitationRecords)
+        ? stateData.solicitationRecords
+        : []
+
+      const targetIndex = currentSolicitationRecords.findIndex(
+        (record) => String(record?.id || '').trim() === targetId,
+      )
+      if (targetIndex < 0) {
+        return res.status(404).json({ message: 'SolicitaÃƒÂ§ÃƒÂ£o nÃƒÂ£o encontrada.' })
+      }
+
+      const targetRecord = currentSolicitationRecords[targetIndex]
+      const isTenantRestrictedUser = authUser.role === 'TENANT_USER'
+      const allowedClientIds = new Set(
+        (Array.isArray(authUser.clientIds) ? authUser.clientIds : [])
+          .map((clientId) => String(clientId || '').trim())
+          .filter(Boolean),
+      )
+      const fallbackClientByIdentity = findClientByUserIdentity(stateClients, authUser)
+
+      const canAccessRecord = (() => {
+        if (!isTenantRestrictedUser) return true
+
+        const recordClientId = String(targetRecord?.clientId || '').trim()
+        const recordClientName = normalizeLookupText(targetRecord?.clientName || '')
+        const createdByUserId = String(targetRecord?.createdByUserId || '').trim()
+        const createdByUserEmail = normalizeLookupText(targetRecord?.createdByUserEmail || '')
+        const authUserId = String(authUser?.id || '').trim()
+        const authUserEmail = normalizeLookupText(authUser?.email || '')
+        const fallbackClientId = String(fallbackClientByIdentity?.id || '').trim()
+        const fallbackClientName = normalizeLookupText(fallbackClientByIdentity?.nome || '')
+
+        if (recordClientId && allowedClientIds.size > 0) {
+          return allowedClientIds.has(recordClientId)
+        }
+        if (recordClientId && fallbackClientId && recordClientId === fallbackClientId) return true
+        if (createdByUserId && authUserId && createdByUserId === authUserId) return true
+        if (createdByUserEmail && authUserEmail && createdByUserEmail === authUserEmail) return true
+        if (recordClientName && fallbackClientName && recordClientName === fallbackClientName) return true
+        return false
+      })()
+
+      if (!canAccessRecord) {
+        return res.status(403).json({ message: 'Sem permissÃƒÂ£o para editar esta solicitaÃƒÂ§ÃƒÂ£o.' })
+      }
+
+      const currentStatusLabel = String(
+        targetRecord?.status || targetRecord?.etapa || 'Aberta',
+      ).trim()
+      if (!isOpenStatusLabel(currentStatusLabel)) {
+        return res.status(409).json({
+          message:
+            'Esta solicitaÃƒÂ§ÃƒÂ£o nÃƒÂ£o estÃƒÂ¡ mais aberta e nÃƒÂ£o pode ser editada no HIVE DOCS.',
+        })
+      }
+
+      const departamento = String(req.body.departamento || '').trim()
+      const processo = String(req.body.processo || '').trim()
+      const etapa = String(req.body.etapa || '').trim() || String(targetRecord?.etapa || 'Aberta').trim()
+      const assunto = String(req.body.assunto || '').trim()
+      const actionDate = String(req.body.actionDate || '').trim()
+      const metaDate = String(req.body.metaDate || '').trim()
+      const dueDate = String(req.body.dueDate || '').trim()
+      const andamento = String(req.body.andamento || '').trim()
+      const responsavel =
+        String(req.body.responsavel || '').trim() || String(targetRecord?.responsavel || '').trim()
+
+      const incomingAttachments = Array.isArray(req.body.attachments) ? req.body.attachments : []
+      const normalizedIncomingAttachments = []
+
+      for (const attachment of incomingAttachments) {
+        const attachmentName = String(attachment?.name || 'anexo')
+        const attachmentType = String(attachment?.type || 'application/octet-stream')
+        const contentBase64 = String(attachment?.contentBase64 || '').trim()
+        let decodedSize = 0
+        try {
+          decodedSize = Buffer.byteLength(contentBase64, 'base64')
+        } catch {
+          return res.status(400).json({ message: `Anexo invÃƒÂ¡lido: ${attachmentName}.` })
+        }
+
+        if (!decodedSize) {
+          return res.status(400).json({ message: `Anexo vazio: ${attachmentName}.` })
+        }
+
+        if (decodedSize > MAX_DOCS_ATTACHMENT_SIZE_BYTES) {
+          return res
+            .status(400)
+            .json({ message: `O anexo ${attachmentName} excede 25MB. Limite por documento: 25MB.` })
+        }
+
+        normalizedIncomingAttachments.push({
+          name: attachmentName,
+          type: attachmentType,
+          size: decodedSize,
+          contentBase64,
+        })
+      }
+
+      const updatedAt = new Date().toISOString()
+      const updatedRecord = {
+        ...targetRecord,
+        departamento,
+        processo,
+        etapa,
+        assunto,
+        actionDate,
+        metaDate,
+        dueDate,
+        andamento,
+        responsavel,
+        attachments: normalizedIncomingAttachments.map((attachment, index) => ({
+          id: `${targetId}-${index}-${String(attachment.name || 'anexo')}`,
+          name: String(attachment.name || 'anexo'),
+          size: Number(attachment.size || 0),
+          type: String(attachment.type || 'application/octet-stream'),
+          contentBase64: String(attachment.contentBase64 || ''),
+        })),
+        updatedAt,
+        updatedByUserId: String(authUser.id || '').trim(),
+        updatedByUserEmail: String(authUser.email || '').trim(),
+      }
+
+      const nextSolicitationRecords = [...currentSolicitationRecords]
+      nextSolicitationRecords[targetIndex] = updatedRecord
+
+      const stateToPersist = {
+        ...stateData,
+        schemaVersion: typeof stateData?.schemaVersion === 'number' ? stateData.schemaVersion : 1,
+        solicitationRecords: nextSolicitationRecords,
+      }
+
+      const persisted = await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+        select: { updatedAt: true },
+      })
+
+      return res.json({
+        ok: true,
+        record: updatedRecord,
+        updatedAt: persisted.updatedAt,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
 router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId ÃƒÂ© obrigatÃƒÂ³rio para este usuÃƒÂ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© obrigatÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³rio para este usuÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¡rio.' })
     }
 
-    if (!env.smtpHost || !env.smtpUser || !env.smtpPass || !env.smtpFrom) {
+    const stateRecord = await getTenantStateRecord(tenantId)
+    const stateData = getTenantStateData(stateRecord)
+    const effectiveSmtp = getEffectiveTenantSmtpSettings(stateData).settings
+    const validationMessage = getSmtpValidationMessage(effectiveSmtp)
+    if (validationMessage) {
       return res.status(400).json({
-        message:
-          'SMTP nÃ£o configurado no backend. Preencha SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS e SMTP_FROM.',
+        message: `SMTP nao configurado corretamente. ${validationMessage}`,
       })
     }
 
@@ -1162,7 +1990,7 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     try {
       attachmentBuffer = Buffer.from(req.body.attachment.contentBase64, 'base64')
     } catch {
-      return res.status(400).json({ message: 'Anexo invÃ¡lido para envio por e-mail.' })
+      return res.status(400).json({ message: 'Anexo invÃƒÆ’Ã‚Â¡lido para envio por e-mail.' })
     }
 
     if (!attachmentBuffer?.length) {
@@ -1170,23 +1998,29 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     }
 
     const emailText = [
-      `Encaminhamento automÃ¡tico da Hive Tarefas.`,
-      req.body.taskId ? `ReferÃªncia: ${req.body.taskSource || 'task'} #${req.body.taskId}` : '',
+      `Encaminhamento automÃƒÆ’Ã‚Â¡tico da Hive Tarefas.`,
+      req.body.taskId ? `ReferÃƒÆ’Ã‚Âªncia: ${req.body.taskSource || 'task'} #${req.body.taskId}` : '',
       req.body.message || '',
     ]
       .filter(Boolean)
       .join('\n\n')
 
-    const info = await sendTaskEmail({
-      to: req.body.to,
-      subject: req.body.subject,
-      text: emailText,
-      attachment: {
-        name: req.body.attachment.name,
-        type: req.body.attachment.type,
-        buffer: attachmentBuffer,
-      },
-    })
+    let info = null
+    try {
+      info = await sendTaskEmail({
+        smtpConfig: effectiveSmtp,
+        to: req.body.to,
+        subject: req.body.subject,
+        text: emailText,
+        attachment: {
+          name: req.body.attachment.name,
+          type: req.body.attachment.type,
+          buffer: attachmentBuffer,
+        },
+      })
+    } catch (smtpError) {
+      return res.status(400).json({ message: getSmtpRuntimeErrorMessage(smtpError) })
+    }
 
     return res.json({
       ok: true,
@@ -1202,7 +2036,7 @@ router.get('/clients', validateQuery(listClientsQuerySchema), async (req, res, n
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
     }
 
     const query = req.query.q.trim()
@@ -1237,7 +2071,7 @@ router.post('/clients', requireRole('TENANT_ADMIN', 'SUPER_ADMIN'), validateBody
   try {
     const tenantId = resolveTenantFromAuth(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
     }
 
     const client = await prisma.client.create({
@@ -1260,7 +2094,7 @@ router.get('/tasks', validateQuery(listTasksQuerySchema), async (req, res, next)
   try {
     const tenantId = getTenantId(req)
     if (!tenantId) {
-      return res.status(400).json({ message: 'tenantId Ã© obrigatÃ³rio para este usuÃ¡rio.' })
+      return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
     }
 
     const query = req.query.q.trim()
@@ -1298,4 +2132,5 @@ router.get('/tasks', validateQuery(listTasksQuerySchema), async (req, res, next)
 })
 
 export default router
+
 

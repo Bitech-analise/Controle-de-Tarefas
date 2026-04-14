@@ -76,7 +76,7 @@ body {
   letter-spacing: 0.06em;
 }
 
-.docs-login-form input {
+.docs-login-form input:not([type='checkbox']) {
   width: 100%;
   border: 1px solid #d2dae4;
   border-radius: 10px;
@@ -106,6 +106,67 @@ body {
   gap: 8px !important;
   text-transform: none !important;
   letter-spacing: 0 !important;
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+
+.docs-login-remember input[type='checkbox'] {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+
+.docs-login-switch {
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: #cfd8e3;
+  border: 1px solid #a8b8ca;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.docs-login-switch::after {
+  content: '';
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  transition: transform 0.2s ease;
+}
+
+.docs-login-remember input[type='checkbox']:checked + .docs-login-switch {
+  background: #b8e81f;
+  border-color: #9fcb1c;
+}
+
+.docs-login-remember input[type='checkbox']:checked + .docs-login-switch::after {
+  transform: translateX(16px);
+}
+
+.docs-login-remember input[type='checkbox']:focus-visible + .docs-login-switch {
+  outline: 2px solid rgba(11, 34, 59, 0.35);
+  outline-offset: 2px;
+}
+
+.docs-login-remember-text {
+  cursor: pointer;
+}
+
+.docs-login-remember-text {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 .docs-login-hero {
@@ -225,7 +286,7 @@ body {
 }
 
 .docs-content {
-  padding: 16px 18px 20px;
+  padding: 12px 12px 16px;
   display: grid;
   align-content: start;
   gap: 12px;
@@ -303,12 +364,12 @@ button.ghost {
 
 .docs-table-head {
   display: grid;
-  grid-template-columns: 52px 120px 150px minmax(180px, 1fr) 100px 190px 96px 96px 110px 110px 150px;
-  gap: 8px;
-  padding: 10px;
+  grid-template-columns: 36px 90px 96px minmax(80px, 1fr) 72px minmax(120px, 1.2fr) 74px 74px 80px 80px minmax(96px, 1fr);
+  gap: 6px;
+  padding: 8px 10px;
   background: #edf2f8;
   color: #4c6075;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -319,20 +380,20 @@ button.ghost {
 
 .docs-table-row {
   display: grid;
-  grid-template-columns: 52px 120px 150px minmax(180px, 1fr) 100px 190px 96px 96px 110px 110px 150px;
-  gap: 8px;
-  padding: 10px;
+  grid-template-columns: 36px 90px 96px minmax(80px, 1fr) 72px minmax(120px, 1.2fr) 74px 74px 80px 80px minmax(96px, 1fr);
+  gap: 6px;
+  padding: 8px 10px;
   border-top: 1px solid #e8edf5;
-  font-size: 12px;
+  font-size: 11px;
   align-items: center;
 }
 
 .docs-table-head-documents {
-  grid-template-columns: 52px 120px 150px minmax(180px, 1fr) 100px 190px 96px 96px 110px 110px 150px 120px;
+  grid-template-columns: 36px 90px 96px minmax(80px, 1fr) 72px minmax(120px, 1.2fr) 74px 74px 80px 80px minmax(96px, 1fr) 84px;
 }
 
 .docs-table-row-documents {
-  grid-template-columns: 52px 120px 150px minmax(180px, 1fr) 100px 190px 96px 96px 110px 110px 150px 120px;
+  grid-template-columns: 36px 90px 96px minmax(80px, 1fr) 72px minmax(120px, 1.2fr) 74px 74px 80px 80px minmax(96px, 1fr) 84px;
 }
 
 .docs-table-row span {
@@ -342,9 +403,17 @@ button.ghost {
   text-overflow: ellipsis;
 }
 
+.docs-table-row.editable {
+  cursor: pointer;
+}
+
+.docs-table-row.editable:hover {
+  background: #f4f8ff;
+}
+
 .docs-inline-button {
-  padding: 6px 10px !important;
-  font-size: 12px;
+  padding: 4px 8px !important;
+  font-size: 11px;
 }
 
 .docs-table-row.empty {
@@ -358,14 +427,24 @@ button.ghost {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
+  padding: 3px 8px;
+  font-size: 10px;
   font-weight: 700;
 }
 
 .docs-table-row mark.ok {
   background: #dff7e6;
   color: #0f7d38;
+}
+
+.docs-table-row mark.progress {
+  background: #e3d38a;
+  color: #5a4300;
+}
+
+.docs-table-row mark.danger {
+  background: #ffe0e0;
+  color: #9f1d1d;
 }
 
 .docs-table-row mark.warn {
@@ -512,6 +591,17 @@ button.ghost {
   gap: 8px;
 }
 
+.docs-attachments-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.docs-attachments-title {
+  font-size: 12px;
+  color: #203247;
+}
+
 .docs-attachments-list span {
   background: #edf3fb;
   border: 1px solid #c8d5e5;
@@ -551,13 +641,10 @@ button.ghost.danger {
   }
 
   .docs-table-head,
-  .docs-table-row {
-    min-width: 1500px;
-  }
-
+  .docs-table-row,
   .docs-table-head-documents,
   .docs-table-row-documents {
-    min-width: 1640px;
+    min-width: 0;
   }
 }
 

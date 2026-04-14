@@ -4,38 +4,54 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hive_tarefas}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "5432:5432"
     volumes:
       - db_data_prod:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-hive_tarefas}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - minha_rede
+
     deploy:
       replicas: 1
       restart_policy:
         condition: on-failure
 
   api:
-    image: ${API_IMAGE:-bitechgestao/tarefas:api-v1.3}
+    image: ${API_IMAGE:-bitechgestao/tarefas:api-v1.9}
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-hive_tarefas}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hive_tarefas}?schema=public
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-4000}
       JWT_SECRET: ${JWT_SECRET:-change_me_super_secret}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
-      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-*}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-https://tarefas.hivesync.com.br}
       SUPER_ADMIN_NAME: ${SUPER_ADMIN_NAME:-Administrador Global}
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-admin@hive.com}
-      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-Admin123}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+      RUN_DB_SEED: ${RUN_DB_SEED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_AUTH_TYPE: ${SMTP_AUTH_TYPE:-oauth2}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_CLIENT_ID: ${SMTP_CLIENT_ID:?SMTP_CLIENT_ID is required}
+      SMTP_CLIENT_SECRET: ${SMTP_CLIENT_SECRET:?SMTP_CLIENT_SECRET is required}
+      SMTP_REFRESH_TOKEN: ${SMTP_REFRESH_TOKEN:-}
+      SMTP_ACCESS_TOKEN: ${SMTP_ACCESS_TOKEN:-}
       SMTP_FROM: ${SMTP_FROM:-}
-    command: sh -c "npm run db:push && npm run db:seed && npm run start"
+    command: sh -c "npm run db:push && if [ \"$$RUN_DB_SEED\" = \"true\" ]; then npm run db:seed; fi && npm run start"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     restart: unless-stopped
     labels:
       - traefik.enable=true
@@ -52,7 +68,7 @@ services:
         condition: on-failure
 
   web:
-    image: ${WEB_IMAGE:-bitechgestao/tarefas:web-v1.3}
+    image: ${WEB_IMAGE:-bitechgestao/tarefas:web-v1.9}
     depends_on:
       - api
     restart: unless-stopped
