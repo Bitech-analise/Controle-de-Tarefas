@@ -15,6 +15,7 @@ async function main() {
     where: { email },
     update: {
       name,
+      username: String(email.split('@')[0] || '').trim().toLowerCase() || null,
       passwordHash,
       role: 'SUPER_ADMIN',
       isActive: true,
@@ -22,6 +23,7 @@ async function main() {
     },
     create: {
       name,
+      username: String(email.split('@')[0] || '').trim().toLowerCase() || null,
       email,
       passwordHash,
       role: 'SUPER_ADMIN',
@@ -41,6 +43,7 @@ async function main() {
     where: { email: 'tenant.admin@hive.com' },
     update: {
       name: 'Admin Tenant',
+      username: 'tenant.admin',
       role: 'TENANT_ADMIN',
       isActive: true,
       tenantId: defaultTenant.id,
@@ -48,6 +51,7 @@ async function main() {
     },
     create: {
       name: 'Admin Tenant',
+      username: 'tenant.admin',
       email: 'tenant.admin@hive.com',
       role: 'TENANT_ADMIN',
       isActive: true,

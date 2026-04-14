@@ -43,12 +43,12 @@ services:
       SMTP_AUTH_TYPE: ${SMTP_AUTH_TYPE:-oauth2}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_CLIENT_ID: ${SMTP_CLIENT_ID:?SMTP_CLIENT_ID is required}
-      SMTP_CLIENT_SECRET: ${SMTP_CLIENT_SECRET:?SMTP_CLIENT_SECRET is required}
+      SMTP_CLIENT_ID: ${SMTP_CLIENT_ID:-}
+      SMTP_CLIENT_SECRET: ${SMTP_CLIENT_SECRET:-}
       SMTP_REFRESH_TOKEN: ${SMTP_REFRESH_TOKEN:-}
       SMTP_ACCESS_TOKEN: ${SMTP_ACCESS_TOKEN:-}
       SMTP_FROM: ${SMTP_FROM:-}
-    command: sh -c "npm run db:push && if [ \"$$RUN_DB_SEED\" = \"true\" ]; then npm run db:seed; fi && npm run start"
+    command: sh -c "npm run db:push -- --accept-data-loss && if [ \"$$RUN_DB_SEED\" = \"true\" ]; then npm run db:seed; fi && npm run start"
     depends_on:
       db:
         condition: service_healthy

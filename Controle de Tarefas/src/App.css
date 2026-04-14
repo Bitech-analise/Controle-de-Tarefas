@@ -371,6 +371,8 @@
   display: grid;
   grid-template-columns: 104px minmax(0, 1fr);
   background: var(--panel-bg);
+  width: 100%;
+  overflow-x: clip;
 }
 
 .sidebar {
@@ -389,6 +391,8 @@
 .sidebar-avatar {
   width: 44px;
   height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border-radius: 16px;
   background: #1a2327;
   color: var(--accent);
@@ -397,21 +401,29 @@
   font-weight: 700;
   font-size: 14px;
   box-shadow: 0 12px 24px rgba(15, 21, 25, 0.4);
+  flex-shrink: 0;
 }
 
 .sidebar-avatar.has-logo {
   width: 64px;
   height: 64px;
+  min-width: 64px;
+  min-height: 64px;
   border-radius: 20px;
-  background: transparent;
+  background: #1a2327;
+  border: 1px solid rgba(215, 243, 63, 0.28);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
 }
 
 .sidebar-avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  object-position: center;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   background: transparent;
   border-radius: inherit;
   display: block;
@@ -520,6 +532,8 @@
   flex-direction: column;
   gap: 22px;
   padding: 22px 28px 48px;
+  min-width: 0;
+  overflow-x: clip;
 }
 
 .topbar {
@@ -745,6 +759,10 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
+}
+
+.overview-grid > * {
+  min-width: 0;
 }
 
 .card {
@@ -1009,13 +1027,14 @@
 
 .performance-body {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr);
+  grid-template-columns: minmax(90px, 1fr) auto minmax(90px, 1fr);
   align-items: center;
-  gap: 26px;
+  gap: 16px;
 }
 
 .metric {
   text-align: center;
+  min-width: 0;
 }
 
 .metric-left {
@@ -1026,10 +1045,6 @@
   justify-self: center;
 }
 
-.metric-right span {
-  white-space: nowrap;
-}
-
 .metric strong {
   display: block;
   font-size: 20px;
@@ -1038,6 +1053,8 @@
 .metric span {
   color: var(--muted);
   font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .speedometer-wrap {
@@ -1053,12 +1070,16 @@
 }
 
 .speedometer {
-  --gauge-size: 180px;
-  --gauge-thickness: 30px;
+  --gauge-size: 164px;
+  --gauge-thickness: 28px;
   position: relative;
-  width: 190px;
-  height: 132px;
+  width: 172px;
+  height: 118px;
   margin: 0 auto;
+  overflow: hidden;
+}
+
+.card.performance {
   overflow: hidden;
 }
 
@@ -1870,7 +1891,12 @@
 }
 
 .settings-user-clients-field {
-  grid-column: span 2;
+  grid-column: span 1;
+  max-width: 420px;
+}
+
+.settings-user-username-field {
+  max-width: 320px;
 }
 
 .settings-task-notes {
@@ -2183,7 +2209,7 @@
 .settings-users-head,
 .settings-users-row {
   display: grid;
-  grid-template-columns: 0.85fr 0.85fr 1.25fr 0.9fr 1.05fr 0.75fr 0.82fr 0.72fr;
+  grid-template-columns: 0.8fr 0.8fr 1.2fr 0.9fr 0.8fr 1fr 0.75fr 0.82fr 0.72fr;
   gap: 8px;
   padding: 10px 12px;
   align-items: center;
@@ -4464,6 +4490,47 @@ select:disabled {
 
   .super-admin-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1800px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .topbar-main {
+    flex-wrap: wrap;
+  }
+
+  .search {
+    min-width: 0;
+    flex: 1 1 320px;
+  }
+
+  .welcome-tenant-pill {
+    max-width: 100%;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .user {
+    justify-self: start;
+  }
+
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .progress {
+    grid-column: span 1;
+  }
+
+  .performance-body {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

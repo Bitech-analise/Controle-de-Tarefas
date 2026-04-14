@@ -87,16 +87,19 @@ const sendTaskEmailSchema = z.object({
   message: z.string().optional().default(''),
   taskId: z.union([z.string(), z.number()]).optional(),
   taskSource: z.enum(['task', 'solicitation']).optional().default('task'),
+  notificationType: z.enum(['default', 'portal-document']).optional().default('default'),
+  clientName: z.string().optional().default(''),
   attachment: z.object({
     name: z.string().min(1),
     type: z.string().optional().default('application/octet-stream'),
     contentBase64: z.string().min(1),
-  }),
+  }).optional(),
 })
 
 const MAX_DOCS_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
 const GOOGLE_OAUTH_SCOPE = 'https://mail.google.com/'
 const GOOGLE_OAUTH_STATE_TYPE = 'tenant-smtp-google-oauth'
+const APP_TIMEZONE = 'America/Sao_Paulo'
 
 const docsSolicitationCreateSchema = z.object({
   departamento: z.string().min(1),
@@ -128,6 +131,13 @@ const portalDocumentDownloadSchema = z.object({
 
 const tenantUserCreateSchema = z.object({
   name: z.string().min(2),
+  username: z
+    .string()
+    .trim()
+    .min(3)
+    .max(60)
+    .regex(/^[a-z0-9._-]+$/i, 'Username invalido. Use letras, numeros, ponto, underline ou hifen.')
+    .optional(),
   email: z.string().email(),
   password: z.string().min(4),
   clientIds: z.array(z.string()).optional().default([]),
@@ -137,6 +147,13 @@ const tenantUserCreateSchema = z.object({
 
 const tenantUserUpdateSchema = z.object({
   name: z.string().min(2).optional(),
+  username: z
+    .string()
+    .trim()
+    .min(3)
+    .max(60)
+    .regex(/^[a-z0-9._-]+$/i, 'Username invalido. Use letras, numeros, ponto, underline ou hifen.')
+    .optional(),
   email: z.string().email().optional(),
   password: z.string().min(4).optional(),
   clientIds: z.array(z.string()).optional(),
@@ -230,6 +247,32 @@ const getSmtpRuntimeErrorMessage = (error) => {
   }
 
   return rawMessage
+}
+
+const getDocumentNotificationGreeting = () => {
+  const hourText = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: APP_TIMEZONE,
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date())
+  const hour = Number.parseInt(hourText, 10)
+
+  if (!Number.isFinite(hour)) {
+    return 'Ola'
+  }
+
+  if (hour >= 5 && hour < 12) return 'Bom dia'
+  if (hour >= 12 && hour < 18) return 'Boa tarde'
+  return 'Boa noite'
+}
+
+const buildPortalDocumentNotificationMessage = (clientName) => {
+  const greeting = getDocumentNotificationGreeting()
+  const normalizedClientName = String(clientName || '').trim() || 'Cliente'
+
+  return `${greeting}, ${normalizedClientName}.
+
+Gostariamos de informar que o documento se encontra no portal do cliente para que possa ser efetuada a baixa do mesmo, qualquer duvida estamos a disposicao, abracos.`
 }
 
 const getEmptyTenantState = () => ({
@@ -662,6 +705,7 @@ router.get('/users', async (req, res, next) => {
       select: {
         id: true,
         name: true,
+        username: true,
         email: true,
         role: true,
         isActive: true,
@@ -691,6 +735,9 @@ router.post(
       const email = String(req.body.email || '')
         .trim()
         .toLowerCase()
+      const username = String(req.body.username || '')
+        .trim()
+        .toLowerCase()
       const name = String(req.body.name || '').trim()
       const password = String(req.body.password || '').trim()
       const role = req.body.role || 'TENANT_USER'
@@ -698,12 +745,19 @@ router.post(
       const candidateClientIds = Array.isArray(req.body.clientIds) ? req.body.clientIds : []
 
       if (!name || !email || !password) {
-        return res.status(400).json({ message: 'Informe nome, e-mail e senha para cadastrar o usuÃƒÆ’Ã‚Â¡rio.' })
+        return res.status(400).json({ message: 'Informe nome, e-mail e senha para cadastrar o usuario.' })
       }
 
       const emailInUse = await prisma.tenantUser.findUnique({ where: { email } })
       if (emailInUse) {
-        return res.status(409).json({ message: 'JÃƒÆ’Ã‚Â¡ existe um usuÃƒÆ’Ã‚Â¡rio com esse e-mail.' })
+        return res.status(409).json({ message: 'Ja existe um usuario com esse e-mail.' })
+      }
+
+      if (username) {
+        const usernameInUse = await prisma.tenantUser.findFirst({ where: { username } })
+        if (usernameInUse) {
+          return res.status(409).json({ message: 'Ja existe um usuario com esse username.' })
+        }
       }
 
       const clientIds = Array.from(
@@ -718,6 +772,7 @@ router.post(
         data: {
           tenantId,
           name,
+          username: username || null,
           email,
           passwordHash: await bcrypt.hash(password, 10),
           role,
@@ -727,6 +782,7 @@ router.post(
         select: {
           id: true,
           name: true,
+          username: true,
           email: true,
           role: true,
           isActive: true,
@@ -767,11 +823,24 @@ router.patch(
             .trim()
             .toLowerCase()
         : undefined
+      const hasUsernameField = Object.prototype.hasOwnProperty.call(req.body, 'username')
+      const nextUsername = hasUsernameField
+        ? String(req.body.username || '')
+            .trim()
+            .toLowerCase()
+        : undefined
 
       if (nextEmail && nextEmail !== target.email) {
         const emailInUse = await prisma.tenantUser.findUnique({ where: { email: nextEmail } })
         if (emailInUse) {
-          return res.status(409).json({ message: 'JÃƒÆ’Ã‚Â¡ existe um usuÃƒÆ’Ã‚Â¡rio com esse e-mail.' })
+          return res.status(409).json({ message: 'Ja existe um usuario com esse e-mail.' })
+        }
+      }
+
+      if (nextUsername && nextUsername !== String(target.username || '').trim().toLowerCase()) {
+        const usernameInUse = await prisma.tenantUser.findFirst({ where: { username: nextUsername } })
+        if (usernameInUse) {
+          return res.status(409).json({ message: 'Ja existe um usuario com esse username.' })
         }
       }
 
@@ -791,6 +860,7 @@ router.patch(
         data: {
           ...(req.body.name ? { name: req.body.name.trim() } : {}),
           ...(nextEmail ? { email: nextEmail } : {}),
+          ...(hasUsernameField ? { username: nextUsername || null } : {}),
           ...(req.body.password ? { passwordHash: await bcrypt.hash(req.body.password, 10) } : {}),
           ...(nextClientIds ? { clientIds: nextClientIds } : {}),
           ...(typeof req.body.isActive === 'boolean' ? { isActive: req.body.isActive } : {}),
@@ -799,6 +869,7 @@ router.patch(
         select: {
           id: true,
           name: true,
+          username: true,
           email: true,
           role: true,
           isActive: true,
@@ -1738,6 +1809,7 @@ router.post(
           replicateSubtasks: false,
           iAmResponsible: false,
           iAmAuthorizer: false,
+          allowDepartmentVisibility: true,
           status: '',
           tag: 'success',
           deliveryDate: '',
@@ -1986,24 +2058,31 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
       })
     }
 
-    let attachmentBuffer
-    try {
-      attachmentBuffer = Buffer.from(req.body.attachment.contentBase64, 'base64')
-    } catch {
-      return res.status(400).json({ message: 'Anexo invÃƒÆ’Ã‚Â¡lido para envio por e-mail.' })
+    let attachmentBuffer = null
+    if (req.body.attachment?.contentBase64) {
+      try {
+        attachmentBuffer = Buffer.from(req.body.attachment.contentBase64, 'base64')
+      } catch {
+        return res.status(400).json({ message: 'Anexo invÃƒÆ’Ã‚Â¡lido para envio por e-mail.' })
+      }
+
+      if (!attachmentBuffer?.length) {
+        return res.status(400).json({ message: 'Anexo vazio para envio por e-mail.' })
+      }
     }
 
-    if (!attachmentBuffer?.length) {
-      return res.status(400).json({ message: 'Anexo vazio para envio por e-mail.' })
-    }
-
-    const emailText = [
-      `Encaminhamento automÃƒÆ’Ã‚Â¡tico da Hive Tarefas.`,
-      req.body.taskId ? `ReferÃƒÆ’Ã‚Âªncia: ${req.body.taskSource || 'task'} #${req.body.taskId}` : '',
-      req.body.message || '',
-    ]
-      .filter(Boolean)
-      .join('\n\n')
+    const emailText =
+      req.body.notificationType === 'portal-document'
+        ? buildPortalDocumentNotificationMessage(req.body.clientName)
+        : [
+            `Encaminhamento automÃƒÆ’Ã‚Â¡tico da Hive Tarefas.`,
+            req.body.taskId
+              ? `ReferÃƒÆ’Ã‚Âªncia: ${req.body.taskSource || 'task'} #${req.body.taskId}`
+              : '',
+            req.body.message || '',
+          ]
+            .filter(Boolean)
+            .join('\n\n')
 
     let info = null
     try {
@@ -2012,11 +2091,14 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
         to: req.body.to,
         subject: req.body.subject,
         text: emailText,
-        attachment: {
-          name: req.body.attachment.name,
-          type: req.body.attachment.type,
-          buffer: attachmentBuffer,
-        },
+        attachment:
+          req.body.attachment && attachmentBuffer
+            ? {
+                name: req.body.attachment.name,
+                type: req.body.attachment.type,
+                buffer: attachmentBuffer,
+              }
+            : null,
       })
     } catch (smtpError) {
       return res.status(400).json({ message: getSmtpRuntimeErrorMessage(smtpError) })

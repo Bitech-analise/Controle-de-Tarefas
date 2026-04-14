@@ -9,28 +9,47 @@ import { requireAuth } from '../middlewares/auth.js'
 
 const router = Router()
 
-const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(4),
-})
+const loginSchema = z
+  .object({
+    login: z.string().trim().min(2).optional(),
+    email: z.string().trim().optional(),
+    password: z.string().min(4),
+  })
+  .superRefine((value, ctx) => {
+    const rawLogin = String(value.login || value.email || '').trim()
+    if (!rawLogin) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Informe usuario ou e-mail.',
+        path: ['login'],
+      })
+    }
+  })
 
 router.post('/login', validateBody(loginSchema), async (req, res, next) => {
   try {
-    const { email, password } = req.body
-    const normalizedEmail = email.toLowerCase().trim()
+    const { password } = req.body
+    const rawLogin = String(req.body.login || req.body.email || '').trim()
+    const normalizedLogin = rawLogin.toLowerCase()
+    const isEmailLogin = normalizedLogin.includes('@')
 
-    const user = await prisma.tenantUser.findUnique({
-      where: { email: normalizedEmail },
-      include: { tenant: true },
-    })
+    const user = isEmailLogin
+      ? await prisma.tenantUser.findUnique({
+          where: { email: normalizedLogin },
+          include: { tenant: true },
+        })
+      : await prisma.tenantUser.findFirst({
+          where: { username: normalizedLogin },
+          include: { tenant: true },
+        })
 
     if (!user || !user.isActive) {
-      return res.status(401).json({ message: 'Usuário ou senha inválidos.' })
+      return res.status(401).json({ message: 'Usuario ou senha invalidos.' })
     }
 
     const passwordOk = await bcrypt.compare(password, user.passwordHash)
     if (!passwordOk) {
-      return res.status(401).json({ message: 'Usuário ou senha inválidos.' })
+      return res.status(401).json({ message: 'Usuario ou senha invalidos.' })
     }
 
     if (user.role !== 'SUPER_ADMIN' && (!user.tenant || user.tenant.status !== 'ACTIVE')) {
@@ -42,6 +61,7 @@ router.post('/login', validateBody(loginSchema), async (req, res, next) => {
       role: user.role,
       tenantId: user.tenantId || null,
       email: user.email,
+      username: user.username || null,
       name: user.name,
     }
 
@@ -52,6 +72,7 @@ router.post('/login', validateBody(loginSchema), async (req, res, next) => {
       user: {
         id: user.id,
         name: user.name,
+        username: user.username || null,
         email: user.email,
         role: user.role,
         tenantId: user.tenantId,
@@ -72,12 +93,13 @@ router.get('/me', requireAuth, async (req, res, next) => {
     })
 
     if (!user || !user.isActive) {
-      return res.status(401).json({ message: 'Usuário não encontrado.' })
+      return res.status(401).json({ message: 'Usuario nao encontrado.' })
     }
 
     return res.json({
       id: user.id,
       name: user.name,
+      username: user.username || null,
       email: user.email,
       role: user.role,
       tenantId: user.tenantId,

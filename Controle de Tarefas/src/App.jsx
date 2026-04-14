@@ -1213,6 +1213,14 @@ const formatPhoneValue = (value) => {
   return `(${areaCode})${digits.slice(2, 7)}-${digits.slice(7)}`
 }
 
+const normalizeTenantUsername = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 60)
+
 const formatCnpjValue = (value) => {
   const digits = String(value || '')
     .replace(/\D/g, '')
@@ -1827,6 +1835,7 @@ const initialUsers = [
   {
     id: 1,
     nome: 'Administrador',
+    username: 'admin',
     departamento: 'Fiscal',
     visualizacao: 'ADM',
     telefone: '(35) 9 9999-0000',
@@ -1838,6 +1847,7 @@ const initialUsers = [
 
 const emptyUserForm = {
   nome: '',
+  username: '',
   departamento: '',
   visualizacao: '',
   telefone: '',
@@ -2438,7 +2448,8 @@ function App() {
         const allowedByDepartment = isAllowedByAuthDepartmentScope(record.departamento)
         if (!allowedByDepartment) return false
         if (isAllowedByAuthClientScope(record.clientId, record.clientName)) return true
-        return Boolean(record?.allowDepartmentVisibility)
+        const isHiveDocsRequest = String(record?.source || '').trim() === 'hive-docs'
+        return Boolean(record?.allowDepartmentVisibility || isHiveDocsRequest)
       })
     : solicitationRecords
 
@@ -3152,6 +3163,9 @@ function App() {
       id: String(authSession?.user?.id || '1'),
       authUserId: String(authSession?.user?.id || ''),
       nome: authSession?.user?.name || 'Usuário',
+      username: normalizeTenantUsername(
+        authSession?.user?.username || String(authSession?.user?.email || '').split('@')[0],
+      ),
       departamento: '',
       visualizacao: getDefaultUserVisualizationModeByRole(authSession?.user?.role),
       telefone: '',
@@ -3174,6 +3188,7 @@ function App() {
           id: String(item?.id || item?.authUserId || index + 1),
           authUserId: String(item?.authUserId || item?.id || ''),
           nome: String(item?.nome || item?.name || '').trim(),
+          username: normalizeTenantUsername(item?.username),
           departamento: String(item?.departamento || '').trim(),
           visualizacao: normalizeUserVisualizationMode(item?.visualizacao),
           telefone: formatPhoneValue(item?.telefone),
@@ -3205,6 +3220,7 @@ function App() {
               id: String(backendUser.id || localMeta?.id || index + 1),
               authUserId: String(backendUser.id || ''),
               nome: String(localMeta?.nome || backendUser.name || '').trim(),
+              username: normalizeTenantUsername(localMeta?.username || backendUser.username),
               departamento: String(localMeta?.departamento || '').trim(),
               visualizacao: normalizeUserVisualizationMode(
                 localMeta?.visualizacao,
@@ -5708,6 +5724,40 @@ function App() {
       const sentAtIso = new Date().toISOString()
       const sentBy =
         String(authSession?.user?.name || authSession?.user?.email || '').trim() || 'Usuário'
+      let sendWarning = ''
+
+      const recipientEmail = String(selectedTaskRecipientEmail || '').trim()
+      if (recipientEmail) {
+        const notificationClientName =
+          String(getReportClientDisplayName(selectedTask) || selectedTask.client || '').trim() ||
+          'Cliente'
+        const notificationSubject = `Documento disponivel no portal do cliente - ${String(
+          selectedTask.subject || 'Solicitacao',
+        ).trim()}`
+
+        try {
+          await apiRequest('/tenant/send-task-email', {
+            method: 'POST',
+            token: authSession?.token,
+            body: {
+              to: recipientEmail,
+              subject: notificationSubject,
+              taskId: selectedTask.id,
+              taskSource: selectedTask.reportSource === 'solicitation' ? 'solicitation' : 'task',
+              notificationType: 'portal-document',
+              clientName: notificationClientName,
+            },
+          })
+        } catch (notificationError) {
+          sendWarning = `Documento enviado ao Hive Docs, mas falhou o envio da notificacao por e-mail: ${
+            notificationError?.message || 'Erro desconhecido.'
+          }`
+        }
+      } else {
+        sendWarning =
+          'Documento enviado ao Hive Docs, mas o cliente nao possui e-mail cadastrado para notificacao.'
+      }
+
       updateSelectedTaskData((item) => ({
         ...item,
         emailSentAt: sentAt,
@@ -5726,7 +5776,7 @@ function App() {
         ),
       }))
       logTaskAction(selectedTask, 'Enviar Documentos')
-      setTaskActionError('')
+      setTaskActionError(sendWarning)
     } catch (error) {
       setTaskActionError(error.message || 'Não foi possível enviar o documento ao Hive Docs.')
     } finally {
@@ -5952,6 +6002,12 @@ function App() {
           telefone: formatPhoneValue(value),
         }
       }
+      if (field === 'username') {
+        return {
+          ...prev,
+          username: normalizeTenantUsername(value),
+        }
+      }
 
       return { ...prev, [field]: value }
     })
@@ -5992,6 +6048,7 @@ function App() {
     }
 
     const nome = userForm.nome.trim()
+    const usernameValue = normalizeTenantUsername(userForm.username)
     const departamento = userForm.departamento.trim()
     const visualizacao = normalizeUserVisualizationMode(userForm.visualizacao)
     const telefone = formatPhoneValue(userForm.telefone)
@@ -6004,9 +6061,9 @@ function App() {
       eligibleClientIds.has(id),
     )
 
-    if (!nome || !departamento || !visualizacao || !email || !senha) {
+    if (!nome || !usernameValue || !departamento || !visualizacao || !email || !senha) {
       setSettingsUserFeedback(
-        'Preencha nome, departamento, visualização, e-mail e senha para salvar o usuário.',
+        'Preencha nome, usuario, departamento, visualizacao, e-mail e senha para salvar o usuario.',
       )
       return
     }
@@ -6017,6 +6074,14 @@ function App() {
 
     if (duplicatedEmail) {
       setSettingsUserFeedback('Já existe um usuário com esse e-mail.')
+      return
+    }
+
+    const duplicatedUsername = users.some(
+      (user) => normalizeTenantUsername(user.username) === usernameValue && user.id !== editingUserId,
+    )
+    if (duplicatedUsername) {
+      setSettingsUserFeedback('Ja existe um usuario com esse username.')
       return
     }
 
@@ -6038,6 +6103,7 @@ function App() {
           token: authSession.token,
           body: {
             name: nome,
+            username: usernameValue,
             email,
             password: senha,
             clientIds,
@@ -6054,6 +6120,7 @@ function App() {
                   id: String(updatedAuthUser.id || editingUserId),
                   authUserId: String(updatedAuthUser.id || authUserId),
                   nome,
+                  username: normalizeTenantUsername(updatedAuthUser.username || usernameValue),
                   departamento,
                   visualizacao,
                   telefone,
@@ -6075,6 +6142,7 @@ function App() {
           token: authSession.token,
           body: {
             name: nome,
+            username: usernameValue,
             email,
             password: senha,
             clientIds,
@@ -6088,9 +6156,10 @@ function App() {
           ...prev,
           {
             id: createdId,
-            authUserId: createdId,
-            nome,
-            departamento,
+              authUserId: createdId,
+              nome,
+              username: normalizeTenantUsername(createdAuthUser.username || usernameValue),
+              departamento,
             visualizacao,
             telefone,
             email: createdAuthUser.email || email,
@@ -6128,6 +6197,7 @@ function App() {
     setEditingUserId(user.id)
     setUserForm({
       nome: user.nome || '',
+      username: normalizeTenantUsername(user.username),
       departamento: user.departamento || '',
       visualizacao: normalizeUserVisualizationMode(
         user.visualizacao,
@@ -11323,6 +11393,17 @@ function App() {
                           disabled={!canManageTenantUsers}
                         />
                       </label>
+                      <label className="settings-field settings-user-username-field">
+                        <span>Usuario</span>
+                        <input
+                          type="text"
+                          value={userForm.username}
+                          onChange={(event) => handleSettingsUserChange('username', event.target.value)}
+                          placeholder="usuario.login"
+                          autoComplete="off"
+                          disabled={!canManageTenantUsers}
+                        />
+                      </label>
                       <label className="settings-field">
                         <span>Senha</span>
                         <input
@@ -11435,6 +11516,7 @@ function App() {
                         <span>Departamento</span>
                         <span>Clientes</span>
                         <span>Telefone</span>
+                        <span>Usuario</span>
                         <span>E-mail (login)</span>
                         <span>Senha</span>
                         <span>Ações</span>
@@ -11471,6 +11553,7 @@ function App() {
                                 : '-'}
                             </span>
                             <span title={user.telefone || '-'}>{user.telefone || '-'}</span>
+                            <span title={user.username || '-'}>{user.username || '-'}</span>
                             <span title={user.email}>{user.email}</span>
                             <span title={user.senha}>{user.senha}</span>
                             <span className="settings-users-actions">

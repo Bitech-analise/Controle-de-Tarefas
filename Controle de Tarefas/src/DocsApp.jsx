@@ -6,6 +6,7 @@ const API_BASE_URL = String(import.meta.env.VITE_API_URL || '/api').replace(/\/$
 const STORAGE_KEYS = {
   session: 'hive_docs_session',
   remember: 'hive_docs_remember',
+  login: 'hive_docs_login',
   email: 'hive_docs_email',
 }
 
@@ -191,7 +192,7 @@ function DocsApp() {
 
   const [remember, setRemember] = useState(() => localStorage.getItem(STORAGE_KEYS.remember) === 'true')
   const [loginForm, setLoginForm] = useState(() => ({
-    email: localStorage.getItem(STORAGE_KEYS.email) || '',
+    login: localStorage.getItem(STORAGE_KEYS.login) || localStorage.getItem(STORAGE_KEYS.email) || '',
     password: '',
   }))
   const [loginLoading, setLoginLoading] = useState(false)
@@ -249,10 +250,10 @@ function DocsApp() {
 
   const handleLogin = async (event) => {
     event.preventDefault()
-    const email = String(loginForm.email || '').trim().toLowerCase()
+    const login = String(loginForm.login || '').trim().toLowerCase()
     const password = String(loginForm.password || '').trim()
-    if (!email || !password) {
-      setLoginError('Informe e-mail e senha para entrar.')
+    if (!login || !password) {
+      setLoginError('Informe usuario/e-mail e senha para entrar.')
       return
     }
 
@@ -261,7 +262,7 @@ function DocsApp() {
     try {
       const auth = await apiRequest('/auth/login', {
         method: 'POST',
-        body: { email, password },
+        body: { login, password },
       })
 
       const nextSession = {
@@ -272,9 +273,11 @@ function DocsApp() {
       localStorage.setItem(STORAGE_KEYS.session, JSON.stringify(nextSession))
       if (remember) {
         localStorage.setItem(STORAGE_KEYS.remember, 'true')
-        localStorage.setItem(STORAGE_KEYS.email, email)
+        localStorage.setItem(STORAGE_KEYS.login, login)
+        localStorage.setItem(STORAGE_KEYS.email, login)
       } else {
         localStorage.removeItem(STORAGE_KEYS.remember)
+        localStorage.removeItem(STORAGE_KEYS.login)
         localStorage.removeItem(STORAGE_KEYS.email)
       }
 
@@ -733,10 +736,10 @@ function DocsApp() {
             <label>
               <span>Usuario / E-mail</span>
               <input
-                type="email"
-                value={loginForm.email}
-                onChange={(event) => setLoginForm((prev) => ({ ...prev, email: event.target.value }))}
-                placeholder="cliente@empresa.com"
+                type="text"
+                value={loginForm.login}
+                onChange={(event) => setLoginForm((prev) => ({ ...prev, login: event.target.value }))}
+                placeholder="usuario ou cliente@empresa.com"
               />
             </label>
             <label>
