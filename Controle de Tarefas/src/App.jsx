@@ -1829,6 +1829,8 @@ const emptyClientForm = {
   uf: '',
   tributacao: '',
   checklist: [],
+  particularidades: '',
+  loginsSenhas: '',
 }
 
 const initialUsers = [
@@ -5731,9 +5733,7 @@ function App() {
         const notificationClientName =
           String(getReportClientDisplayName(selectedTask) || selectedTask.client || '').trim() ||
           'Cliente'
-        const notificationSubject = `Documento disponivel no portal do cliente - ${String(
-          selectedTask.subject || 'Solicitacao',
-        ).trim()}`
+        const notificationSubject = 'Novo Documento no Portal do Cliente'
 
         try {
           await apiRequest('/tenant/send-task-email', {
@@ -7194,7 +7194,7 @@ function App() {
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
 
     doc.setFontSize(14)
-    doc.text('Hive Tarefas - Relatorio de Tarefas', 40, 34)
+    doc.text('Hive Controller - Relatorio de Tarefas', 40, 34)
     doc.setFontSize(9)
     doc.text(
       `Filtros: Tipo ${appliedTaskTypeFilterValue} | Departamento ${appliedTaskFilters.department} | Status ${appliedTaskFilters.status}`,
@@ -7602,7 +7602,7 @@ function App() {
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
 
     doc.setFontSize(14)
-    doc.text('Hive Tarefas - Relatorio de Clientes', 40, 34)
+    doc.text('Hive Controller - Relatorio de Clientes', 40, 34)
     doc.setFontSize(9)
     doc.text(
       `Filtros: Status ${appliedClientTableFilters.status} | Grupo ${appliedClientTableFilters.grupo} | Visibilidade ${appliedClientTableFilters.visibilidade} | UF ${appliedClientTableFilters.uf}`,
@@ -8332,7 +8332,7 @@ function App() {
                 </svg>
               </div>
               <div>
-                <h1>Hive Tarefas</h1>
+                <h1>Hive Controller</h1>
                 <p>Controle de Tarefas</p>
               </div>
             </div>
@@ -8422,7 +8422,7 @@ function App() {
               </div>
             </div>
 
-            <div className="login-foot">Hive Tarefas © 2026</div>
+            <div className="login-foot">Hive Controller © 2026</div>
           </div>
 
           <div className="login-hero">
@@ -8430,7 +8430,7 @@ function App() {
               <span className="pill">Segurança &amp; Performance</span>
               <h2>
                 Ative a autenticação de duplo fator no seu
-                <span> Hive Tarefas</span>
+                <span> Hive Controller</span>
               </h2>
               <p>
                 Adicione uma camada extra de proteção aos dados da sua empresa e de seus clientes.
@@ -13960,6 +13960,30 @@ function App() {
                           </div>
                         ) : null}
                       </div>
+                    </div>
+                  </div>
+                  <div className="form-grid">
+                    <div className="field full">
+                      <label>Particularidades</label>
+                      <textarea
+                        placeholder="Informações importantes sobre o cliente (opcional)."
+                        value={clientForm.particularidades || ''}
+                        onChange={(event) =>
+                          handleClientChange('particularidades', event.target.value)
+                        }
+                        readOnly={isReadOnly}
+                      />
+                    </div>
+                    <div className="field full">
+                      <label>Logins/Senhas</label>
+                      <textarea
+                        placeholder="Logins e senhas de acesso (opcional)."
+                        value={clientForm.loginsSenhas || ''}
+                        onChange={(event) =>
+                          handleClientChange('loginsSenhas', event.target.value)
+                        }
+                        readOnly={isReadOnly}
+                      />
                     </div>
                   </div>
                   <div className="form-actions">

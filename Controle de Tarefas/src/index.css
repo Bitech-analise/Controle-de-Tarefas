@@ -1,5 +1,12 @@
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 :root {
   --font-body: 'Manrope', 'Segoe UI', sans-serif;
   --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
@@ -25,11 +32,7 @@
 body {
   margin: 0;
   background: var(--panel-bg);
-  min-height: 100vh;
-}
-
-#root {
-  min-height: 100vh;
+  min-height: 100%;
 }
 
 a {

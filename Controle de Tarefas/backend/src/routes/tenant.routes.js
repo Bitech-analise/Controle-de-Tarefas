@@ -272,7 +272,7 @@ const buildPortalDocumentNotificationMessage = (clientName) => {
 
   return `${greeting}, ${normalizedClientName}.
 
-Gostariamos de informar que o documento se encontra no portal do cliente para que possa ser efetuada a baixa do mesmo, qualquer duvida estamos a disposicao, abracos.`
+Informo que a sua guia já se encontra no portal para que possa ser efetuada a baixa do documento. Qualquer dúvida pode entrar em contato, pois estaremos sempre disponíveis para atendê-lo. Abraços.`
 }
 
 const getEmptyTenantState = () => ({
