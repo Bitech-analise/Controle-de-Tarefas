@@ -201,12 +201,14 @@ const clientChecklistOptions = [
   'Difal',
   'Sub. Tributária',
   'Emite Nfse',
+  'Boleto do sindicato do comércio',
   'Compra fora do Estado',
   'Parcelamentos',
   'Parcelamento MEI',
   'Parcelamento PGFN',
   'Parcelamento Simples Nacional',
   'Folha de pagamento',
+  'Adiantamento de Folha',
   'Folha de Pagamento Ultimo Dia',
   'Pró-Labore',
 ]
@@ -700,6 +702,11 @@ const normalizeFreeText = (value) =>
     .replace(/\s+/g, ' ')
     .trim()
 
+const sortStringsPtBr = (values) =>
+  [...(Array.isArray(values) ? values : [])].sort((a, b) =>
+    String(a || '').localeCompare(String(b || ''), 'pt-BR'),
+  )
+
 const normalizeOnboardingStepConfirmations = (confirmations, templateConfirmations) => {
   const source = Array.isArray(confirmations) ? confirmations : []
   const templateItems = Array.isArray(templateConfirmations) ? templateConfirmations : []
@@ -820,6 +827,10 @@ const checklistMatchingRules = [
     terms: ['sub tributaria', 'substituicao tributaria', 'st'],
   },
   { checklist: 'Emite Nfse', terms: ['nfse', 'nfs e', 'nota fiscal de servico'] },
+  {
+    checklist: 'Boleto do sindicato do comércio',
+    terms: ['boleto do sindicato do comercio', 'sindicato do comercio', 'sindicato comercio'],
+  },
   { checklist: 'Compra fora do Estado', terms: ['compra fora do estado', 'fora do estado'] },
   { checklist: 'Parcelamentos', terms: ['parcelamento', 'parcelamentos'] },
   { checklist: 'Parcelamento MEI', terms: ['parcelamento mei'] },
@@ -829,6 +840,7 @@ const checklistMatchingRules = [
     terms: ['parcelamento simples nacional'],
   },
   { checklist: 'Folha de pagamento', terms: ['folha de pagamento', 'folha pagamento'] },
+  { checklist: 'Adiantamento de Folha', terms: ['adiantamento de folha', 'adiantamento folha'] },
   {
     checklist: 'Folha de Pagamento Ultimo Dia',
     terms: ['folha de pagamento ultimo dia', 'folha pagamento ultimo dia'],
@@ -1297,7 +1309,7 @@ const getGeneratedTaskStatus = (actionIso, metaIso, dueIso) => {
   const todayIso = getTodayIsoLocal()
 
   if (actionIso && actionIso > todayIso) {
-    return { status: 'A Vencer', tag: 'lime' }
+    return { status: 'A Vencer', tag: 'purple' }
   }
 
   if (dueIso && dueIso < todayIso) {
@@ -1305,16 +1317,33 @@ const getGeneratedTaskStatus = (actionIso, metaIso, dueIso) => {
   }
 
   if (metaIso && metaIso < todayIso) {
-    return { status: 'Atenção', tag: 'purple' }
+    return { status: 'Atenção', tag: 'attention' }
   }
 
   return { status: 'Em andamento', tag: 'success' }
 }
 
+const normalizeTaskStatusLabel = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+
 const getTaskDisplayStatus = (row) => {
   const persistedStatus = String(row.status || '').trim()
+  const normalizedPersistedStatus = normalizeTaskStatusLabel(persistedStatus)
   if (isCompletedTaskStatus(persistedStatus)) {
     return { status: persistedStatus, tag: row.tag || 'lime' }
+  }
+
+  if (normalizedPersistedStatus.includes('respondid')) {
+    return { status: persistedStatus || 'Respondido', tag: 'responded' }
+  }
+
+  if (normalizedPersistedStatus === 'atencao') {
+    return { status: persistedStatus || 'Atenção', tag: 'attention' }
   }
 
   const hasDeliveryDate = Boolean(String(row.deliveryDate || '').trim())
@@ -1325,7 +1354,15 @@ const getTaskDisplayStatus = (row) => {
     return getGeneratedTaskStatus(actionIso, metaIso, dueIso)
   }
 
-  return { status: row.status, tag: row.tag }
+  return {
+    status: row.status,
+    tag:
+      normalizedPersistedStatus === 'atencao'
+        ? 'attention'
+        : normalizedPersistedStatus === 'a vencer'
+          ? 'purple'
+          : row.tag,
+  }
 }
 
 const getTaskDisplayConclusion = (row) => {
@@ -1818,6 +1855,7 @@ const emptyClientForm = {
   tipoEmpresa: [],
   statusComplementar: '',
   grupos: [],
+  grupo: '',
   visibilidade: 'Geral',
   contato: '',
   telefone: '',
@@ -1908,6 +1946,49 @@ const normalizeSettingsSmtpForm = (smtpPayload) => {
 }
 
 const isValidEmailAddress = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim())
+const EMAIL_RECIPIENT_SPLIT_REGEX = /[;,\n]+/g
+
+const parseEmailRecipients = (value) => {
+  const source = String(value || '')
+    .split(EMAIL_RECIPIENT_SPLIT_REGEX)
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+
+  const seen = new Set()
+  return source.filter((item) => {
+    const key = item.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+const normalizeEmailRecipients = (value) => parseEmailRecipients(value).join('; ')
+
+const normalizeConversationMessages = (value) => {
+  const source = Array.isArray(value) ? value : []
+  return source
+    .map((entry, index) => {
+      const text = String(entry?.text || entry?.message || '').trim()
+      if (!text) return null
+
+      const rawCreatedAt = String(entry?.createdAt || entry?.timestamp || '').trim()
+      const normalizedCreatedAt =
+        rawCreatedAt && !Number.isNaN(new Date(rawCreatedAt).getTime())
+          ? new Date(rawCreatedAt).toISOString()
+          : ''
+
+      return {
+        id: String(entry?.id || `conversation-${Date.now()}-${index}`),
+        authorType: String(entry?.authorType || '').trim() === 'client' ? 'client' : 'internal',
+        authorName: String(entry?.authorName || '').trim(),
+        authorEmail: String(entry?.authorEmail || '').trim(),
+        text,
+        createdAt: normalizedCreatedAt,
+      }
+    })
+    .filter(Boolean)
+}
 
 const getGoogleOAuthRedirectUri = () => {
   if (typeof window === 'undefined' || !window.location?.origin) return ''
@@ -2303,6 +2384,10 @@ function App() {
   const [taskEditMode, setTaskEditMode] = useState(false)
   const [taskActionLogs, setTaskActionLogs] = useState([])
   const [taskActionError, setTaskActionError] = useState('')
+  const [taskReplyOpen, setTaskReplyOpen] = useState(false)
+  const [taskReplyDraft, setTaskReplyDraft] = useState('')
+  const [taskReplySending, setTaskReplySending] = useState(false)
+  const [taskConversationOpen, setTaskConversationOpen] = useState(false)
   const [taskTransferTarget, setTaskTransferTarget] = useState('')
   const [docsReceivedDownloads, setDocsReceivedDownloads] = useState([])
   const [taskEmailSending, setTaskEmailSending] = useState(false)
@@ -2532,6 +2617,22 @@ function App() {
     window.addEventListener('keydown', handleEscClose)
     return () => window.removeEventListener('keydown', handleEscClose)
   }, [reportEmailCard])
+
+  useEffect(() => {
+    if (!taskConversationOpen) return
+
+    const handleEscClose = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setTaskConversationOpen(false)
+      setTaskReplyOpen(false)
+      setTaskReplyDraft('')
+      setTaskActionError('')
+    }
+
+    window.addEventListener('keydown', handleEscClose)
+    return () => window.removeEventListener('keydown', handleEscClose)
+  }, [taskConversationOpen])
 
   useEffect(() => {
     const openedNow = taskCreateOpen && !wasTaskCreateOpenRef.current
@@ -3738,6 +3839,7 @@ function App() {
       ? {
           ...client,
           tipoEmpresa: normalizeClientCompanyTypes(client.tipoEmpresa),
+          grupo: String(client.grupo || '').trim(),
           competenceStart:
             formatMonthYearInput(String(client.competenceStart || '').trim()) ||
             getMonthYearFromIso(client.dataInicio) ||
@@ -3757,6 +3859,7 @@ function App() {
           grupos: Array.isArray(formOverrides.grupos)
             ? formOverrides.grupos.map((group) => String(group || '').trim()).filter(Boolean)
             : baseClientForm.grupos,
+          grupo: String(formOverrides.grupo ?? baseClientForm.grupo ?? '').trim(),
           checklist: Array.isArray(formOverrides.checklist)
             ? formOverrides.checklist.map((item) => String(item || '').trim()).filter(Boolean)
             : baseClientForm.checklist,
@@ -3923,9 +4026,10 @@ function App() {
   const toggleClientChecklist = (item) => {
     setClientForm((prev) => {
       const current = Array.isArray(prev.checklist) ? prev.checklist : []
-      const nextChecklist = current.includes(item)
+      const nextChecklistRaw = current.includes(item)
         ? current.filter((entry) => entry !== item)
         : [...current, item]
+      const nextChecklist = sortStringsPtBr(nextChecklistRaw)
 
       if (clientMode === 'view' && editingId !== null) {
         setClients((prevClients) =>
@@ -3954,6 +4058,20 @@ function App() {
   }
 
   const handleClientSave = () => {
+    const rawClientEmails = String(clientForm.email || '')
+      .split(EMAIL_RECIPIENT_SPLIT_REGEX)
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    const invalidClientEmails = rawClientEmails.filter((item) => !isValidEmailAddress(item))
+    if (invalidClientEmails.length) {
+      window.alert(
+        `E-mail(s) inválido(s): ${invalidClientEmails.join(
+          ', ',
+        )}. Use formato válido e separe múltiplos e-mails por ";".`,
+      )
+      return
+    }
+
     const normalizedCompetenceStart = formatMonthYearInput(String(clientForm.competenceStart || '').trim())
     const validCompetenceStart =
       parseMonthYearToMonthIndex(normalizedCompetenceStart) !== null
@@ -3963,6 +4081,7 @@ function App() {
     const payload = {
       ...clientForm,
       telefone: formatPhoneValue(clientForm.telefone),
+      email: normalizeEmailRecipients(clientForm.email),
       tipoEmpresa: normalizeClientCompanyTypes(clientForm.tipoEmpresa),
       competenceStart: validCompetenceStart,
     }
@@ -4500,6 +4619,9 @@ function App() {
             justification: '',
             emailSentAt: '',
             emailSentTo: '',
+            emailNotificationStatus: '',
+            emailNotificationError: '',
+            emailNotificationAttemptAt: '',
             generatedBySettings: true,
             competenceMode: blueprint.competenceMode || 'Mesmo mês',
             departmentScope: blueprintDepartment || '',
@@ -4587,7 +4709,7 @@ function App() {
   }
 
   const toggleSelectAll = () => {
-    const visibleClientIds = filteredClients.map((client) => String(client.id))
+    const visibleClientIds = filteredClientsSorted.map((client) => String(client.id))
     if (!visibleClientIds.length) return
 
     const selectedSet = new Set(selectedClientIds.map((id) => String(id)))
@@ -4888,6 +5010,9 @@ function App() {
       justification: '',
       emailSentAt: '',
       emailSentTo: '',
+      emailNotificationStatus: '',
+      emailNotificationError: '',
+      emailNotificationAttemptAt: '',
       createdAt: timestamp,
       source: 'onboarding',
       allowDepartmentVisibility: true,
@@ -5155,6 +5280,18 @@ function App() {
   }
 
   const mapSolicitationRecordToReportRow = (record) => {
+    const additionalInfo = [
+      record?.andamento,
+      record?.informacoesAdicionais,
+      record?.informacoes_adicionais,
+      record?.additionalInfo,
+      record?.details,
+      record?.descricao,
+      record?.descricaoSolicitacao,
+    ]
+      .map((item) => String(item || '').trim())
+      .find(Boolean) || ''
+
     const linkedClient = clientsForCurrentUser.find((client) => client.id === record.clientId)
     const clientDocument = linkedClient
       ? `${linkedClient.docType || ''} ${linkedClient.inscricao || ''}`.trim()
@@ -5201,10 +5338,15 @@ function App() {
       baixaAt: record.baixaAt || '',
       baixaAction: record.baixaAction || '',
       justification: record.justification || '',
+      additionalInfo,
       emailSentAt: record.emailSentAt || '',
       emailSentTo: record.emailSentTo || '',
       docsSentAt: record.docsSentAt || '',
       docsSentTo: record.docsSentTo || '',
+      emailNotificationStatus: record.emailNotificationStatus || '',
+      emailNotificationError: record.emailNotificationError || '',
+      emailNotificationAttemptAt: record.emailNotificationAttemptAt || '',
+      conversation: normalizeConversationMessages(record.conversation),
     }
   }
 
@@ -5230,39 +5372,85 @@ function App() {
             reportSource: 'task',
             reportKey: `task-${task.id}`,
             taskType: 'Tarefa',
+            additionalInfo:
+              [
+                task.andamento,
+                task.informacoesAdicionais,
+                task.informacoes_adicionais,
+                task.additionalInfo,
+                task.details,
+                task.descricao,
+                task.descricaoSolicitacao,
+              ]
+                .map((item) => String(item || '').trim())
+                .find(Boolean) || '',
             emailSentAt: task.emailSentAt || '',
             emailSentTo: task.emailSentTo || '',
             docsSentAt: task.docsSentAt || '',
             docsSentTo: task.docsSentTo || '',
+            emailNotificationStatus: task.emailNotificationStatus || '',
+            emailNotificationError: task.emailNotificationError || '',
+            emailNotificationAttemptAt: task.emailNotificationAttemptAt || '',
             clientEmail: task.clientEmail || '',
+            conversation: normalizeConversationMessages(task.conversation),
           }
         })()
     : null
+  const selectedTaskConversation = normalizeConversationMessages(selectedTask?.conversation)
   const selectedTaskDisplayStatus = selectedTask ? getTaskDisplayStatus(selectedTask) : null
 
   const resolveTaskRecipientEmail = (task) => {
     if (!task) return ''
-    if (String(task.clientEmail || '').trim()) return String(task.clientEmail || '').trim()
 
-    const byId = task.clientId
-      ? clientsForCurrentUser.find((client) => client.id === task.clientId)
+    const normalizedTaskClientId =
+      task.clientId !== null && task.clientId !== undefined && String(task.clientId).trim() !== ''
+        ? String(task.clientId).trim()
+        : ''
+
+    const byId = normalizedTaskClientId
+      ? clientsForCurrentUser.find((client) => String(client.id) === normalizedTaskClientId)
       : null
-    if (byId?.email) return String(byId.email).trim()
+    if (byId?.email) return normalizeEmailRecipients(byId.email)
 
-    const taskDocumentDigits = extractDigits(task.cnpj)
+    const taskDocumentDigits = extractDigits(task.cnpj || task.client || '')
     if (taskDocumentDigits) {
       const byDocument = clientsForCurrentUser.find(
         (client) => extractDigits(client.inscricao) === taskDocumentDigits,
       )
-      if (byDocument?.email) return String(byDocument.email).trim()
+      if (byDocument?.email) return normalizeEmailRecipients(byDocument.email)
     }
 
-    const taskClientName = String(task.client || '').trim().toLowerCase()
-    if (taskClientName) {
+    const taskClientName = String(task.client || '').trim()
+    const normalizedTaskClientName = normalizeFreeText(taskClientName)
+    const normalizedTaskClientNameNoDocument = normalizeFreeText(stripTrailingClientDocument(taskClientName))
+    if (normalizedTaskClientName || normalizedTaskClientNameNoDocument) {
       const byName = clientsForCurrentUser.find(
-        (client) => String(client.nome || '').trim().toLowerCase() === taskClientName,
+        (client) => {
+          const normalizedClientName = normalizeFreeText(client.nome || '')
+          const normalizedClientNameNoDocument = normalizeFreeText(
+            stripTrailingClientDocument(client.nome || ''),
+          )
+          const normalizedClientDisplayName = normalizeFreeText(
+            getDisplayClientName(client.nome || '', client.inscricao || ''),
+          )
+
+          const candidates = [
+            normalizedClientName,
+            normalizedClientNameNoDocument,
+            normalizedClientDisplayName,
+          ].filter(Boolean)
+
+          return candidates.some(
+            (candidate) =>
+              candidate === normalizedTaskClientName ||
+              candidate === normalizedTaskClientNameNoDocument ||
+              normalizedTaskClientName.startsWith(`${candidate} `) ||
+              normalizedTaskClientNameNoDocument.startsWith(`${candidate} `) ||
+              candidate.startsWith(`${normalizedTaskClientNameNoDocument} `),
+          )
+        },
       )
-      if (byName?.email) return String(byName.email).trim()
+      if (byName?.email) return normalizeEmailRecipients(byName.email)
     }
 
     return ''
@@ -5394,9 +5582,12 @@ function App() {
   }
   const getReportEmailMeta = (row) => {
     const documentViewMeta = getReportDocumentViewMeta(row)
+    const normalizedSendStatus = String(row?.emailNotificationStatus || '').trim().toLowerCase()
+    const sentAt = String(row?.emailSentAt || row?.emailDeliveredAt || '').trim()
+    const sendStatus = normalizedSendStatus || (sentAt ? 'sent' : '')
     return {
-      sentTo: String(row?.docsSentTo || row?.emailSentTo || row?.clientEmail || '').trim(),
-      sentAt: String(row?.docsSentAt || row?.emailSentAt || row?.emailDeliveredAt || '').trim(),
+      sentTo: String(row?.emailSentTo || row?.clientEmail || row?.docsSentTo || '').trim(),
+      sentAt,
       viewedAt: String(
         row?.emailViewedAt ||
           row?.emailOpenedAt ||
@@ -5411,6 +5602,9 @@ function App() {
           documentViewMeta.viewedBy ||
           '',
       ).trim(),
+      sendStatus,
+      sendError: String(row?.emailNotificationError || '').trim(),
+      attemptedAt: String(row?.emailNotificationAttemptAt || row?.docsSentAt || sentAt || '').trim(),
     }
   }
   const openReportEmailCard = (event, row, type, enabled = true) => {
@@ -5425,6 +5619,9 @@ function App() {
       sentAt: emailMeta.sentAt,
       viewedAt: emailMeta.viewedAt,
       viewedBy: emailMeta.viewedBy,
+      sendStatus: emailMeta.sendStatus,
+      sendError: emailMeta.sendError,
+      attemptedAt: emailMeta.attemptedAt,
     })
   }
   const closeReportEmailCard = () => {
@@ -5578,6 +5775,9 @@ function App() {
     setSelectedTaskRef({ id: taskId, source })
     setTaskEditMode(false)
     setTaskActionError('')
+    setTaskReplyOpen(false)
+    setTaskReplyDraft('')
+    setTaskConversationOpen(false)
     setTaskTransferTarget('')
     setScreen('task-detail')
   }
@@ -5697,35 +5897,97 @@ function App() {
     setTasksRows((prev) => prev.map((item) => (item.id === selectedTaskRef.id ? updater(item) : item)))
   }
 
+  const closeTaskConversationModal = () => {
+    setTaskConversationOpen(false)
+    setTaskReplyOpen(false)
+    setTaskReplyDraft('')
+    setTaskActionError('')
+  }
+
+  const handleTaskReplyToggle = () => {
+    if (!isSelectedSolicitation) return
+    setTaskConversationOpen(true)
+    setTaskReplyOpen(false)
+    setTaskActionError('')
+  }
+
+  const handleTaskSendReply = async () => {
+    if (!selectedTask || selectedTask.reportSource !== 'solicitation') return
+
+    const message = String(taskReplyDraft || '').trim()
+    if (!message) {
+      setTaskActionError('Escreva uma mensagem antes de enviar a resposta.')
+      return
+    }
+
+    if (!authSession?.token) {
+      setTaskActionError('Faça login novamente para responder a solicitação.')
+      return
+    }
+
+    try {
+      setTaskReplySending(true)
+      setTaskActionError('')
+      const payload = await apiRequest(
+        `/tenant/portal/solicitations/${encodeURIComponent(selectedTask.id)}/reply`,
+        {
+          method: 'POST',
+          token: authSession.token,
+          body: { message },
+        },
+      )
+      const updatedRecord = payload?.record
+      if (updatedRecord) {
+        setSolicitationRecords((prev) =>
+          prev.map((item) => (String(item.id) === String(updatedRecord.id) ? updatedRecord : item)),
+        )
+      }
+      logTaskAction(selectedTask, 'Responder')
+      setTaskReplyDraft('')
+      setTaskReplyOpen(false)
+    } catch (error) {
+      setTaskActionError(error?.message || 'Não foi possível enviar a resposta.')
+    } finally {
+      setTaskReplySending(false)
+    }
+  }
+
   const handleTaskSendDocuments = async () => {
     if (!selectedTask) return
 
-    const newestAttachment = [...(selectedTask.attachments || [])]
-      .reverse()
-      .find((attachment) => attachment?.contentBase64 || attachment?.file)
-
-    if (!newestAttachment) {
+    const attachments = Array.isArray(selectedTask.attachments) ? selectedTask.attachments : []
+    if (!attachments.length) {
       setTaskActionError('Anexe um arquivo para enviar ao Hive Docs.')
       return
     }
 
     try {
       setTaskEmailSending(true)
-      let contentBase64 = newestAttachment.contentBase64 || ''
-
-      if (!contentBase64) {
-        if (!(newestAttachment.file instanceof File)) {
-          setTaskActionError('O anexo não está disponível para envio. Reanexe o arquivo e tente novamente.')
-          return
-        }
-
-        contentBase64 = await fileToBase64(newestAttachment.file)
+      const preparedAttachments = await Promise.all(
+        attachments.map(async (attachment, index) => {
+          let contentBase64 = String(attachment?.contentBase64 || '').trim()
+          if (!contentBase64 && attachment?.file instanceof File) {
+            contentBase64 = await fileToBase64(attachment.file)
+          }
+          if (!contentBase64) return null
+          return { index, contentBase64 }
+        }),
+      )
+      const validAttachments = preparedAttachments.filter(Boolean)
+      if (!validAttachments.length) {
+        setTaskActionError('O anexo não está disponível para envio. Reanexe o arquivo e tente novamente.')
+        return
       }
+      const preparedByIndex = new Map(validAttachments.map((entry) => [entry.index, entry.contentBase64]))
 
       const sentAt = getNowBrTimestamp()
       const sentAtIso = new Date().toISOString()
       const sentBy =
         String(authSession?.user?.name || authSession?.user?.email || '').trim() || 'Usuário'
+      let emailSentAt = ''
+      let emailSentTo = ''
+      let emailNotificationStatus = ''
+      let emailNotificationError = ''
       let sendWarning = ''
 
       const recipientEmail = String(selectedTaskRecipientEmail || '').trim()
@@ -5733,7 +5995,7 @@ function App() {
         const notificationClientName =
           String(getReportClientDisplayName(selectedTask) || selectedTask.client || '').trim() ||
           'Cliente'
-        const notificationSubject = 'Novo Documento no Portal do Cliente'
+        const notificationSubject = 'Novo Documento no Portal HIVE DOCS'
 
         try {
           await apiRequest('/tenant/send-task-email', {
@@ -5748,27 +6010,40 @@ function App() {
               clientName: notificationClientName,
             },
           })
+          emailSentAt = sentAt
+          emailSentTo = recipientEmail
+          emailNotificationStatus = 'sent'
         } catch (notificationError) {
+          emailSentTo = recipientEmail
+          emailNotificationStatus = 'failed'
+          emailNotificationError = String(
+            notificationError?.message || 'Erro desconhecido no envio de notificação.',
+          ).trim()
           sendWarning = `Documento enviado ao Hive Docs, mas falhou o envio da notificacao por e-mail: ${
-            notificationError?.message || 'Erro desconhecido.'
+            emailNotificationError
           }`
         }
       } else {
+        emailNotificationStatus = 'failed'
+        emailNotificationError = 'Cliente sem e-mail cadastrado para receber notificação.'
         sendWarning =
           'Documento enviado ao Hive Docs, mas o cliente nao possui e-mail cadastrado para notificacao.'
       }
 
       updateSelectedTaskData((item) => ({
         ...item,
-        emailSentAt: sentAt,
-        emailSentTo: 'Hive Docs',
+        emailSentAt,
+        emailSentTo,
         docsSentAt: sentAt,
         docsSentTo: 'Hive Docs',
-        attachments: (item.attachments || []).map((attachment) =>
-          attachment.id === newestAttachment.id
+        emailNotificationStatus,
+        emailNotificationError,
+        emailNotificationAttemptAt: sentAt,
+        attachments: (item.attachments || []).map((attachment, index) =>
+          preparedByIndex.has(index)
             ? {
                 ...attachment,
-                contentBase64,
+                contentBase64: preparedByIndex.get(index),
                 docsSharedAt: sentAtIso,
                 docsSharedBy: sentBy,
               }
@@ -5950,12 +6225,16 @@ function App() {
     }
     setSelectedTaskRef(null)
     setTaskEditMode(false)
+    setTaskConversationOpen(false)
     setScreen('tasks')
   }
 
   const goBackToTasks = () => {
     setTaskEditMode(false)
     setTaskActionError('')
+    setTaskReplyOpen(false)
+    setTaskReplyDraft('')
+    setTaskConversationOpen(false)
     setScreen('reports')
   }
 
@@ -6630,6 +6909,9 @@ function App() {
           justification: '',
           emailSentAt: '',
           emailSentTo: '',
+          emailNotificationStatus: '',
+          emailNotificationError: '',
+          emailNotificationAttemptAt: '',
           generatedBySettings: true,
           competenceMode: settingsTaskForm.competenceMode,
           departmentScope: selectedDepartment,
@@ -6749,6 +7031,9 @@ function App() {
         justification: '',
         emailSentAt: '',
         emailSentTo: '',
+        emailNotificationStatus: '',
+        emailNotificationError: '',
+        emailNotificationAttemptAt: '',
         createdAt: getNowBrTimestamp(),
       }
       nextId += 1
@@ -6965,6 +7250,23 @@ function App() {
       matchesQuery
     )
   })
+  const filteredTaskBlueprintRowsSorted = [...filteredTaskBlueprintRows].sort((a, b) => {
+    const obligationA = String(a.subject || a.obligation || '').trim()
+    const obligationB = String(b.subject || b.obligation || '').trim()
+    const obligationCompare = obligationA.localeCompare(obligationB, 'pt-BR')
+    if (obligationCompare !== 0) return obligationCompare
+
+    const ufCompare = String(a.ufLabel || '').localeCompare(String(b.ufLabel || ''), 'pt-BR')
+    if (ufCompare !== 0) return ufCompare
+
+    const competenceCompare = String(a.competencePreview || '').localeCompare(
+      String(b.competencePreview || ''),
+      'pt-BR',
+    )
+    if (competenceCompare !== 0) return competenceCompare
+
+    return Number(a.id || 0) - Number(b.id || 0)
+  })
   const taskBlueprintsPanel = (
     <section className="settings-task-blueprints">
       <div className="settings-task-blueprints-head">
@@ -6972,7 +7274,7 @@ function App() {
           <h6>Tarefas Cadastradas</h6>
           <p>Lista de cadastros para acompanhar o que já foi configurado.</p>
         </div>
-        <span>{filteredTaskBlueprintRows.length} registro(s)</span>
+        <span>{filteredTaskBlueprintRowsSorted.length} registro(s)</span>
       </div>
       <div className="settings-task-blueprints-table">
         <div className="settings-task-blueprints-grid settings-task-blueprints-grid-head">
@@ -6988,8 +7290,8 @@ function App() {
           <span>Ações</span>
         </div>
         <div className="settings-task-blueprints-body">
-          {filteredTaskBlueprintRows.length ? (
-            filteredTaskBlueprintRows.map((row) => (
+          {filteredTaskBlueprintRowsSorted.length ? (
+            filteredTaskBlueprintRowsSorted.map((row) => (
               <div className="settings-task-blueprints-grid" key={row.id}>
                 <span title={row.subject || row.obligation}>{row.subject || row.obligation}</span>
                 <span title={row.ufLabel}>{row.ufLabel}</span>
@@ -7145,12 +7447,21 @@ function App() {
   })
 
   const hasTaskPeriodFilter = Boolean(appliedTaskFilters.startDate || appliedTaskFilters.endDate)
-  const rowsVisibleInTaskPanel = hasTaskPeriodFilter
+  const rowsVisibleInTaskPanelRaw = hasTaskPeriodFilter
     ? filteredReportRows
     : filteredReportRows.filter((row) => {
         const rowDateIso = parseBrDateToIso(getTaskDateBy(row, appliedTaskFilters.dateBy))
         return Boolean(rowDateIso && rowDateIso.startsWith(currentMonthPrefix))
       })
+  const rowsVisibleInTaskPanel = [...rowsVisibleInTaskPanelRaw].sort((a, b) => {
+    const subjectCompare = String(a.subject || '').localeCompare(String(b.subject || ''), 'pt-BR')
+    if (subjectCompare !== 0) return subjectCompare
+
+    const clientCompare = getReportClientDisplayName(a).localeCompare(getReportClientDisplayName(b), 'pt-BR')
+    if (clientCompare !== 0) return clientCompare
+
+    return Number(a.id || 0) - Number(b.id || 0)
+  })
 
   const taskExportRows = rowsVisibleInTaskPanel.map((row) => {
     const displayStatus = getTaskDisplayStatus(row)
@@ -7440,6 +7751,7 @@ function App() {
   const selectedGroups = Array.isArray(clientForm.grupos) ? clientForm.grupos : []
   const selectedClientCompanyTypes = normalizeClientCompanyTypes(clientForm.tipoEmpresa)
   const selectedChecklist = Array.isArray(clientForm.checklist) ? clientForm.checklist : []
+  const sortedClientChecklistOptions = sortStringsPtBr(clientChecklistOptions)
   const selectedTax = clientForm.tributacao || ''
   const isReadOnly = clientMode === 'view'
   const selectedUserDepartment = getDepartmentLabel(userForm.departamento)
@@ -7487,12 +7799,10 @@ function App() {
       ),
     ),
   ]
-  const clientVisibilityFilterOptions = [
+  const clientGroupNameFilterOptions = [
     'Todos',
     ...Array.from(
-      new Set(
-        clientsForCurrentUser.map((client) => String(client.visibilidade || '').trim()).filter(Boolean),
-      ),
+      new Set(clientsForCurrentUser.map((client) => String(client.grupo || '').trim()).filter(Boolean)),
     ),
   ]
   const clientUfFilterOptions = [
@@ -7523,9 +7833,9 @@ function App() {
     const matchesGroup =
       appliedClientTableFilters.grupo === 'Todos' ||
       (Array.isArray(client.grupos) ? client.grupos : []).includes(appliedClientTableFilters.grupo)
-    const matchesVisibility =
+    const matchesGroupName =
       appliedClientTableFilters.visibilidade === 'Todos' ||
-      client.visibilidade === appliedClientTableFilters.visibilidade
+      String(client.grupo || '').trim() === appliedClientTableFilters.visibilidade
     const matchesUf =
       appliedClientTableFilters.uf === 'Todos' ||
       String(client.uf || '').trim().toUpperCase() === appliedClientTableFilters.uf
@@ -7547,6 +7857,7 @@ function App() {
       client.telefone,
       client.email,
       Array.isArray(client.grupos) ? client.grupos.join(' ') : '',
+      client.grupo,
       client.visibilidade,
       client.uf,
       client.tributacao,
@@ -7558,14 +7869,23 @@ function App() {
     return (
       matchesStatus &&
       matchesGroup &&
-      matchesVisibility &&
+      matchesGroupName &&
       matchesUf &&
       matchesTaxation &&
       matchesDocType &&
       matchesQuery
     )
   })
-  const clientExportRows = filteredClients.map((client) => ({
+  const filteredClientsSorted = [...filteredClients].sort((a, b) => {
+    const nameCompare = String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR')
+    if (nameCompare !== 0) return nameCompare
+
+    const nicknameCompare = String(a.apelido || '').localeCompare(String(b.apelido || ''), 'pt-BR')
+    if (nicknameCompare !== 0) return nicknameCompare
+
+    return Number(a.id || 0) - Number(b.id || 0)
+  })
+  const clientExportRows = filteredClientsSorted.map((client) => ({
     Nome: String(client.nome || '').trim() || '-',
     Apelido: String(client.apelido || '').trim() || '-',
     Documento: `${String(client.docType || '').trim()} ${String(client.inscricao || '').trim()}`.trim() || '-',
@@ -7573,11 +7893,11 @@ function App() {
     Contato: String(client.contato || '').trim() || '-',
     Telefone: String(client.telefone || '').trim() || '-',
     Email: String(client.email || '').trim() || '-',
-    Grupo:
+    Departamentos:
       Array.isArray(client.grupos) && client.grupos.length
         ? client.grupos.map((group) => String(group || '').trim()).filter(Boolean).join(', ')
         : '-',
-    Visibilidade: String(client.visibilidade || '').trim() || '-',
+    Grupo: String(client.grupo || '').trim() || '-',
     UF: String(client.uf || '').trim().toUpperCase() || '-',
     Tributação: String(client.tributacao || '').trim() || '-',
   }))
@@ -7605,7 +7925,7 @@ function App() {
     doc.text('Hive Controller - Relatorio de Clientes', 40, 34)
     doc.setFontSize(9)
     doc.text(
-      `Filtros: Status ${appliedClientTableFilters.status} | Grupo ${appliedClientTableFilters.grupo} | Visibilidade ${appliedClientTableFilters.visibilidade} | UF ${appliedClientTableFilters.uf}`,
+      `Filtros: Status ${appliedClientTableFilters.status} | Departamentos ${appliedClientTableFilters.grupo} | Grupo ${appliedClientTableFilters.visibilidade} | UF ${appliedClientTableFilters.uf}`,
       40,
       52,
     )
@@ -7626,8 +7946,8 @@ function App() {
           'Contato',
           'Telefone',
           'Email',
+          'Departamentos',
           'Grupo',
-          'Visibilidade',
           'UF',
           'Tributação',
         ],
@@ -7640,8 +7960,8 @@ function App() {
         row.Contato,
         row.Telefone,
         row.Email,
+        row.Departamentos,
         row.Grupo,
-        row.Visibilidade,
         row.UF,
         row.Tributação,
       ]),
@@ -8216,10 +8536,20 @@ function App() {
   )
   const controlRowsData = controlRows.map((group) => {
     if (group.group === 'Obrigações') {
-      return { ...group, items: obligationsRowsDynamic }
+      return {
+        ...group,
+        items: obligationsRowsDynamic.filter(
+          (item) => normalizeFreeText(item.name) !== normalizeFreeText('Cliente'),
+        ),
+      }
     }
     if (group.group === 'Solicitações') {
-      return { ...group, items: solicitationItems }
+      return {
+        ...group,
+        items: solicitationItems.filter(
+          (item) => normalizeFreeText(item.name) !== normalizeFreeText('Cliente'),
+        ),
+      }
     }
     return group
   })
@@ -8251,10 +8581,11 @@ function App() {
       const mode = getEffectiveUserVisualizationMode(user)
       if (mode === 'Clientes') return
       if (!availableModesForCurrentUser.has(mode)) return
+      const department = getDepartmentLabel(user?.departamento || '')
 
       const key = normalizeFreeText(name)
       if (!key || uniqueByName.has(key)) return
-      uniqueByName.set(key, { name, mode })
+      uniqueByName.set(key, { name, mode, department })
     })
 
     return Array.from(uniqueByName.values()).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
@@ -8279,8 +8610,19 @@ function App() {
     const currentRecord = solicitationRecords.find((item) => item.id === selectedTaskRef.id)
     if (!currentRecord) return
 
+    const targetOption = transferResponsibleOptions.find(
+      (option) => normalizeFreeText(option?.name || '') === normalizedTarget,
+    )
+    const currentDepartment = getDepartmentLabel(currentRecord?.departamento || '')
+    const targetDepartment = getDepartmentLabel(targetOption?.department || '')
+    const nextDepartment = targetDepartment || currentDepartment
+
     const currentResponsible = String(currentRecord?.responsavel || '').trim()
-    if (normalizeFreeText(currentResponsible) === normalizedTarget) {
+    const sameResponsible = normalizeFreeText(currentResponsible) === normalizedTarget
+    const departmentWillChange =
+      Boolean(nextDepartment) &&
+      normalizeFreeText(nextDepartment) !== normalizeFreeText(currentDepartment)
+    if (sameResponsible && !departmentWillChange) {
       setTaskActionError('A solicitação já está com esse responsável.')
       return
     }
@@ -8292,6 +8634,7 @@ function App() {
           ? {
               ...item,
               responsavel: taskTransferTarget,
+              departamento: nextDepartment || item.departamento,
               status: item.status || 'Em andamento',
               etapa: item.etapa || 'Em andamento',
               allowDepartmentVisibility: true,
@@ -8307,9 +8650,19 @@ function App() {
         reportSource: 'solicitation',
         subject: currentRecord.assunto || 'Solicitação',
       },
-      `Transferir para ${taskTransferTarget}`,
+      sameResponsible && departmentWillChange
+        ? `Atualizar departamento para ${nextDepartment}`
+        : nextDepartment && normalizeFreeText(nextDepartment) !== normalizeFreeText(currentDepartment)
+        ? `Transferir para ${taskTransferTarget} (${nextDepartment})`
+        : `Transferir para ${taskTransferTarget}`,
     )
     setTaskTransferTarget('')
+    if (nextDepartment && normalizeFreeText(nextDepartment) !== normalizeFreeText(currentDepartment)) {
+      setTaskActionError(
+        `Solicitação transferida para ${taskTransferTarget} e movida para o departamento ${nextDepartment}.`,
+      )
+      return
+    }
     setTaskActionError(`Solicitação transferida para ${taskTransferTarget}.`)
   }
   const isObligationsScreen = screen === 'reports'
@@ -10128,8 +10481,9 @@ function App() {
                           getReportClientDisplayName(row),
                         )
                         const emailMeta = getReportEmailMeta(row)
-                        const isRowCompleted = isCompletedTaskStatus(displayStatus.status)
-                        const isEmailSentForRow = Boolean(emailMeta.sentAt) && isRowCompleted
+                        const isEmailErrorForRow = emailMeta.sendStatus === 'failed'
+                        const isEmailSentForRow =
+                          emailMeta.sendStatus === 'sent' || Boolean(emailMeta.sentAt)
                         const isEmailViewedForRow = Boolean(emailMeta.viewedAt)
                         return (
                           <div
@@ -10171,11 +10525,15 @@ function App() {
                               <div className="report-email-actions">
                                 <button
                                   type="button"
-                                  className={`report-email-btn ${isEmailSentForRow ? 'active' : ''}`}
+                                  className={`report-email-btn ${
+                                    isEmailErrorForRow ? 'failed' : isEmailSentForRow ? 'active' : ''
+                                  }`}
                                   title={
-                                    isEmailSentForRow
-                                      ? 'E-mail enviado (clique para detalhes)'
-                                      : 'E-mail ainda não enviado'
+                                    isEmailErrorForRow
+                                      ? `Falha no envio de e-mail${emailMeta.sendError ? `: ${emailMeta.sendError}` : ''}`
+                                      : isEmailSentForRow
+                                        ? 'E-mail enviado (clique para detalhes)'
+                                        : 'E-mail ainda não enviado'
                                   }
                                   aria-label="Detalhes do envio por e-mail"
                                   onClick={(event) => openReportEmailCard(event, row, 'sent', true)}
@@ -10308,9 +10666,34 @@ function App() {
                                 </p>
                               </>
                             ) : (
-                              <p>
-                                Enviado em: <strong>{reportEmailCard.sentAt || 'Ainda não enviado'}</strong>
-                              </p>
+                              <>
+                                <p>
+                                  Status:{' '}
+                                  <strong>
+                                    {reportEmailCard.sendStatus === 'failed'
+                                      ? 'Falha no envio'
+                                      : reportEmailCard.sentAt
+                                        ? 'Enviado'
+                                        : 'Ainda não enviado'}
+                                  </strong>
+                                </p>
+                                <p>
+                                  Enviado em: <strong>{reportEmailCard.sentAt || 'Ainda não enviado'}</strong>
+                                </p>
+                                {reportEmailCard.sendStatus === 'failed' ? (
+                                  <>
+                                    <p>
+                                      Tentativa em:{' '}
+                                      <strong>
+                                        {reportEmailCard.attemptedAt || 'Data da tentativa não registrada'}
+                                      </strong>
+                                    </p>
+                                    <p className="report-email-error">
+                                      Motivo: <strong>{reportEmailCard.sendError || 'Falha desconhecida.'}</strong>
+                                    </p>
+                                  </>
+                                ) : null}
+                              </>
                             )}
                           </div>
                         </div>
@@ -10344,7 +10727,8 @@ function App() {
                 </header>
 
                 {selectedTask ? (
-                  <div className="task-detail-grid">
+                  <>
+                    <div className="task-detail-grid">
                     <section className="card task-detail-card">
                       <h5>
                         {isSelectedSolicitation ? 'Informações da Solicitação' : 'Informações da tarefa'}
@@ -10548,6 +10932,16 @@ function App() {
                         >
                           Finalizar
                         </button>
+                        {isSelectedSolicitation ? (
+                          <button
+                            type="button"
+                            className="chip tiny task-reply-button"
+                            onClick={handleTaskReplyToggle}
+                            disabled={taskReplySending}
+                          >
+                            Responder
+                          </button>
+                        ) : null}
                         <button type="button" className="chip tiny" onClick={handleTaskDispense}>
                           Dispensar
                         </button>
@@ -10618,9 +11012,144 @@ function App() {
                           placeholder="Preencha a justificativa quando não houver anexo."
                         />
                       </label>
-                      {taskActionError ? <p className="task-action-error">{taskActionError}</p> : null}
+                      {isSelectedSolicitation ? (
+                        <label className="task-additional-info">
+                          <span>Informações adicionais</span>
+                          <textarea
+                            rows={4}
+                            value={selectedTask.additionalInfo || ''}
+                            readOnly
+                            placeholder="Sem informações adicionais."
+                          />
+                        </label>
+                      ) : null}
+                      {!taskConversationOpen && taskActionError ? (
+                        <p className="task-action-error">{taskActionError}</p>
+                      ) : null}
                     </section>
-                  </div>
+                    </div>
+                    {isSelectedSolicitation && taskConversationOpen ? (
+                      <div
+                        className="modal-backdrop"
+                        onMouseDown={handleModalBackdropMouseDown}
+                        onClick={(event) => handleModalBackdropClick(event, closeTaskConversationModal)}
+                      >
+                        <div className="modal-card task-conversation-modal" onClick={(event) => event.stopPropagation()}>
+                          <header className="modal-header">
+                            <h3>Responder Solicitação</h3>
+                            <button
+                              className="modal-close"
+                              type="button"
+                              onClick={closeTaskConversationModal}
+                              aria-label="Fechar conversa"
+                            >
+                              ×
+                            </button>
+                          </header>
+
+                          <div className="task-conversation-summary">
+                            <p>
+                              <strong>Assunto:</strong> {selectedTask.subject || '-'}
+                            </p>
+                            <p>
+                              <strong>Cliente:</strong> {selectedTask.client || '-'}
+                            </p>
+                            <p>
+                              <strong>Status:</strong>{' '}
+                              <span className={`status-pill ${selectedTaskDisplayStatus?.tag || 'success'}`}>
+                                {selectedTaskDisplayStatus?.status || 'Em andamento'}
+                              </span>
+                            </p>
+                          </div>
+
+                          <section className="task-conversation task-conversation-thread">
+                            <h6>Histórico da conversa</h6>
+                            {selectedTaskConversation.length ? (
+                              <div className="task-conversation-list">
+                                {selectedTaskConversation.map((message) => (
+                                  <article
+                                    className={`task-conversation-item ${
+                                      message.authorType === 'client' ? 'client' : 'internal'
+                                    }`}
+                                    key={message.id}
+                                  >
+                                    <header>
+                                      <strong>
+                                        {message.authorName ||
+                                          (message.authorType === 'client' ? 'Cliente' : 'Equipe HIVE Controller')}
+                                      </strong>
+                                      <span>
+                                        {message.createdAt
+                                          ? formatIsoDateTimeToBr(message.createdAt)
+                                          : 'Horário não informado'}
+                                      </span>
+                                    </header>
+                                    <p>{message.text}</p>
+                                  </article>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="task-conversation-empty">
+                                Sem respostas registradas para esta solicitação.
+                              </p>
+                            )}
+                          </section>
+
+                          {taskReplyOpen ? (
+                            <section className="task-reply-composer task-conversation-composer">
+                              <label className="task-reply-composer-field">
+                                <span>Resposta da solicitação</span>
+                                <textarea
+                                  rows={4}
+                                  value={taskReplyDraft}
+                                  onChange={(event) => setTaskReplyDraft(event.target.value)}
+                                  placeholder="Digite a resposta para o cliente..."
+                                />
+                              </label>
+                              <div className="task-reply-composer-actions task-conversation-actions">
+                                <button
+                                  type="button"
+                                  className="chip tiny"
+                                  onClick={() => {
+                                    setTaskReplyOpen(false)
+                                    setTaskReplyDraft('')
+                                    setTaskActionError('')
+                                  }}
+                                  disabled={taskReplySending}
+                                >
+                                  Cancelar
+                                </button>
+                                <button
+                                  type="button"
+                                  className="chip tiny task-reply-send"
+                                  onClick={handleTaskSendReply}
+                                  disabled={taskReplySending}
+                                >
+                                  {taskReplySending ? 'Enviando resposta...' : 'Enviar Resposta'}
+                                </button>
+                              </div>
+                            </section>
+                          ) : (
+                            <div className="task-conversation-actions">
+                              <button
+                                type="button"
+                                className="chip tiny task-reply-button"
+                                onClick={() => {
+                                  setTaskReplyOpen(true)
+                                  setTaskActionError('')
+                                }}
+                                disabled={taskReplySending}
+                              >
+                                Responder
+                              </button>
+                            </div>
+                          )}
+
+                          {taskActionError ? <p className="task-action-error">{taskActionError}</p> : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
                   <section className="card task-detail-empty">
                     <p>{`A ${selectedEntityLabelLower} selecionada não foi encontrada.`}</p>
@@ -11970,7 +12499,7 @@ function App() {
                     </select>
                   </label>
                   <label className="task-filter-field">
-                    <span>Grupo</span>
+                    <span>Departamentos</span>
                     <select
                       value={clientTableFilters.grupo}
                       onChange={(event) => handleClientTableFilterChange('grupo', event.target.value)}
@@ -11983,14 +12512,14 @@ function App() {
                     </select>
                   </label>
                   <label className="task-filter-field">
-                    <span>Visibilidade</span>
+                    <span>Grupo</span>
                     <select
                       value={clientTableFilters.visibilidade}
                       onChange={(event) =>
                         handleClientTableFilterChange('visibilidade', event.target.value)
                       }
                     >
-                      {clientVisibilityFilterOptions.map((item) => (
+                      {clientGroupNameFilterOptions.map((item) => (
                         <option key={item} value={item}>
                           {item}
                         </option>
@@ -12111,13 +12640,13 @@ function App() {
                           type="checkbox"
                           ref={selectAllRef}
                           checked={
-                            filteredClients.length > 0 &&
-                            filteredClients.every((client) =>
+                            filteredClientsSorted.length > 0 &&
+                            filteredClientsSorted.every((client) =>
                               selectedClientIds.includes(String(client.id)),
                             )
                           }
                           onChange={toggleSelectAll}
-                          disabled={!filteredClients.length}
+                          disabled={!filteredClientsSorted.length}
                         />
                         Selecionar todos
                       </label>
@@ -12190,13 +12719,13 @@ function App() {
                     <span>Contato</span>
                     <span>Telefone</span>
                     <span>Email</span>
+                    <span>Departamentos</span>
                     <span>Grupo</span>
-                    <span>Visibilidade</span>
                     <span>Ações</span>
                   </div>
                   <div className="client-rows">
-                    {filteredClients.length ? (
-                      filteredClients.map((client) => (
+                    {filteredClientsSorted.length ? (
+                      filteredClientsSorted.map((client) => (
                       <div className="client-row" key={client.id}>
                         <span>
                           <input
@@ -12222,7 +12751,7 @@ function App() {
                             ? client.grupos.join(', ')
                             : '-'}
                         </span>
-                        <span>{client.visibilidade}</span>
+                        <span>{String(client.grupo || '').trim() || '-'}</span>
                         <span className="row-actions">
                           <button
                             type="button"
@@ -13646,9 +14175,9 @@ function App() {
                       />
                     </div>
                   </div>
-                  <div className="form-grid">
+                  <div className="form-grid client-groups-visibility-grid">
                     <div className="field">
-                      <label>Grupos</label>
+                      <label>Departamentos</label>
                       <div className="multi-select" ref={groupsRef}>
                         <div
                           className={`multi-trigger ${groupsOpen ? 'open' : ''}`}
@@ -13712,6 +14241,16 @@ function App() {
                       </div>
                     </div>
                     <div className="field">
+                      <label>Grupo</label>
+                      <input
+                        type="text"
+                        placeholder="Digite o grupo..."
+                        value={clientForm.grupo || ''}
+                        onChange={(event) => handleClientChange('grupo', event.target.value)}
+                        readOnly={isReadOnly}
+                      />
+                    </div>
+                    <div className="field">
                       <label>
                         Visibilidade <span className="req">*</span>
                       </label>
@@ -13772,8 +14311,8 @@ function App() {
                     <div className="field">
                       <label>Email</label>
                       <input
-                        type="email"
-                        placeholder=""
+                        type="text"
+                        placeholder="email1@empresa.com; email2@empresa.com"
                         value={clientForm.email}
                         onChange={(event) => handleClientChange('email', event.target.value)}
                         readOnly={isReadOnly}
@@ -13944,7 +14483,7 @@ function App() {
                         </div>
                         {checklistOpen ? (
                           <div className="multi-menu">
-                            {clientChecklistOptions.map((option) => (
+                            {sortedClientChecklistOptions.map((option) => (
                               <button
                                 type="button"
                                 className={`multi-option ${
