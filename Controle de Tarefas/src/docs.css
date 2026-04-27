@@ -309,6 +309,48 @@ body {
   font-size: 14px;
 }
 
+.docs-filters-card {
+  border: 1px solid #d5dde8;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.docs-filters-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.docs-filters-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.docs-filters-grid span {
+  font-size: 12px;
+  color: #4c6075;
+}
+
+.docs-filters-grid select,
+.docs-filters-grid input {
+  border: 1px solid #d5dde8;
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-size: 13px;
+  background: #ffffff;
+  color: #132234;
+  width: 100%;
+}
+
+.docs-filters-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 button.primary,
 button.ghost {
   border: none;
@@ -407,8 +449,16 @@ button.ghost {
   cursor: pointer;
 }
 
+.docs-table-row.interactive {
+  cursor: pointer;
+}
+
 .docs-table-row.editable:hover {
   background: #f4f8ff;
+}
+
+.docs-table-row.interactive:hover {
+  background: #f8fbff;
 }
 
 .docs-inline-button {
@@ -440,6 +490,11 @@ button.ghost {
 .docs-table-row mark.progress {
   background: #e3d38a;
   color: #5a4300;
+}
+
+.docs-table-row mark.responded {
+  background: #fff4cc;
+  color: #6a4d00;
 }
 
 .docs-table-row mark.danger {
@@ -624,6 +679,263 @@ button.ghost.danger {
   gap: 8px;
 }
 
+.docs-conversation-modal {
+  width: min(820px, 100%);
+}
+
+.docs-conversation-summary {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #d7e0eb;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px 12px;
+}
+
+.docs-conversation-summary p {
+  margin: 0;
+  font-size: 13px;
+  color: #1e3043;
+}
+
+.docs-conversation-summary mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.docs-conversation-summary mark.ok {
+  background: #dff7e6;
+  color: #0f7d38;
+}
+
+.docs-conversation-summary mark.progress {
+  background: #e3d38a;
+  color: #5a4300;
+}
+
+.docs-conversation-summary mark.responded {
+  background: #fff4cc;
+  color: #6a4d00;
+}
+
+.docs-conversation-summary mark.danger {
+  background: #ffe0e0;
+  color: #9f1d1d;
+}
+
+.docs-conversation-summary mark.warn {
+  background: #fff0da;
+  color: #9e5800;
+}
+
+.docs-conversation-thread {
+  display: grid;
+  gap: 10px;
+}
+
+.docs-conversation-thread h4 {
+  margin: 0;
+  font-size: 14px;
+  color: #1a2b3f;
+}
+
+.docs-conversation-list {
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.docs-conversation-item {
+  border: 1px solid #d7e0eb;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px 12px;
+}
+
+.docs-conversation-item.internal {
+  border-left: 4px solid #b8e81f;
+}
+
+.docs-conversation-item.client {
+  border-left: 4px solid #6da8ff;
+}
+
+.docs-conversation-item header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.docs-conversation-item header strong {
+  font-size: 12px;
+  color: #0f1f30;
+}
+
+.docs-conversation-item header span {
+  font-size: 11px;
+  color: #5b6f84;
+}
+
+.docs-conversation-item p {
+  margin: 0;
+  color: #112235;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.docs-conversation-empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed #cfd8e4;
+  border-radius: 10px;
+  color: #5a6b7f;
+  font-size: 13px;
+  background: #fcfdff;
+}
+
+.docs-conversation-composer {
+  display: grid;
+  gap: 10px;
+}
+
+.docs-conversation-composer label {
+  display: grid;
+  gap: 6px;
+}
+
+.docs-conversation-composer span {
+  font-size: 12px;
+  color: #4c6075;
+}
+
+.docs-conversation-composer textarea {
+  border: 1px solid #cfd8e4;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f1f30;
+  padding: 10px 12px;
+  font-size: 14px;
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+}
+
+.docs-conversation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.docs-reply-button {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #b8e81f;
+  color: #0b1724;
+}
+
+.docs-reply-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.docs-download-modal {
+  width: min(900px, 100%);
+}
+
+.docs-download-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.docs-download-item {
+  border: 1px solid #d7e0eb;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.docs-download-item-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.docs-download-item-main strong {
+  font-size: 13px;
+  color: #102133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.docs-download-item-main small {
+  font-size: 11px;
+  color: #5a6b7f;
+}
+
+.docs-download-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.docs-download-item mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.docs-download-item mark.ok {
+  background: #dff7e6;
+  color: #0f7d38;
+}
+
+.docs-download-item mark.progress {
+  background: #e3d38a;
+  color: #5a4300;
+}
+
+.docs-download-item mark.responded {
+  background: #fff4cc;
+  color: #6a4d00;
+}
+
+.docs-download-item mark.danger {
+  background: #ffe0e0;
+  color: #9f1d1d;
+}
+
+.docs-download-item mark.warn {
+  background: #fff0da;
+  color: #9e5800;
+}
+
 @media (max-width: 1120px) {
   .docs-app {
     grid-template-columns: 1fr;
@@ -646,6 +958,10 @@ button.ghost.danger {
   .docs-table-row-documents {
     min-width: 0;
   }
+
+  .docs-filters-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {
@@ -661,6 +977,18 @@ button.ghost.danger {
     grid-template-columns: 1fr;
   }
 
+  .docs-filters-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .docs-filters-actions {
+    justify-content: stretch;
+  }
+
+  .docs-filters-actions button {
+    flex: 1 1 auto;
+  }
+
   .docs-modal-form {
     grid-template-columns: 1fr;
   }
@@ -672,5 +1000,15 @@ button.ghost.danger {
 
   .docs-client-grid {
     grid-template-columns: 1fr;
+  }
+
+  .docs-download-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .docs-download-item-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }

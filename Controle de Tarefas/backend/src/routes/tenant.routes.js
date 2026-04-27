@@ -36,7 +36,7 @@ const upsertClientSchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE']).optional().default('ACTIVE'),
   contact: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
-  email: z.string().email().optional().nullable().or(z.literal('')),
+  email: z.string().optional().nullable().or(z.literal('')),
   groups: z.array(z.string()).optional().default([]),
   visibility: z.string().optional().nullable(),
   uf: z.string().optional().nullable(),
@@ -82,7 +82,7 @@ const tenantSmtpGoogleExchangeBodySchema = z.object({
 })
 
 const sendTaskEmailSchema = z.object({
-  to: z.string().email(),
+  to: z.string().min(3),
   subject: z.string().min(3),
   message: z.string().optional().default(''),
   taskId: z.union([z.string(), z.number()]).optional(),
@@ -125,8 +125,13 @@ const docsSolicitationCreateSchema = z.object({
     .default([]),
 })
 
+const portalSolicitationReplySchema = z.object({
+  message: z.string().trim().min(1).max(5000),
+})
+
 const portalDocumentDownloadSchema = z.object({
   documentKey: z.string().min(1),
+  attachmentKey: z.string().optional().nullable(),
 })
 
 const tenantUserCreateSchema = z.object({
@@ -270,9 +275,9 @@ const buildPortalDocumentNotificationMessage = (clientName) => {
   const greeting = getDocumentNotificationGreeting()
   const normalizedClientName = String(clientName || '').trim() || 'Cliente'
 
-  return `${greeting}, ${normalizedClientName}.
+  return `${greeting}, ${normalizedClientName},
 
-Informo que a sua guia já se encontra no portal para que possa ser efetuada a baixa do documento. Qualquer dúvida pode entrar em contato, pois estaremos sempre disponíveis para atendê-lo. Abraços.`
+A Dgital Assessoria Contábil informa que a sua guia ja se encontra no portal Hive Docs para que possa ser efetuada a baixa do documento. Qualquer dúvida, não deixe de entrar em contato, pois estaremos sempre disponiveis para atendê-lo. Abraços.`
 }
 
 const getEmptyTenantState = () => ({
@@ -408,9 +413,74 @@ const normalizeLookupText = (value) =>
     .trim()
     .toLowerCase()
 
+const isValidEmailAddress = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim())
+const EMAIL_RECIPIENT_SPLIT_REGEX = /[;,\n]+/g
+
+const parseEmailRecipients = (value) => {
+  const source = String(value || '')
+    .split(EMAIL_RECIPIENT_SPLIT_REGEX)
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+
+  const seen = new Set()
+  return source.filter((item) => {
+    const key = item.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+const normalizeEmailRecipients = (value) => parseEmailRecipients(value).join('; ')
+
+const stripTrailingClientDocument = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  return raw
+    .replace(/\s+\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}$/u, '')
+    .replace(/\s+\d{3}\.?\d{3}\.?\d{3}-?\d{2}$/u, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 const isOpenStatusLabel = (value) => {
   const normalized = normalizeLookupText(value).replace(/\s+/g, ' ')
   return normalized.includes('abert')
+}
+
+const isFinalStatusLabel = (value) => {
+  const normalized = normalizeLookupText(value).replace(/\s+/g, ' ')
+  return (
+    normalized.includes('finaliz') ||
+    normalized.includes('conclu') ||
+    normalized.includes('dispensad') ||
+    normalized.includes('encerrad')
+  )
+}
+
+const normalizeConversationMessages = (value) => {
+  const source = Array.isArray(value) ? value : []
+  return source
+    .map((entry, index) => {
+      const text = String(entry?.text || entry?.message || '').trim()
+      if (!text) return null
+      const authorType =
+        String(entry?.authorType || '').trim() === 'client' ? 'client' : 'internal'
+      const createdAtRaw = String(entry?.createdAt || entry?.timestamp || '').trim()
+      const createdAt =
+        createdAtRaw && !Number.isNaN(new Date(createdAtRaw).getTime())
+          ? new Date(createdAtRaw).toISOString()
+          : ''
+      return {
+        id: String(entry?.id || `${Date.now()}-${index}`).trim(),
+        authorType,
+        authorName: String(entry?.authorName || '').trim(),
+        authorEmail: String(entry?.authorEmail || '').trim(),
+        text,
+        createdAt,
+      }
+    })
+    .filter(Boolean)
 }
 
 const normalizeClientDocument = (client) =>
@@ -425,7 +495,7 @@ const normalizeClientsFromState = (stateData) => {
       nome: String(client?.nome || client?.name || '').trim(),
       status: String(client?.status || '').trim() || 'Ativo',
       inscricao: normalizeClientDocument(client),
-      email: String(client?.email || '').trim(),
+      email: normalizeEmailRecipients(client?.email || ''),
     }))
     .filter((client) => client.id && client.nome)
 }
@@ -437,7 +507,10 @@ const findClientByUserIdentity = (clients, authUser) => {
   const normalizedUserEmail = normalizeLookupText(authUser?.email || '')
   if (normalizedUserEmail) {
     const byEmail = source.find(
-      (client) => normalizeLookupText(client?.email || '') === normalizedUserEmail,
+      (client) =>
+        parseEmailRecipients(client?.email || '').some(
+          (email) => normalizeLookupText(email) === normalizedUserEmail,
+        ),
     )
     if (byEmail) return byEmail
   }
@@ -546,8 +619,11 @@ const getLatestActionActorByRecord = ({ stateData, source, recordId, fallback = 
   return normalizedFallback
 }
 
-const buildPortalDocumentKey = ({ source, recordId, attachmentId, attachmentName, index }) =>
-  `${String(source || '').trim()}::${String(recordId || '').trim()}::${String(attachmentId || '').trim() || index}::${String(attachmentName || '').trim()}`
+const buildPortalDocumentGroupKey = ({ source, recordId }) =>
+  `${String(source || '').trim()}::${String(recordId || '').trim()}`
+
+const buildPortalDocumentAttachmentKey = ({ source, recordId, attachmentId, attachmentName, index }) =>
+  `${buildPortalDocumentGroupKey({ source, recordId })}::${String(attachmentId || '').trim() || index}::${String(attachmentName || '').trim()}`
 
 const buildPortalDocumentsFromState = ({
   stateData,
@@ -569,17 +645,19 @@ const buildPortalDocumentsFromState = ({
     if (!isTenantRestrictedUser) return true
     const normalizedClientId = String(clientId || '').trim()
     const normalizedClientName = normalizeLookupText(clientName || '')
+    const normalizedClientNameNoDocument = normalizeLookupText(stripTrailingClientDocument(clientName || ''))
     const normalizedCreatedByUserId = String(createdByUserId || '').trim()
     const normalizedCreatedByUserEmail = normalizeLookupText(createdByUserEmail || '')
 
     if (normalizedClientId && visibleClientIds.has(normalizedClientId)) return true
     if (normalizedClientName && visibleClientNames.has(normalizedClientName)) return true
+    if (normalizedClientNameNoDocument && visibleClientNames.has(normalizedClientNameNoDocument)) return true
     if (normalizedCreatedByUserId && authUserId && normalizedCreatedByUserId === authUserId) return true
     if (normalizedCreatedByUserEmail && authUserEmail && normalizedCreatedByUserEmail === authUserEmail) return true
     return false
   }
 
-  const documents = []
+  const documentsByKey = new Map()
   const appendDocumentRows = ({ rows, source }) => {
     for (const row of rows) {
       const rowId = String(row?.id || '').trim()
@@ -591,6 +669,46 @@ const buildPortalDocumentsFromState = ({
           : String(row?.client || row?.clientName || '').trim()
       if (!attachments.length || !isRecordVisible({ clientId, clientName })) continue
 
+      const actionDate =
+        source === 'solicitation'
+          ? normalizeDisplayDate(row?.actionDate || '')
+          : getDateFromTaggedList(row?.dates, 'A')
+      const metaDate =
+        source === 'solicitation'
+          ? normalizeDisplayDate(row?.metaDate || '')
+          : getDateFromTaggedList(row?.dates, 'M')
+      const dueDate =
+        source === 'solicitation'
+          ? normalizeDisplayDate(row?.dueDate || '')
+          : getDateFromTaggedList(row?.dates, 'V')
+      const nome =
+        source === 'solicitation'
+          ? String(row?.assunto || row?.processo || 'Solicitacao').trim()
+          : String(row?.subject || '').trim()
+      const responsavelByAction = getLatestActionActorByRecord({
+        stateData,
+        source,
+        recordId: rowId,
+        fallback: '',
+      })
+      const responsavel =
+        source === 'solicitation'
+          ? responsavelByAction || String(row?.responsavel || '').trim()
+          : responsavelByAction || String(row?.owner || '').trim() || String(row?.responsavel || '').trim()
+      const departamento =
+        source === 'solicitation'
+          ? String(row?.departamento || '').trim()
+          : String(row?.dept || '').trim()
+      const conclusionDate =
+        source === 'solicitation'
+          ? normalizeDisplayDate(row?.conclusionDate || row?.deliveryDate || '')
+          : normalizeDisplayDate(row?.conclusionDate || '')
+      const documentKey = buildPortalDocumentGroupKey({
+        source,
+        recordId: rowId,
+      })
+
+      let documentRow = null
       for (let index = 0; index < attachments.length; index += 1) {
         const attachment = attachments[index]
         const docsSharedAt = String(attachment?.docsSharedAt || '').trim()
@@ -600,73 +718,47 @@ const buildPortalDocumentsFromState = ({
         const contentBase64 = String(attachment?.contentBase64 || '').trim()
         if (!attachmentName && !contentBase64) continue
 
-        const actionDate =
-          source === 'solicitation'
-            ? normalizeDisplayDate(row?.actionDate || '')
-            : getDateFromTaggedList(row?.dates, 'A')
-        const metaDate =
-          source === 'solicitation'
-            ? normalizeDisplayDate(row?.metaDate || '')
-            : getDateFromTaggedList(row?.dates, 'M')
-        const dueDate =
-          source === 'solicitation'
-            ? normalizeDisplayDate(row?.dueDate || '')
-            : getDateFromTaggedList(row?.dates, 'V')
-        const nome =
-          source === 'solicitation'
-            ? String(row?.assunto || row?.processo || 'Solicitacao').trim()
-            : String(row?.subject || '').trim()
-        const responsavelByAction = getLatestActionActorByRecord({
-          stateData,
-          source,
-          recordId: rowId,
-          fallback: '',
-        })
-        const responsavel =
-          source === 'solicitation'
-            ? responsavelByAction || String(row?.responsavel || '').trim()
-            : responsavelByAction ||
-              String(attachment?.docsSharedBy || '').trim() ||
-              String(row?.owner || '').trim() ||
-              String(row?.responsavel || '').trim()
-        const departamento =
-          source === 'solicitation'
-            ? String(row?.departamento || '').trim()
-            : String(row?.dept || '').trim()
-        const conclusionDate =
-          source === 'solicitation'
-            ? normalizeDisplayDate(row?.conclusionDate || row?.deliveryDate || '')
-            : normalizeDisplayDate(row?.conclusionDate || '')
-
-        const documentKey = buildPortalDocumentKey({
+        const attachmentKey = buildPortalDocumentAttachmentKey({
           source,
           recordId: rowId,
           attachmentId: String(attachment?.id || '').trim(),
           attachmentName,
           index,
         })
-        const downloadedAt = String(downloadsByKey.get(documentKey) || '').trim()
+        const downloadedAt = String(downloadsByKey.get(attachmentKey) || '').trim()
 
-        documents.push({
-          documentKey,
-          source,
-          taskId: rowId,
+        if (!documentRow) {
+          documentRow = documentsByKey.get(documentKey) || {
+            documentKey,
+            source,
+            taskId: rowId,
+            status: 'Disponivel',
+            downloadedAt: '',
+            departamento,
+            nome,
+            competencia: String(row?.competence || '').trim() || getCompetenceFromActionDate(actionDate),
+            cliente: clientName || 'Cliente nao informado',
+            actionDate,
+            metaDate,
+            dueDate,
+            conclusionDate,
+            responsavel,
+            hasContent: false,
+            attachments: [],
+          }
+          documentsByKey.set(documentKey, documentRow)
+        }
+
+        documentRow.attachments.push({
+          attachmentKey,
           attachmentId: String(attachment?.id || '').trim(),
           attachmentName: attachmentName || `anexo-${index + 1}`,
           attachmentSize: Number(attachment?.size || 0),
           attachmentType: String(attachment?.type || 'application/octet-stream'),
-          contentBase64,
           status: downloadedAt ? 'Arquivo baixado' : 'Disponivel',
           downloadedAt,
-          departamento,
-          nome,
-          competencia: String(row?.competence || '').trim() || getCompetenceFromActionDate(actionDate),
-          cliente: clientName || 'Cliente nao informado',
-          actionDate,
-          metaDate,
-          dueDate,
-          conclusionDate,
-          responsavel,
+          hasContent: Boolean(contentBase64),
+          contentBase64,
         })
       }
     }
@@ -681,6 +773,37 @@ const buildPortalDocumentsFromState = ({
     source: 'solicitation',
   })
 
+  const documents = Array.from(documentsByKey.values()).map((row) => {
+    const attachments = Array.isArray(row?.attachments) ? row.attachments : []
+    const sortedAttachments = [...attachments].sort((a, b) =>
+      String(a?.attachmentName || '').localeCompare(String(b?.attachmentName || ''), 'pt-BR'),
+    )
+
+    let latestDownloadedAt = ''
+    let latestDownloadedAtTime = 0
+    let hasContent = false
+    for (const attachment of sortedAttachments) {
+      if (attachment?.hasContent) hasContent = true
+      const attachmentDownloadedAt = String(attachment?.downloadedAt || '').trim()
+      const attachmentDownloadedAtTime = attachmentDownloadedAt
+        ? Date.parse(attachmentDownloadedAt)
+        : Number.NaN
+      if (!attachmentDownloadedAt || Number.isNaN(attachmentDownloadedAtTime)) continue
+      if (!latestDownloadedAt || attachmentDownloadedAtTime >= latestDownloadedAtTime) {
+        latestDownloadedAt = attachmentDownloadedAt
+        latestDownloadedAtTime = attachmentDownloadedAtTime
+      }
+    }
+
+    return {
+      ...row,
+      attachments: sortedAttachments,
+      hasContent,
+      downloadedAt: latestDownloadedAt,
+      status: latestDownloadedAt ? 'Arquivo baixado' : 'Disponivel',
+    }
+  })
+
   return documents.sort((a, b) => {
     const aId = Number(a?.taskId || 0)
     const bId = Number(b?.taskId || 0)
@@ -688,7 +811,7 @@ const buildPortalDocumentsFromState = ({
     if (String(a?.source || '') !== String(b?.source || '')) {
       return String(a?.source || '').localeCompare(String(b?.source || ''))
     }
-    return String(a?.attachmentName || '').localeCompare(String(b?.attachmentName || ''), 'pt-BR')
+    return String(a?.nome || '').localeCompare(String(b?.nome || ''), 'pt-BR')
   })
 }
 
@@ -1508,10 +1631,20 @@ router.get('/portal/bootstrap', async (req, res, next) => {
       isTenantRestrictedUser,
       authUser,
     }).map((documentRow) => {
-      const { contentBase64, ...meta } = documentRow
+      const safeAttachments = (Array.isArray(documentRow?.attachments) ? documentRow.attachments : []).map(
+        (attachment) => {
+          const { contentBase64, ...attachmentMeta } = attachment || {}
+          return {
+            ...attachmentMeta,
+            hasContent: Boolean(String(contentBase64 || '').trim()),
+          }
+        },
+      )
+
       return {
-        ...meta,
-        hasContent: Boolean(String(contentBase64 || '').trim()),
+        ...documentRow,
+        attachments: safeAttachments,
+        hasContent: safeAttachments.some((attachment) => Boolean(attachment?.hasContent)),
       }
     })
 
@@ -1586,12 +1719,23 @@ router.post(
       })
 
       const documentKey = String(req.body?.documentKey || '').trim()
+      const attachmentKey = String(req.body?.attachmentKey || '').trim()
       const targetDocument = portalDocuments.find((item) => String(item?.documentKey || '').trim() === documentKey)
       if (!targetDocument) {
         return res.status(404).json({ message: 'Documento nao encontrado para este usuario.' })
       }
 
-      const contentBase64 = String(targetDocument?.contentBase64 || '').trim()
+      const documentAttachments = Array.isArray(targetDocument?.attachments) ? targetDocument.attachments : []
+      const targetAttachment = attachmentKey
+        ? documentAttachments.find((item) => String(item?.attachmentKey || '').trim() === attachmentKey)
+        : documentAttachments.find((item) => Boolean(String(item?.contentBase64 || '').trim()))
+
+      if (!targetAttachment) {
+        return res.status(404).json({ message: 'Anexo nao encontrado para este documento.' })
+      }
+
+      const resolvedAttachmentKey = String(targetAttachment?.attachmentKey || '').trim()
+      const contentBase64 = String(targetAttachment?.contentBase64 || '').trim()
       if (!contentBase64) {
         return res.status(400).json({ message: 'O anexo selecionado nao possui conteudo para download.' })
       }
@@ -1606,7 +1750,7 @@ router.post(
 
       const nextDownloads = [
         ...currentDownloads.filter((entry) => {
-          const sameKey = String(entry?.key || '').trim() === documentKey
+          const sameKey = String(entry?.key || '').trim() === resolvedAttachmentKey
           const sameUserById = String(entry?.userId || '').trim() === authUserId
           const sameUserByEmail =
             Boolean(authUserEmailNormalized) &&
@@ -1614,7 +1758,7 @@ router.post(
           return !(sameKey && (sameUserById || sameUserByEmail))
         }),
         {
-          key: documentKey,
+          key: resolvedAttachmentKey,
           userId: authUserId,
           userEmail: authUserEmail,
           downloadedAt,
@@ -1639,10 +1783,11 @@ router.post(
       return res.json({
         ok: true,
         downloadedAt,
+        attachmentKey: resolvedAttachmentKey,
         file: {
-          name: String(targetDocument.attachmentName || 'documento'),
-          type: String(targetDocument.attachmentType || 'application/octet-stream'),
-          size: Number(targetDocument.attachmentSize || 0),
+          name: String(targetAttachment.attachmentName || 'documento'),
+          type: String(targetAttachment.attachmentType || 'application/octet-stream'),
+          size: Number(targetAttachment.attachmentSize || 0),
           contentBase64,
         },
       })
@@ -2041,6 +2186,158 @@ router.put(
   },
 )
 
+router.post(
+  '/portal/solicitations/:id/reply',
+  validateBody(portalSolicitationReplySchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId é obrigatório para este usuário.' })
+      }
+
+      const authUser = await prisma.tenantUser.findFirst({
+        where: { id: req.auth?.sub, tenantId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          clientIds: true,
+        },
+      })
+
+      if (!authUser) {
+        return res.status(403).json({ message: 'Usuário sem acesso ao tenant informado.' })
+      }
+
+      const targetId = String(req.params?.id || '').trim()
+      if (!targetId) {
+        return res.status(400).json({ message: 'ID da solicitação inválido.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const stateClients = normalizeClientsFromState(stateData)
+      const currentSolicitationRecords = Array.isArray(stateData?.solicitationRecords)
+        ? stateData.solicitationRecords
+        : []
+
+      const targetIndex = currentSolicitationRecords.findIndex(
+        (record) => String(record?.id || '').trim() === targetId,
+      )
+      if (targetIndex < 0) {
+        return res.status(404).json({ message: 'Solicitação não encontrada.' })
+      }
+
+      const targetRecord = currentSolicitationRecords[targetIndex]
+      const currentStatusLabel = String(
+        targetRecord?.status || targetRecord?.etapa || 'Aberta',
+      ).trim()
+      if (isFinalStatusLabel(currentStatusLabel)) {
+        return res.status(409).json({
+          message: 'Esta solicitação já foi finalizada e não aceita novas respostas.',
+        })
+      }
+
+      const isTenantRestrictedUser = authUser.role === 'TENANT_USER'
+      const allowedClientIds = new Set(
+        (Array.isArray(authUser.clientIds) ? authUser.clientIds : [])
+          .map((clientId) => String(clientId || '').trim())
+          .filter(Boolean),
+      )
+      const fallbackClientByIdentity = findClientByUserIdentity(stateClients, authUser)
+
+      const canAccessRecord = (() => {
+        if (!isTenantRestrictedUser) return true
+
+        const recordClientId = String(targetRecord?.clientId || '').trim()
+        const recordClientName = normalizeLookupText(targetRecord?.clientName || '')
+        const createdByUserId = String(targetRecord?.createdByUserId || '').trim()
+        const createdByUserEmail = normalizeLookupText(targetRecord?.createdByUserEmail || '')
+        const authUserId = String(authUser?.id || '').trim()
+        const authUserEmail = normalizeLookupText(authUser?.email || '')
+        const fallbackClientId = String(fallbackClientByIdentity?.id || '').trim()
+        const fallbackClientName = normalizeLookupText(fallbackClientByIdentity?.nome || '')
+
+        if (recordClientId && allowedClientIds.size > 0) {
+          return allowedClientIds.has(recordClientId)
+        }
+        if (recordClientId && fallbackClientId && recordClientId === fallbackClientId) return true
+        if (createdByUserId && authUserId && createdByUserId === authUserId) return true
+        if (createdByUserEmail && authUserEmail && createdByUserEmail === authUserEmail) return true
+        if (recordClientName && fallbackClientName && recordClientName === fallbackClientName) return true
+        return false
+      })()
+
+      if (!canAccessRecord) {
+        return res.status(403).json({ message: 'Sem permissão para responder esta solicitação.' })
+      }
+
+      const messageText = String(req.body?.message || '').trim()
+      if (!messageText) {
+        return res.status(400).json({ message: 'Informe uma mensagem para responder.' })
+      }
+
+      const nowIso = new Date().toISOString()
+      const authorType = authUser.role === 'TENANT_USER' ? 'client' : 'internal'
+      const authorName =
+        String(authUser.name || '').trim() ||
+        String(authUser.email || '').trim() ||
+        (authorType === 'client' ? 'Cliente' : 'Equipe')
+
+      const conversation = normalizeConversationMessages(targetRecord?.conversation)
+      const nextMessage = {
+        id: `${targetId}-${Date.now()}`,
+        authorType,
+        authorName,
+        authorEmail: String(authUser.email || '').trim(),
+        text: messageText,
+        createdAt: nowIso,
+      }
+
+      const updatedRecord = {
+        ...targetRecord,
+        status: 'Respondido',
+        etapa: 'Respondido',
+        tag: 'attention',
+        conversation: [...conversation, nextMessage],
+        updatedAt: nowIso,
+        updatedByUserId: String(authUser.id || '').trim(),
+        updatedByUserEmail: String(authUser.email || '').trim(),
+      }
+
+      const nextSolicitationRecords = [...currentSolicitationRecords]
+      nextSolicitationRecords[targetIndex] = updatedRecord
+
+      const stateToPersist = {
+        ...stateData,
+        schemaVersion: typeof stateData?.schemaVersion === 'number' ? stateData.schemaVersion : 1,
+        solicitationRecords: nextSolicitationRecords,
+      }
+
+      const persisted = await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+        select: { updatedAt: true },
+      })
+
+      return res.json({
+        ok: true,
+        record: updatedRecord,
+        message: nextMessage,
+        updatedAt: persisted.updatedAt,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
+
 router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, res, next) => {
   try {
     const tenantId = getTenantId(req)
@@ -2055,6 +2352,20 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     if (validationMessage) {
       return res.status(400).json({
         message: `SMTP nao configurado corretamente. ${validationMessage}`,
+      })
+    }
+
+    const recipients = parseEmailRecipients(req.body.to || '')
+    if (!recipients.length) {
+      return res.status(400).json({
+        message: 'Informe pelo menos um e-mail de destino para envio da notificação.',
+      })
+    }
+
+    const invalidRecipients = recipients.filter((email) => !isValidEmailAddress(email))
+    if (invalidRecipients.length) {
+      return res.status(400).json({
+        message: `E-mail(s) inválido(s) para envio: ${invalidRecipients.join(', ')}`,
       })
     }
 
@@ -2088,7 +2399,7 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     try {
       info = await sendTaskEmail({
         smtpConfig: effectiveSmtp,
-        to: req.body.to,
+        to: recipients,
         subject: req.body.subject,
         text: emailText,
         attachment:
@@ -2107,6 +2418,7 @@ router.post('/send-task-email', validateBody(sendTaskEmailSchema), async (req, r
     return res.json({
       ok: true,
       messageId: info?.messageId || null,
+      recipients,
       sentAt: new Date().toISOString(),
     })
   } catch (error) {
@@ -2156,13 +2468,21 @@ router.post('/clients', requireRole('TENANT_ADMIN', 'SUPER_ADMIN'), validateBody
       return res.status(400).json({ message: 'tenantId ÃƒÆ’Ã‚Â© obrigatÃƒÆ’Ã‚Â³rio para este usuÃƒÆ’Ã‚Â¡rio.' })
     }
 
+    const clientEmailRecipients = parseEmailRecipients(req.body.email || '')
+    const invalidClientEmails = clientEmailRecipients.filter((email) => !isValidEmailAddress(email))
+    if (invalidClientEmails.length) {
+      return res.status(400).json({
+        message: `E-mail(s) inválido(s) no cadastro do cliente: ${invalidClientEmails.join(', ')}`,
+      })
+    }
+
     const client = await prisma.client.create({
       data: {
         tenantId,
         ...req.body,
         name: req.body.name.trim(),
         alias: req.body.alias?.trim() || null,
-        email: req.body.email?.trim() || null,
+        email: normalizeEmailRecipients(req.body.email || '') || null,
       },
     })
 

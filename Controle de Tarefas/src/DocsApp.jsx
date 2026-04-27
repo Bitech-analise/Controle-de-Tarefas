@@ -18,13 +18,29 @@ const DOCS_SECTION = {
 const defaultDepartmentOptions = [
   'Dep. Pessoal',
   'Fiscal',
-  'Contabil',
+  'Contábil',
   'Sucesso do Cliente',
   'Cliente',
 ]
 
 const defaultStageOptions = ['Aberta', 'Em andamento', 'Pendente', 'Finalizado']
 const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
+const FILTER_ALL_VALUE = 'Todos'
+
+const SOLICITATION_DATE_FILTER_OPTIONS = [
+  { value: 'actionDate', label: 'Ação' },
+  { value: 'metaDate', label: 'Meta' },
+  { value: 'dueDate', label: 'Vencimento' },
+  { value: 'conclusionDate', label: 'Conclusão' },
+]
+
+const DOCUMENT_DATE_FILTER_OPTIONS = [
+  { value: 'actionDate', label: 'Ação' },
+  { value: 'metaDate', label: 'Meta' },
+  { value: 'dueDate', label: 'Vencimento' },
+  { value: 'conclusionDate', label: 'Conclusão' },
+  { value: 'downloadedAt', label: 'Baixado em' },
+]
 
 const getTodayIsoLocal = () => {
   const now = new Date()
@@ -49,6 +65,42 @@ const getCompetenceFromIso = (isoDate) => {
   const [, year, month] = match
   return `${month}/${year}`
 }
+
+const normalizeDateForFilter = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+
+  const brMatch = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+  if (brMatch) return `${brMatch[3]}-${brMatch[2]}-${brMatch[1]}`
+
+  const parsed = new Date(text)
+  if (Number.isNaN(parsed.getTime())) return ''
+
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const toSortedUniqueOptions = (values) =>
+  Array.from(new Set(values.filter(Boolean)))
+    .map((item) => String(item).trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }))
+
+const getEmptyDocsFilters = (section) => ({
+  status: FILTER_ALL_VALUE,
+  department: FILTER_ALL_VALUE,
+  client: FILTER_ALL_VALUE,
+  name: FILTER_ALL_VALUE,
+  competence: FILTER_ALL_VALUE,
+  dateField: section === DOCS_SECTION.DOCUMENTS ? 'dueDate' : 'actionDate',
+  startDate: '',
+  endDate: '',
+})
 
 const parseIsoDateTimeToBr = (value) => {
   const text = String(value || '').trim()
@@ -84,6 +136,7 @@ const getStatusBadgeTone = (value) => {
     .trim()
 
   if (!normalized) return 'warn'
+  if (normalized.includes('respondid')) return 'responded'
   if (normalized.includes('andamento')) return 'progress'
   if (normalized.includes('abert')) return 'danger'
   if (
@@ -98,6 +151,30 @@ const getStatusBadgeTone = (value) => {
   return 'warn'
 }
 
+const normalizeConversationMessages = (value) => {
+  const source = Array.isArray(value) ? value : []
+  return source
+    .map((entry, index) => {
+      const text = String(entry?.text || entry?.message || '').trim()
+      if (!text) return null
+      const authorType = String(entry?.authorType || '').trim() === 'client' ? 'client' : 'internal'
+      const rawCreatedAt = String(entry?.createdAt || entry?.timestamp || '').trim()
+      const normalizedCreatedAt =
+        rawCreatedAt && !Number.isNaN(new Date(rawCreatedAt).getTime())
+          ? new Date(rawCreatedAt).toISOString()
+          : ''
+      return {
+        id: String(entry?.id || `docs-chat-${Date.now()}-${index}`),
+        authorType,
+        authorName: String(entry?.authorName || '').trim(),
+        authorEmail: String(entry?.authorEmail || '').trim(),
+        text,
+        createdAt: normalizedCreatedAt,
+      }
+    })
+    .filter(Boolean)
+}
+
 const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -106,7 +183,7 @@ const fileToBase64 = (file) =>
       const base64 = result.includes(',') ? result.split(',')[1] : result
       resolve(base64 || '')
     }
-    reader.onerror = () => reject(new Error('Nao foi possivel ler o arquivo.'))
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo.'))
     reader.readAsDataURL(file)
   })
 
@@ -128,6 +205,98 @@ const triggerBase64Download = ({ contentBase64, fileName, mimeType }) => {
   document.body.removeChild(anchor)
   URL.revokeObjectURL(url)
   return true
+}
+
+const formatFileSize = (value) => {
+  const size = Number(value || 0)
+  if (!Number.isFinite(size) || size <= 0) return '0 B'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const getLatestDownloadedAtFromAttachments = (attachments) => {
+  let latest = ''
+  let latestTime = 0
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    const downloadedAt = String(attachment?.downloadedAt || '').trim()
+    if (!downloadedAt) continue
+    const time = Date.parse(downloadedAt)
+    if (Number.isNaN(time)) continue
+    if (!latest || time >= latestTime) {
+      latest = downloadedAt
+      latestTime = time
+    }
+  }
+  return latest
+}
+
+const normalizePortalDocumentAttachments = (row) => {
+  const source = Array.isArray(row?.attachments) ? row.attachments : []
+  const normalized = source
+    .map((attachment, index) => {
+      const attachmentName = String(attachment?.attachmentName || attachment?.name || '').trim()
+      const contentBase64 = String(attachment?.contentBase64 || '').trim()
+      const hasContent = Boolean(
+        attachment?.hasContent !== undefined ? attachment?.hasContent : contentBase64,
+      )
+      const attachmentKey =
+        String(attachment?.attachmentKey || '').trim() ||
+        `${String(row?.documentKey || '').trim() || String(row?.taskId || '').trim()}::${index}`
+      return {
+        attachmentKey,
+        attachmentId: String(attachment?.attachmentId || attachment?.id || '').trim(),
+        attachmentName: attachmentName || `anexo-${index + 1}`,
+        attachmentSize: Number(attachment?.attachmentSize || attachment?.size || 0),
+        attachmentType: String(
+          attachment?.attachmentType || attachment?.type || 'application/octet-stream',
+        ),
+        downloadedAt: String(attachment?.downloadedAt || '').trim(),
+        status: String(attachment?.status || '').trim(),
+        hasContent,
+        contentBase64,
+      }
+    })
+    .filter((attachment) => attachment.attachmentName || attachment.hasContent)
+
+  if (normalized.length) {
+    return normalized.sort((a, b) =>
+      String(a?.attachmentName || '').localeCompare(String(b?.attachmentName || ''), 'pt-BR'),
+    )
+  }
+
+  const fallbackName = String(row?.attachmentName || '').trim()
+  const fallbackContent = String(row?.contentBase64 || '').trim()
+  const fallbackHasContent = Boolean(row?.hasContent || fallbackContent)
+  if (!fallbackName && !fallbackHasContent) return []
+
+  return [
+    {
+      attachmentKey: `${String(row?.documentKey || '').trim() || String(row?.taskId || '').trim()}::single`,
+      attachmentId: String(row?.attachmentId || '').trim(),
+      attachmentName: fallbackName || 'anexo',
+      attachmentSize: Number(row?.attachmentSize || 0),
+      attachmentType: String(row?.attachmentType || 'application/octet-stream'),
+      downloadedAt: String(row?.downloadedAt || '').trim(),
+      status: String(row?.status || '').trim(),
+      hasContent: fallbackHasContent,
+      contentBase64: fallbackContent,
+    },
+  ]
+}
+
+const normalizePortalDocumentRecord = (row) => {
+  const attachments = normalizePortalDocumentAttachments(row)
+  const latestDownloadedAtFromAttachments = getLatestDownloadedAtFromAttachments(attachments)
+  const downloadedAt = String(row?.downloadedAt || '').trim() || latestDownloadedAtFromAttachments
+  const hasContent = attachments.some((attachment) => Boolean(attachment?.hasContent))
+  return {
+    ...row,
+    attachments,
+    hasContent,
+    downloadedAt,
+    status: downloadedAt ? 'Arquivo baixado' : 'Disponível',
+  }
 }
 
 const getEmptySolicitationForm = (responsavel = '') => {
@@ -159,7 +328,7 @@ const getErrorMessage = async (response) => {
   } catch {
     // ignore parsing error
   }
-  return `Falha na requisicao (${response.status}).`
+  return `Falha na requisição (${response.status}).`
 }
 
 const apiRequest = async (path, { method = 'GET', token, body } = {}) => {
@@ -173,7 +342,9 @@ const apiRequest = async (path, { method = 'GET', token, body } = {}) => {
   })
 
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response))
+    const error = new Error(await getErrorMessage(response))
+    error.status = response.status
+    throw error
   }
 
   if (response.status === 204) return null
@@ -204,19 +375,96 @@ function DocsApp() {
   const [bootstrapLoading, setBootstrapLoading] = useState(false)
   const [bootstrapError, setBootstrapError] = useState('')
   const [documentsActionError, setDocumentsActionError] = useState('')
-  const [downloadingDocumentKey, setDownloadingDocumentKey] = useState('')
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false)
+  const [downloadModalDocument, setDownloadModalDocument] = useState(null)
+  const [downloadingAttachmentKey, setDownloadingAttachmentKey] = useState('')
+  const [downloadingAllAttachments, setDownloadingAllAttachments] = useState(false)
 
   const [search, setSearch] = useState('')
   const [activeSection, setActiveSection] = useState(DOCS_SECTION.SOLICITATIONS)
+  const [solicitationFilters, setSolicitationFilters] = useState(() =>
+    getEmptyDocsFilters(DOCS_SECTION.SOLICITATIONS),
+  )
+  const [appliedSolicitationFilters, setAppliedSolicitationFilters] = useState(() =>
+    getEmptyDocsFilters(DOCS_SECTION.SOLICITATIONS),
+  )
+  const [documentFilters, setDocumentFilters] = useState(() =>
+    getEmptyDocsFilters(DOCS_SECTION.DOCUMENTS),
+  )
+  const [appliedDocumentFilters, setAppliedDocumentFilters] = useState(() =>
+    getEmptyDocsFilters(DOCS_SECTION.DOCUMENTS),
+  )
   const [solicitationOpen, setSolicitationOpen] = useState(false)
   const [solicitationForm, setSolicitationForm] = useState(getEmptySolicitationForm())
   const [editingSolicitationId, setEditingSolicitationId] = useState('')
+  const [conversationOpen, setConversationOpen] = useState(false)
+  const [conversationRecord, setConversationRecord] = useState(null)
+  const [conversationReplyOpen, setConversationReplyOpen] = useState(false)
+  const [conversationDraft, setConversationDraft] = useState('')
+  const [conversationLoading, setConversationLoading] = useState(false)
+  const [conversationError, setConversationError] = useState('')
   const [solicitationLoading, setSolicitationLoading] = useState(false)
   const [solicitationError, setSolicitationError] = useState('')
   const [solicitationActionError, setSolicitationActionError] = useState('')
   const [solicitationAttachmentDrafts, setSolicitationAttachmentDrafts] = useState([])
   const [solicitationAttachmentFeedback, setSolicitationAttachmentFeedback] = useState('')
   const solicitationAttachmentInputRef = useRef(null)
+
+  const isSessionExpiredError = (error) => {
+    const status = Number(error?.status || 0)
+    if (status === 401 || status === 403) return true
+
+    const message = String(error?.message || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+
+    return (
+      message.includes('token invalido') ||
+      message.includes('token expirado') ||
+      message.includes('jwt expired') ||
+      message.includes('unauthorized') ||
+      message.includes('nao autorizado') ||
+      message.includes('sessao expirada')
+    )
+  }
+
+  const expireCurrentSession = (message = 'Sessão expirada. Faça login novamente.') => {
+    localStorage.removeItem(STORAGE_KEYS.session)
+    setSession(null)
+    setUser(null)
+    setSolicitations([])
+    setDocuments([])
+    setBootstrapError('')
+    setDocumentsActionError('')
+    setDownloadModalOpen(false)
+    setDownloadModalDocument(null)
+    setDownloadingAttachmentKey('')
+    setDownloadingAllAttachments(false)
+    setActiveSection(DOCS_SECTION.SOLICITATIONS)
+    setSolicitationOpen(false)
+    setEditingSolicitationId('')
+    setConversationOpen(false)
+    setConversationRecord(null)
+    setConversationReplyOpen(false)
+    setConversationDraft('')
+    setConversationError('')
+    setSolicitationError('')
+    setSolicitationActionError('')
+    setSearch('')
+    setSolicitationFilters(getEmptyDocsFilters(DOCS_SECTION.SOLICITATIONS))
+    setAppliedSolicitationFilters(getEmptyDocsFilters(DOCS_SECTION.SOLICITATIONS))
+    setDocumentFilters(getEmptyDocsFilters(DOCS_SECTION.DOCUMENTS))
+    setAppliedDocumentFilters(getEmptyDocsFilters(DOCS_SECTION.DOCUMENTS))
+    setLoginForm((prev) => ({ ...prev, password: '' }))
+    setLoginError(message)
+  }
+
+  const handleTokenFailure = (error) => {
+    if (!isSessionExpiredError(error)) return false
+    expireCurrentSession()
+    return true
+  }
 
   const loadBootstrap = async (activeSession) => {
     if (!activeSession?.token) return
@@ -227,12 +475,24 @@ function DocsApp() {
         token: activeSession.token,
       })
       setUser(payload?.user || null)
-      setSolicitations(Array.isArray(payload?.solicitations) ? payload.solicitations : [])
-      setDocuments(Array.isArray(payload?.documents) ? payload.documents : [])
+      setSolicitations(
+        Array.isArray(payload?.solicitations)
+          ? payload.solicitations.map((record) => ({
+              ...record,
+              conversation: normalizeConversationMessages(record?.conversation),
+            }))
+          : [],
+      )
+      setDocuments(
+        Array.isArray(payload?.documents)
+          ? payload.documents.map((row) => normalizePortalDocumentRecord(row))
+          : [],
+      )
       setDocumentsActionError('')
       setSolicitationActionError('')
     } catch (error) {
-      setBootstrapError(error?.message || 'Nao foi possivel carregar dados do HIVE DOCS.')
+      if (handleTokenFailure(error)) return
+      setBootstrapError(error?.message || 'Não foi possível carregar dados do HIVE DOCS.')
     } finally {
       setBootstrapLoading(false)
     }
@@ -246,6 +506,34 @@ function DocsApp() {
 
   const handleSectionChange = (section) => {
     setActiveSection(section)
+  }
+
+  const handleActiveFilterChange = (field, value) => {
+    if (activeSection === DOCS_SECTION.DOCUMENTS) {
+      setDocumentFilters((prev) => ({ ...prev, [field]: value }))
+      return
+    }
+    setSolicitationFilters((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const applyActiveFilters = () => {
+    if (activeSection === DOCS_SECTION.DOCUMENTS) {
+      setAppliedDocumentFilters({ ...documentFilters })
+      return
+    }
+    setAppliedSolicitationFilters({ ...solicitationFilters })
+  }
+
+  const clearActiveFilters = () => {
+    if (activeSection === DOCS_SECTION.DOCUMENTS) {
+      const next = getEmptyDocsFilters(DOCS_SECTION.DOCUMENTS)
+      setDocumentFilters(next)
+      setAppliedDocumentFilters(next)
+      return
+    }
+    const next = getEmptyDocsFilters(DOCS_SECTION.SOLICITATIONS)
+    setSolicitationFilters(next)
+    setAppliedSolicitationFilters(next)
   }
 
   const handleLogin = async (event) => {
@@ -284,26 +572,14 @@ function DocsApp() {
       setSession(nextSession)
       setLoginForm((prev) => ({ ...prev, password: '' }))
     } catch (error) {
-      setLoginError(error?.message || 'Nao foi possivel autenticar no HIVE DOCS.')
+      setLoginError(error?.message || 'Não foi possível autenticar no HIVE DOCS.')
     } finally {
       setLoginLoading(false)
     }
   }
 
   const handleLogout = () => {
-    localStorage.removeItem(STORAGE_KEYS.session)
-    setSession(null)
-    setUser(null)
-    setSolicitations([])
-    setDocuments([])
-    setBootstrapError('')
-    setDocumentsActionError('')
-    setDownloadingDocumentKey('')
-    setActiveSection(DOCS_SECTION.SOLICITATIONS)
-    setSolicitationOpen(false)
-    setEditingSolicitationId('')
-    setSolicitationError('')
-    setSolicitationActionError('')
+    expireCurrentSession('')
   }
 
   const departmentOptions = useMemo(
@@ -328,50 +604,214 @@ function DocsApp() {
     [solicitations],
   )
 
+  const solicitationFilterOptions = useMemo(() => {
+    const status = toSortedUniqueOptions(solicitations.map((record) => getStatusLabel(record)))
+    const departments = toSortedUniqueOptions(
+      solicitations.map((record) => String(record?.departamento || '').trim()),
+    )
+    const clients = toSortedUniqueOptions(
+      solicitations.map((record) => String(record?.clientName || '').trim()),
+    )
+    const names = toSortedUniqueOptions(
+      solicitations.map((record) => String(record?.assunto || '').trim()),
+    )
+    const competences = toSortedUniqueOptions(
+      solicitations.map((record) => getCompetenceFromIso(record?.actionDate)),
+    )
+
+    return {
+      status,
+      departments,
+      clients,
+      names,
+      competences,
+    }
+  }, [solicitations])
+
+  const documentFilterOptions = useMemo(() => {
+    const statuses = toSortedUniqueOptions(
+      documents.map((row) => {
+        const downloadedAt = String(row?.downloadedAt || '').trim()
+        return downloadedAt ? 'Arquivo baixado' : 'Disponível'
+      }),
+    )
+    const departments = toSortedUniqueOptions(
+      documents.map((row) => String(row?.departamento || '').trim()),
+    )
+    const clients = toSortedUniqueOptions(documents.map((row) => String(row?.cliente || '').trim()))
+    const names = toSortedUniqueOptions(
+      documents.map((row) => String(row?.nome || '').trim()),
+    )
+    const competences = toSortedUniqueOptions(
+      documents.map((row) => String(row?.competencia || '').trim()),
+    )
+
+    return {
+      status: statuses,
+      departments,
+      clients,
+      names,
+      competences,
+    }
+  }, [documents])
+
+  const activeFilters =
+    activeSection === DOCS_SECTION.DOCUMENTS ? documentFilters : solicitationFilters
+  const activeDateFilterOptions =
+    activeSection === DOCS_SECTION.DOCUMENTS
+      ? DOCUMENT_DATE_FILTER_OPTIONS
+      : SOLICITATION_DATE_FILTER_OPTIONS
+  const activeFilterOptions =
+    activeSection === DOCS_SECTION.DOCUMENTS ? documentFilterOptions : solicitationFilterOptions
+
   const visibleSolicitations = useMemo(() => {
     const term = search.trim().toLowerCase()
     const records = [...solicitations].sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))
-    if (!term) return records
     return records.filter((record) => {
+      const statusLabel = getStatusLabel(record)
+      const department = String(record?.departamento || '').trim()
+      const clientName = String(record?.clientName || '').trim()
+      const taskName = String(record?.assunto || '').trim()
+      const responsible = String(record?.responsavel || '').trim()
+      const competence = getCompetenceFromIso(record?.actionDate)
+      const filterDateField =
+        String(appliedSolicitationFilters.dateField || '').trim() || 'actionDate'
+      const dateReference = normalizeDateForFilter(record?.[filterDateField])
+
       const text = [
         record?.id,
-        record?.departamento,
-        record?.assunto,
+        department,
+        taskName,
         record?.processo,
-        record?.clientName,
-        record?.responsavel,
-        getStatusLabel(record),
+        clientName,
+        responsible,
+        statusLabel,
       ]
         .join(' ')
         .toLowerCase()
-      return text.includes(term)
+      if (term && !text.includes(term)) return false
+
+      if (
+        appliedSolicitationFilters.status !== FILTER_ALL_VALUE &&
+        statusLabel !== appliedSolicitationFilters.status
+      ) {
+        return false
+      }
+
+      if (
+        appliedSolicitationFilters.department !== FILTER_ALL_VALUE &&
+        department !== appliedSolicitationFilters.department
+      ) {
+        return false
+      }
+
+      if (
+        appliedSolicitationFilters.client !== FILTER_ALL_VALUE &&
+        clientName !== appliedSolicitationFilters.client
+      ) {
+        return false
+      }
+
+      if (
+        appliedSolicitationFilters.name !== FILTER_ALL_VALUE &&
+        taskName !== appliedSolicitationFilters.name
+      ) {
+        return false
+      }
+
+      if (
+        appliedSolicitationFilters.competence !== FILTER_ALL_VALUE &&
+        competence !== appliedSolicitationFilters.competence
+      ) {
+        return false
+      }
+
+      if (appliedSolicitationFilters.startDate) {
+        if (!dateReference || dateReference < appliedSolicitationFilters.startDate) return false
+      }
+
+      if (appliedSolicitationFilters.endDate) {
+        if (!dateReference || dateReference > appliedSolicitationFilters.endDate) return false
+      }
+
+      return true
     })
-  }, [search, solicitations])
+  }, [search, solicitations, appliedSolicitationFilters])
 
   const visibleDocuments = useMemo(() => {
     const term = search.trim().toLowerCase()
     const rows = [...documents].sort((a, b) => Number(b?.taskId || 0) - Number(a?.taskId || 0))
-    if (!term) return rows
     return rows.filter((row) => {
+      const downloadedAt = String(row?.downloadedAt || '').trim()
+      const statusLabel = downloadedAt ? 'Arquivo baixado' : 'Disponível'
+      const department = String(row?.departamento || '').trim()
+      const taskName = String(row?.nome || '').trim()
+      const clientName = String(row?.cliente || '').trim()
+      const responsible = String(row?.responsavel || '').trim()
+      const competence = String(row?.competencia || '').trim()
+      const filterDateField = String(appliedDocumentFilters.dateField || '').trim() || 'dueDate'
+      const dateReference = normalizeDateForFilter(row?.[filterDateField])
+
       const text = [
         row?.taskId,
-        row?.status,
-        row?.departamento,
-        row?.nome,
-        row?.competencia,
-        row?.cliente,
+        statusLabel,
+        department,
+        taskName,
+        competence,
+        clientName,
         row?.actionDate,
         row?.metaDate,
         row?.dueDate,
         row?.conclusionDate,
-        row?.responsavel,
-        row?.attachmentName,
+        responsible,
+        ...(Array.isArray(row?.attachments)
+          ? row.attachments.map((attachment) => String(attachment?.attachmentName || '').trim())
+          : []),
       ]
         .join(' ')
         .toLowerCase()
-      return text.includes(term)
+      if (term && !text.includes(term)) return false
+
+      if (appliedDocumentFilters.status !== FILTER_ALL_VALUE && statusLabel !== appliedDocumentFilters.status) {
+        return false
+      }
+
+      if (
+        appliedDocumentFilters.department !== FILTER_ALL_VALUE &&
+        department !== appliedDocumentFilters.department
+      ) {
+        return false
+      }
+
+      if (appliedDocumentFilters.client !== FILTER_ALL_VALUE && clientName !== appliedDocumentFilters.client) {
+        return false
+      }
+
+      if (
+        appliedDocumentFilters.name !== FILTER_ALL_VALUE &&
+        taskName !== appliedDocumentFilters.name
+      ) {
+        return false
+      }
+
+      if (
+        appliedDocumentFilters.competence !== FILTER_ALL_VALUE &&
+        competence !== appliedDocumentFilters.competence
+      ) {
+        return false
+      }
+
+      if (appliedDocumentFilters.startDate) {
+        if (!dateReference || dateReference < appliedDocumentFilters.startDate) return false
+      }
+
+      if (appliedDocumentFilters.endDate) {
+        if (!dateReference || dateReference > appliedDocumentFilters.endDate) return false
+      }
+
+      return true
     })
-  }, [documents, search])
+  }, [documents, search, appliedDocumentFilters])
 
   const solicitationTotalCount = solicitations.length
   const solicitationFinishedCount = solicitations.filter((record) => isFinalStatus(getStatusLabel(record))).length
@@ -393,6 +833,10 @@ function DocsApp() {
       : solicitationFinishedCount
   const openCount =
     activeSection === DOCS_SECTION.DOCUMENTS ? documentPendingCount : solicitationOpenCount
+  const conversationStatusLabel = getStatusLabel(conversationRecord)
+  const conversationStatusTone = getStatusBadgeTone(conversationStatusLabel)
+  const conversationIsFinal = isFinalStatus(conversationStatusLabel)
+  const conversationMessages = normalizeConversationMessages(conversationRecord?.conversation)
 
   const openCreateSolicitation = () => {
     setEditingSolicitationId('')
@@ -419,11 +863,31 @@ function DocsApp() {
     }
   }
 
+  const closeConversationModal = () => {
+    setConversationOpen(false)
+    setConversationRecord(null)
+    setConversationReplyOpen(false)
+    setConversationDraft('')
+    setConversationError('')
+  }
+
+  const openConversationModal = (record) => {
+    if (!record) return
+    setConversationRecord({
+      ...record,
+      conversation: normalizeConversationMessages(record?.conversation),
+    })
+    setConversationReplyOpen(false)
+    setConversationDraft('')
+    setConversationError('')
+    setConversationOpen(true)
+  }
+
   const openEditSolicitation = (record) => {
     const statusLabel = getStatusLabel(record)
     if (!isOpenSolicitationStatus(statusLabel)) {
       setSolicitationActionError(
-        'Esta solicitacao nao pode mais ser editada porque nao esta com status aberto.',
+        'Esta solicitação não pode mais ser editada porque não está com status aberto.',
       )
       return
     }
@@ -462,25 +926,133 @@ function DocsApp() {
     setSolicitationOpen(true)
   }
 
-  const handleDocumentDownload = async (documentRow) => {
-    const documentKey = String(documentRow?.documentKey || '').trim()
-    if (!documentKey || !session?.token) return
+  const handleSolicitationRowClick = (record) => {
+    const statusLabel = getStatusLabel(record)
+    if (isOpenSolicitationStatus(statusLabel)) {
+      openEditSolicitation(record)
+      return
+    }
+    openConversationModal(record)
+  }
+
+  const handleConversationReplyToggle = () => {
+    const statusLabel = getStatusLabel(conversationRecord)
+    if (isFinalStatus(statusLabel)) {
+      setConversationError('Solicitação finalizada não aceita novas respostas.')
+      return
+    }
+    setConversationReplyOpen((prev) => !prev)
+    setConversationError('')
+  }
+
+  const sendConversationReply = async () => {
+    const recordId = String(conversationRecord?.id || '').trim()
+    if (!recordId || !session?.token) return
+
+    const message = String(conversationDraft || '').trim()
+    if (!message) {
+      setConversationError('Escreva uma resposta antes de enviar.')
+      return
+    }
+
+    const statusLabel = getStatusLabel(conversationRecord)
+    if (isFinalStatus(statusLabel)) {
+      setConversationError('Solicitação finalizada não aceita novas respostas.')
+      return
+    }
+
+    setConversationLoading(true)
+    setConversationError('')
+    try {
+      const payload = await apiRequest(`/tenant/portal/solicitations/${encodeURIComponent(recordId)}/reply`, {
+        method: 'POST',
+        token: session.token,
+        body: { message },
+      })
+      const updatedRecord = payload?.record || null
+      if (updatedRecord) {
+        const normalizedRecord = {
+          ...updatedRecord,
+          conversation: normalizeConversationMessages(updatedRecord?.conversation),
+        }
+        setSolicitations((prev) =>
+          prev.map((item) =>
+            String(item?.id || '').trim() === String(normalizedRecord?.id || '').trim()
+              ? normalizedRecord
+              : item,
+          ),
+        )
+        setConversationRecord(normalizedRecord)
+      }
+      setConversationDraft('')
+      setConversationReplyOpen(false)
+    } catch (error) {
+      if (handleTokenFailure(error)) return
+      setConversationError(error?.message || 'Não foi possível enviar a resposta.')
+    } finally {
+      setConversationLoading(false)
+    }
+  }
+
+  const closeDownloadModal = () => {
+    setDownloadModalOpen(false)
+    setDownloadModalDocument(null)
+    setDownloadingAttachmentKey('')
+    setDownloadingAllAttachments(false)
+  }
+
+  const openDownloadModal = (documentRow) => {
+    if (!documentRow) return
     setDocumentsActionError('')
-    setDownloadingDocumentKey(documentKey)
+    setDownloadingAttachmentKey('')
+    setDownloadingAllAttachments(false)
+    setDownloadModalDocument(normalizePortalDocumentRecord(documentRow))
+    setDownloadModalOpen(true)
+  }
+
+  const applyDownloadedAttachmentState = (row, targetAttachmentKey, downloadedAt) => {
+    const documentKey = String(row?.documentKey || '').trim()
+    const normalizedTargetAttachmentKey = String(targetAttachmentKey || '').trim()
+    if (!documentKey || !normalizedTargetAttachmentKey) return normalizePortalDocumentRecord(row)
+    const nextAttachments = (Array.isArray(row?.attachments) ? row.attachments : []).map((attachment) => {
+      const currentAttachmentKey = String(attachment?.attachmentKey || '').trim()
+      if (currentAttachmentKey !== normalizedTargetAttachmentKey) return attachment
+      return {
+        ...attachment,
+        downloadedAt,
+        status: 'Arquivo baixado',
+      }
+    })
+    return normalizePortalDocumentRecord({
+      ...row,
+      attachments: nextAttachments,
+    })
+  }
+
+  const handleDocumentAttachmentDownload = async (documentRow, attachment, options = {}) => {
+    const suppressError = Boolean(options?.suppressError)
+    const documentKey = String(documentRow?.documentKey || '').trim()
+    const attachmentKey = String(attachment?.attachmentKey || '').trim()
+    if (!documentKey || !attachmentKey || !session?.token) return false
+
+    setDocumentsActionError('')
+    setDownloadingAttachmentKey(attachmentKey)
     try {
       const payload = await apiRequest('/tenant/portal/documents/download', {
         method: 'POST',
         token: session.token,
-        body: { documentKey },
+        body: { documentKey, attachmentKey },
       })
       const file = payload?.file || {}
-      const fileName = String(file?.name || documentRow?.attachmentName || 'documento')
-      const fileType = String(file?.type || documentRow?.attachmentType || 'application/octet-stream')
+      const fileName = String(file?.name || attachment?.attachmentName || 'documento')
+      const fileType = String(file?.type || attachment?.attachmentType || 'application/octet-stream')
       const fileContentBase64 = String(file?.contentBase64 || '').trim()
       const downloadedAt = String(payload?.downloadedAt || '').trim()
+      const resolvedAttachmentKey =
+        String(payload?.attachmentKey || '').trim() || String(attachment?.attachmentKey || '').trim()
 
       if (!fileContentBase64) {
-        throw new Error('O arquivo selecionado nao possui conteudo para download.')
+        throw new Error('O arquivo selecionado não possui conteúdo para download.')
       }
 
       const downloaded = triggerBase64Download({
@@ -489,21 +1061,60 @@ function DocsApp() {
         mimeType: fileType,
       })
       if (!downloaded) {
-        throw new Error('Nao foi possivel baixar o arquivo.')
+        throw new Error('Não foi possível baixar o arquivo.')
       }
 
       setDocuments((prev) =>
-        prev.map((item) =>
-          String(item?.documentKey || '').trim() === documentKey
-            ? { ...item, status: 'Arquivo baixado', downloadedAt }
-            : item,
-        ),
+        prev.map((item) => {
+          const currentKey = String(item?.documentKey || '').trim()
+          if (currentKey !== documentKey) return item
+          return applyDownloadedAttachmentState(item, resolvedAttachmentKey, downloadedAt)
+        }),
       )
+      setDownloadModalDocument((prev) => {
+        const currentKey = String(prev?.documentKey || '').trim()
+        if (currentKey !== documentKey) return prev
+        return applyDownloadedAttachmentState(prev, resolvedAttachmentKey, downloadedAt)
+      })
+      return true
     } catch (error) {
-      setDocumentsActionError(error?.message || 'Nao foi possivel baixar o documento.')
+      if (handleTokenFailure(error)) return false
+      if (!suppressError) {
+        setDocumentsActionError(error?.message || 'Não foi possível baixar o documento.')
+      }
+      return false
     } finally {
-      setDownloadingDocumentKey('')
+      setDownloadingAttachmentKey('')
     }
+  }
+
+  const handleDocumentDownloadAll = async (documentRow) => {
+    if (!documentRow || !session?.token) return
+    const downloadables = (Array.isArray(documentRow?.attachments) ? documentRow.attachments : []).filter(
+      (attachment) => Boolean(attachment?.hasContent),
+    )
+    if (!downloadables.length) {
+      setDocumentsActionError('Não há anexos disponíveis para download neste documento.')
+      return
+    }
+
+    setDownloadingAllAttachments(true)
+    setDocumentsActionError('')
+    let successCount = 0
+    for (const attachment of downloadables) {
+      const success = await handleDocumentAttachmentDownload(documentRow, attachment, { suppressError: true })
+      if (success) successCount += 1
+    }
+    setDownloadingAllAttachments(false)
+
+    if (successCount === downloadables.length) return
+    if (successCount === 0) {
+      setDocumentsActionError('Não foi possível baixar os anexos deste documento.')
+      return
+    }
+    setDocumentsActionError(
+      `Foram baixados ${successCount} de ${downloadables.length} anexos. Alguns arquivos falharam.`,
+    )
   }
 
   const handleSolicitationAttachmentDraftChange = (event) => {
@@ -579,7 +1190,7 @@ function DocsApp() {
         .map((result) => result.value)
       const failedCount = solicitationAttachmentDrafts.length - validAttachments.length
       if (!validAttachments.length) {
-        setSolicitationAttachmentFeedback('Nao foi possivel incluir os arquivos selecionados.')
+        setSolicitationAttachmentFeedback('Não foi possível incluir os arquivos selecionados.')
         return
       }
 
@@ -589,17 +1200,17 @@ function DocsApp() {
       }))
       if (failedCount > 0) {
         setSolicitationAttachmentFeedback(
-          `${validAttachments.length} anexo(s) incluido(s). ${failedCount} nao puderam ser incluidos.`,
+          `${validAttachments.length} anexo(s) incluído(s). ${failedCount} não puderam ser incluídos.`,
         )
       } else {
-        setSolicitationAttachmentFeedback(`${validAttachments.length} anexo(s) incluido(s) com sucesso.`)
+        setSolicitationAttachmentFeedback(`${validAttachments.length} anexo(s) incluído(s) com sucesso.`)
       }
       setSolicitationAttachmentDrafts([])
       if (solicitationAttachmentInputRef.current) {
         solicitationAttachmentInputRef.current.value = ''
       }
     } catch {
-      setSolicitationAttachmentFeedback('Nao foi possivel incluir os arquivos selecionados.')
+      setSolicitationAttachmentFeedback('Não foi possível incluir os arquivos selecionados.')
     }
   }
 
@@ -632,15 +1243,15 @@ function DocsApp() {
       return
     }
     if (!assunto) {
-      setSolicitationError('Informe o assunto da solicitacao.')
+      setSolicitationError('Informe o assunto da solicitação.')
       return
     }
     if (!solicitationForm.actionDate || !solicitationForm.metaDate || !solicitationForm.dueDate) {
-      setSolicitationError('Preencha Acao, Meta e Prazo.')
+      setSolicitationError('Preencha Ação, Meta e Prazo.')
       return
     }
     if (!andamento) {
-      setSolicitationError('Informe os detalhes da solicitacao.')
+      setSolicitationError('Informe os detalhes da solicitação.')
       return
     }
     if (!responsavel) {
@@ -707,11 +1318,12 @@ function DocsApp() {
       closeSolicitationModal()
       setSolicitationForm(getEmptySolicitationForm(String(user?.name || '').trim()))
     } catch (error) {
+      if (handleTokenFailure(error)) return
       setSolicitationError(
         error?.message ||
           (editingSolicitationId
-            ? 'Nao foi possivel editar a solicitacao.'
-            : 'Nao foi possivel criar a solicitacao.'),
+            ? 'Não foi possível editar a solicitação.'
+            : 'Não foi possível criar a solicitação.'),
       )
     } finally {
       setSolicitationLoading(false)
@@ -726,20 +1338,20 @@ function DocsApp() {
             <img src="/favicon.svg" alt="HIVE DOCS" />
             <div>
               <h1>HIVE DOCS</h1>
-              <p>Portal de Solicitacoes</p>
+              <p>Portal de Solicitações</p>
             </div>
           </div>
           <h2>Bem-vindo de volta</h2>
-          <p>Entre para abrir e acompanhar solicitacoes do seu cliente.</p>
+          <p>Entre para abrir e acompanhar solicitações do seu cliente.</p>
 
           <form onSubmit={handleLogin} className="docs-login-form">
             <label>
-              <span>Usuario / E-mail</span>
+              <span>Usuário / E-mail</span>
               <input
                 type="text"
                 value={loginForm.login}
                 onChange={(event) => setLoginForm((prev) => ({ ...prev, login: event.target.value }))}
-                placeholder="usuario ou cliente@empresa.com"
+                placeholder="usuário ou cliente@empresa.com"
               />
             </label>
             <label>
@@ -769,9 +1381,9 @@ function DocsApp() {
 
         <section className="docs-login-hero">
           <span className="docs-hero-badge">HIVE DOCS</span>
-          <h2>Abertura de solicitacoes em um painel dedicado ao cliente</h2>
+          <h2>Abertura de solicitações em um painel dedicado ao cliente</h2>
           <p>
-            Registre demandas com agilidade e acompanhe o status em tempo real, com integracao
+            Registre demandas com agilidade e acompanhe o status em tempo real, com integração
             direta ao painel interno da equipe.
           </p>
         </section>
@@ -795,7 +1407,7 @@ function DocsApp() {
           className={`docs-menu-item ${activeSection === DOCS_SECTION.SOLICITATIONS ? 'active' : ''}`}
           onClick={() => handleSectionChange(DOCS_SECTION.SOLICITATIONS)}
         >
-          Solicitacoes
+          Solicitações
         </button>
         <button
           type="button"
@@ -820,17 +1432,129 @@ function DocsApp() {
             placeholder={
               activeSection === DOCS_SECTION.DOCUMENTS
                 ? 'Pesquisar documentos recebidos...'
-                : 'Digite aqui para comecar a pesquisa...'
+                : 'Digite aqui para começar a pesquisa...'
             }
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
           {activeSection === DOCS_SECTION.SOLICITATIONS ? (
             <button type="button" className="primary" onClick={openCreateSolicitation}>
-              Criar Solicitacao
+              Criar Solicitação
             </button>
           ) : null}
         </header>
+
+        <section className="docs-filters-card">
+          <div className="docs-filters-grid">
+            <label>
+              <span>Status</span>
+              <select
+                value={activeFilters.status}
+                onChange={(event) => handleActiveFilterChange('status', event.target.value)}
+              >
+                <option value={FILTER_ALL_VALUE}>{FILTER_ALL_VALUE}</option>
+                {activeFilterOptions.status.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Departamento</span>
+              <select
+                value={activeFilters.department}
+                onChange={(event) => handleActiveFilterChange('department', event.target.value)}
+              >
+                <option value={FILTER_ALL_VALUE}>{FILTER_ALL_VALUE}</option>
+                {activeFilterOptions.departments.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Cliente</span>
+              <select
+                value={activeFilters.client}
+                onChange={(event) => handleActiveFilterChange('client', event.target.value)}
+              >
+                <option value={FILTER_ALL_VALUE}>{FILTER_ALL_VALUE}</option>
+                {activeFilterOptions.clients.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Nome</span>
+              <select
+                value={activeFilters.name}
+                onChange={(event) => handleActiveFilterChange('name', event.target.value)}
+              >
+                <option value={FILTER_ALL_VALUE}>{FILTER_ALL_VALUE}</option>
+                {activeFilterOptions.names.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Competência</span>
+              <select
+                value={activeFilters.competence}
+                onChange={(event) => handleActiveFilterChange('competence', event.target.value)}
+              >
+                <option value={FILTER_ALL_VALUE}>{FILTER_ALL_VALUE}</option>
+                {activeFilterOptions.competences.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Por Data</span>
+              <select
+                value={activeFilters.dateField}
+                onChange={(event) => handleActiveFilterChange('dateField', event.target.value)}
+              >
+                {activeDateFilterOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Período Inicial</span>
+              <input
+                type="date"
+                value={activeFilters.startDate}
+                onChange={(event) => handleActiveFilterChange('startDate', event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Período Final</span>
+              <input
+                type="date"
+                value={activeFilters.endDate}
+                onChange={(event) => handleActiveFilterChange('endDate', event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="docs-filters-actions">
+            <button type="button" className="primary" onClick={applyActiveFilters}>
+              Aplicar
+            </button>
+            <button type="button" className="ghost" onClick={clearActiveFilters}>
+              Limpar
+            </button>
+          </div>
+        </section>
 
         <section className="docs-kpis">
           <article>
@@ -854,13 +1578,13 @@ function DocsApp() {
               <span>Status</span>
               <span>Departamento</span>
               <span>Nome</span>
-              <span>Competencia</span>
+              <span>Competência</span>
               <span>Cliente</span>
-              <span>Acao</span>
+              <span>Ação</span>
               <span>Meta</span>
               <span>Vencimento</span>
-              <span>Conclusao</span>
-              <span>Responsavel</span>
+              <span>Conclusão</span>
+              <span>Responsável</span>
             </div>
           ) : (
             <div className="docs-table-head docs-table-head-documents">
@@ -868,13 +1592,13 @@ function DocsApp() {
               <span>Status</span>
               <span>Departamento</span>
               <span>Nome</span>
-              <span>Competencia</span>
+              <span>Competência</span>
               <span>Cliente</span>
-              <span>Acao</span>
+              <span>Ação</span>
               <span>Meta</span>
               <span>Vencimento</span>
-              <span>Conclusao</span>
-              <span>Responsavel</span>
+              <span>Conclusão</span>
+              <span>Responsável</span>
               <span>Anexo</span>
             </div>
           )}
@@ -883,7 +1607,7 @@ function DocsApp() {
               <div className="docs-table-row empty">
                 {activeSection === DOCS_SECTION.DOCUMENTS
                   ? 'Carregando documentos recebidos...'
-                  : 'Carregando solicitacoes...'}
+                  : 'Carregando solicitações...'}
               </div>
             ) : (
               <>
@@ -895,21 +1619,21 @@ function DocsApp() {
                         const canEdit = isOpenSolicitationStatus(statusLabel)
                         return (
                           <div
-                            className={`docs-table-row ${canEdit ? 'editable' : ''}`}
+                            className={`docs-table-row ${canEdit ? 'editable' : 'interactive'}`}
                             key={`docs-sol-${record.id}`}
                             role="button"
                             tabIndex={0}
-                            onClick={() => openEditSolicitation(record)}
+                            onClick={() => handleSolicitationRowClick(record)}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter' || event.key === ' ') {
                                 event.preventDefault()
-                                openEditSolicitation(record)
+                                handleSolicitationRowClick(record)
                               }
                             }}
                             title={
                               canEdit
-                                ? 'Clique para editar esta solicitacao'
-                                : 'Somente solicitacoes abertas podem ser editadas'
+                                ? 'Clique para editar esta solicitação'
+                                : 'Clique para abrir o histórico de respostas'
                             }
                           >
                             <span>{record.id}</span>
@@ -929,18 +1653,15 @@ function DocsApp() {
                         )
                       })
                     : (
-                        <div className="docs-table-row empty">Sem solicitacoes cadastradas.</div>
+                        <div className="docs-table-row empty">Sem solicitações cadastradas.</div>
                       )
                   : visibleDocuments.length
                     ? visibleDocuments.map((row) => {
                         const downloadedAt = String(row?.downloadedAt || '').trim()
                         const isDownloaded = Boolean(downloadedAt)
-                        const statusLabel = isDownloaded ? 'Arquivo baixado' : 'Disponivel'
+                        const statusLabel = isDownloaded ? 'Arquivo baixado' : 'Disponível'
                         const statusTone = getStatusBadgeTone(statusLabel)
                         const statusTitle = isDownloaded ? `Baixado em ${parseIsoDateTimeToBr(downloadedAt)}` : ''
-                        const isDownloading =
-                          downloadingDocumentKey &&
-                          String(downloadingDocumentKey).trim() === String(row?.documentKey || '').trim()
                         return (
                           <div className="docs-table-row docs-table-row-documents" key={row.documentKey}>
                             <span>{row.taskId || '-'}</span>
@@ -962,11 +1683,11 @@ function DocsApp() {
                               <button
                                 type="button"
                                 className="ghost docs-inline-button"
-                                onClick={() => handleDocumentDownload(row)}
-                                disabled={isDownloading || !row.hasContent}
-                                title={row.hasContent ? row.attachmentName || 'Baixar anexo' : 'Anexo indisponível'}
+                                onClick={() => openDownloadModal(row)}
+                                disabled={!row.hasContent}
+                                title={row.hasContent ? 'Abrir anexos para download' : 'Anexo indisponível'}
                               >
-                                {isDownloading ? 'Baixando...' : 'Baixar'}
+                                Anexos
                               </button>
                             </span>
                           </div>
@@ -989,9 +1710,9 @@ function DocsApp() {
         <div className="docs-modal-backdrop" onClick={closeSolicitationModal}>
           <div className="docs-modal" onClick={(event) => event.stopPropagation()}>
             <div className="docs-modal-head">
-              <h3>{editingSolicitationId ? 'Editar Solicitacao' : 'Nova Solicitacao'}</h3>
+              <h3>{editingSolicitationId ? 'Editar Solicitação' : 'Nova Solicitação'}</h3>
               <button type="button" onClick={closeSolicitationModal}>
-                A—
+                ×
               </button>
             </div>
 
@@ -1049,12 +1770,12 @@ function DocsApp() {
                   onChange={(event) =>
                     setSolicitationForm((prev) => ({ ...prev, assunto: event.target.value }))
                   }
-                  placeholder="Descreva a nova solicitacao"
+                  placeholder="Descreva a nova solicitação"
                 />
               </label>
 
               <label>
-                <span>Acao</span>
+                <span>Ação</span>
                 <input
                   type="date"
                   value={solicitationForm.actionDate}
@@ -1085,13 +1806,13 @@ function DocsApp() {
               </label>
 
               <label className="wide">
-                <span>Informacoes adicionais</span>
+                <span>Informações adicionais</span>
                 <textarea
                   value={solicitationForm.andamento}
                   onChange={(event) =>
                     setSolicitationForm((prev) => ({ ...prev, andamento: event.target.value }))
                   }
-                  placeholder="Descreva os detalhes da solicitacao"
+                  placeholder="Descreva os detalhes da solicitação"
                 />
               </label>
 
@@ -1105,7 +1826,7 @@ function DocsApp() {
                 />
               </label>
               <p className="wide docs-note">
-                Qualquer tipo de documento e permitido. Limite de 25MB por arquivo.
+                Qualquer tipo de documento é permitido. Limite de 25MB por arquivo.
               </p>
 
               <div className="wide docs-attachment-actions">
@@ -1136,7 +1857,7 @@ function DocsApp() {
               {solicitationForm.attachments.length ? (
                 <div className="wide docs-attachments-wrap">
                   <strong className="docs-attachments-title">
-                    Anexos incluidos ({solicitationForm.attachments.length})
+                    Anexos incluídos ({solicitationForm.attachments.length})
                   </strong>
                   <div className="docs-attachments-list">
                     {solicitationForm.attachments.map((attachment) => (
@@ -1152,7 +1873,7 @@ function DocsApp() {
               ) : null}
 
               <label>
-                <span>Responsavel</span>
+                <span>Responsável</span>
                 <input
                   type="text"
                   value={solicitationForm.responsavel}
@@ -1175,13 +1896,215 @@ function DocsApp() {
                   {solicitationLoading
                     ? 'Salvando...'
                     : editingSolicitationId
-                      ? 'Salvar Edicao'
-                      : 'Salvar Solicitacao'}
+                      ? 'Salvar Edição'
+                      : 'Salvar Solicitação'}
                 </button>
               </div>
             </form>
 
             {solicitationError ? <p className="docs-feedback error">{solicitationError}</p> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {downloadModalOpen ? (
+        <div className="docs-modal-backdrop" onClick={closeDownloadModal}>
+          <div className="docs-modal docs-download-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="docs-modal-head">
+              <h3>Anexos do documento</h3>
+              <button type="button" onClick={closeDownloadModal}>
+                ×
+              </button>
+            </div>
+
+            <div className="docs-conversation-summary">
+              <p>
+                <strong>Tarefa/Solicitação:</strong> {downloadModalDocument?.nome || '-'}
+              </p>
+              <p>
+                <strong>Cliente:</strong> {downloadModalDocument?.cliente || '-'}
+              </p>
+              <p>
+                <strong>Total de anexos:</strong>{' '}
+                {Array.isArray(downloadModalDocument?.attachments)
+                  ? downloadModalDocument.attachments.length
+                  : 0}
+              </p>
+            </div>
+
+            <section className="docs-download-list">
+              {Array.isArray(downloadModalDocument?.attachments) &&
+              downloadModalDocument.attachments.length ? (
+                downloadModalDocument.attachments.map((attachment) => {
+                  const attachmentKey = String(attachment?.attachmentKey || '').trim()
+                  const isDownloaded = Boolean(String(attachment?.downloadedAt || '').trim())
+                  const statusLabel = isDownloaded ? 'Arquivo baixado' : 'Disponível'
+                  const statusTone = getStatusBadgeTone(statusLabel)
+                  const statusTitle = isDownloaded
+                    ? `Baixado em ${parseIsoDateTimeToBr(attachment?.downloadedAt)}`
+                    : ''
+                  const isDownloading =
+                    Boolean(downloadingAttachmentKey) &&
+                    String(downloadingAttachmentKey).trim() === attachmentKey
+                  return (
+                    <article className="docs-download-item" key={attachmentKey || attachment.attachmentName}>
+                      <div className="docs-download-item-main">
+                        <strong title={attachment?.attachmentName || '-'}>
+                          {attachment?.attachmentName || '-'}
+                        </strong>
+                        <small>{formatFileSize(attachment?.attachmentSize)}</small>
+                      </div>
+                      <div className="docs-download-item-actions">
+                        <mark className={statusTone} title={statusTitle}>
+                          {statusLabel}
+                        </mark>
+                        <button
+                          type="button"
+                          className="ghost docs-inline-button"
+                          onClick={() =>
+                            handleDocumentAttachmentDownload(downloadModalDocument, attachment)
+                          }
+                          disabled={
+                            downloadingAllAttachments ||
+                            isDownloading ||
+                            !attachment?.hasContent
+                          }
+                          title={attachment?.hasContent ? 'Baixar anexo' : 'Anexo indisponível'}
+                        >
+                          {isDownloading ? 'Baixando...' : 'Baixar'}
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })
+              ) : (
+                <p className="docs-conversation-empty">Sem anexos disponíveis para este documento.</p>
+              )}
+            </section>
+
+            <div className="docs-conversation-actions">
+              <button
+                type="button"
+                className="ghost"
+                onClick={closeDownloadModal}
+                disabled={downloadingAllAttachments}
+              >
+                Fechar
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => handleDocumentDownloadAll(downloadModalDocument)}
+                disabled={
+                  downloadingAllAttachments ||
+                  !Array.isArray(downloadModalDocument?.attachments) ||
+                  !downloadModalDocument.attachments.some((attachment) => Boolean(attachment?.hasContent))
+                }
+              >
+                {downloadingAllAttachments ? 'Baixando anexos...' : 'Baixar todos'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {conversationOpen ? (
+        <div className="docs-modal-backdrop" onClick={closeConversationModal}>
+          <div className="docs-modal docs-conversation-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="docs-modal-head">
+              <h3>Responder Solicitação</h3>
+              <button type="button" onClick={closeConversationModal}>
+                ×
+              </button>
+            </div>
+
+            <div className="docs-conversation-summary">
+              <p>
+                <strong>Assunto:</strong> {conversationRecord?.assunto || '-'}
+              </p>
+              <p>
+                <strong>Cliente:</strong> {conversationRecord?.clientName || '-'}
+              </p>
+              <p>
+                <strong>Status:</strong>{' '}
+                <mark className={conversationStatusTone}>{conversationStatusLabel || 'Aberta'}</mark>
+              </p>
+            </div>
+
+            <section className="docs-conversation-thread">
+              <h4>Histórico da conversa</h4>
+              {conversationMessages.length ? (
+                <div className="docs-conversation-list">
+                  {conversationMessages.map((message) => {
+                    const authorLabel =
+                      message.authorName ||
+                      (message.authorType === 'client' ? 'Cliente' : 'Equipe HIVE Controller')
+                    const createdAtLabel = parseIsoDateTimeToBr(message.createdAt)
+                    return (
+                      <article
+                        key={message.id}
+                        className={`docs-conversation-item ${
+                          message.authorType === 'client' ? 'client' : 'internal'
+                        }`}
+                      >
+                        <header>
+                          <strong>{authorLabel}</strong>
+                          <span>{createdAtLabel || '-'}</span>
+                        </header>
+                        <p>{message.text}</p>
+                      </article>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="docs-conversation-empty">Sem respostas registradas até o momento.</p>
+              )}
+            </section>
+
+            {conversationReplyOpen ? (
+              <section className="docs-conversation-composer">
+                <label>
+                  <span>Mensagem</span>
+                  <textarea
+                    value={conversationDraft}
+                    onChange={(event) => setConversationDraft(event.target.value)}
+                    placeholder="Escreva a resposta sobre a solicitação..."
+                    disabled={conversationLoading || conversationIsFinal}
+                  />
+                </label>
+                <div className="docs-conversation-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={handleConversationReplyToggle}
+                    disabled={conversationLoading}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={sendConversationReply}
+                    disabled={conversationLoading || conversationIsFinal}
+                  >
+                    {conversationLoading ? 'Enviando resposta...' : 'Enviar Resposta'}
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <div className="docs-conversation-actions">
+                <button
+                  type="button"
+                  className="docs-reply-button"
+                  onClick={handleConversationReplyToggle}
+                  disabled={conversationLoading || conversationIsFinal}
+                >
+                  Responder
+                </button>
+              </div>
+            )}
+
+            {conversationError ? <p className="docs-feedback error">{conversationError}</p> : null}
           </div>
         </div>
       ) : null}
