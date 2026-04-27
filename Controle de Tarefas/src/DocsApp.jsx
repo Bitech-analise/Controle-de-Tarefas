@@ -1011,12 +1011,21 @@ function DocsApp() {
   }
 
   const applyDownloadedAttachmentState = (row, targetAttachmentKey, downloadedAt) => {
-    const documentKey = String(row?.documentKey || '').trim()
     const normalizedTargetAttachmentKey = String(targetAttachmentKey || '').trim()
-    if (!documentKey || !normalizedTargetAttachmentKey) return normalizePortalDocumentRecord(row)
+    if (!normalizedTargetAttachmentKey) return normalizePortalDocumentRecord(row)
+    return applyDownloadedAttachmentsState(row, [normalizedTargetAttachmentKey], downloadedAt)
+  }
+
+  const applyDownloadedAttachmentsState = (row, targetAttachmentKeys, downloadedAt) => {
+    const documentKey = String(row?.documentKey || '').trim()
+    const keys = (Array.isArray(targetAttachmentKeys) ? targetAttachmentKeys : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    if (!documentKey || !keys.length) return normalizePortalDocumentRecord(row)
+    const keySet = new Set(keys)
     const nextAttachments = (Array.isArray(row?.attachments) ? row.attachments : []).map((attachment) => {
       const currentAttachmentKey = String(attachment?.attachmentKey || '').trim()
-      if (currentAttachmentKey !== normalizedTargetAttachmentKey) return attachment
+      if (!keySet.has(currentAttachmentKey)) return attachment
       return {
         ...attachment,
         downloadedAt,
@@ -1090,6 +1099,9 @@ function DocsApp() {
 
   const handleDocumentDownloadAll = async (documentRow) => {
     if (!documentRow || !session?.token) return
+    const documentKey = String(documentRow?.documentKey || '').trim()
+    if (!documentKey) return
+
     const downloadables = (Array.isArray(documentRow?.attachments) ? documentRow.attachments : []).filter(
       (attachment) => Boolean(attachment?.hasContent),
     )
@@ -1100,21 +1112,57 @@ function DocsApp() {
 
     setDownloadingAllAttachments(true)
     setDocumentsActionError('')
-    let successCount = 0
-    for (const attachment of downloadables) {
-      const success = await handleDocumentAttachmentDownload(documentRow, attachment, { suppressError: true })
-      if (success) successCount += 1
-    }
-    setDownloadingAllAttachments(false)
+    try {
+      const payload = await apiRequest('/tenant/portal/documents/download-zip', {
+        method: 'POST',
+        token: session.token,
+        body: { documentKey },
+      })
+      const file = payload?.file || {}
+      const fileName = String(file?.name || `${String(documentRow?.nome || 'documentos').trim() || 'documentos'}.zip`)
+      const fileType = String(file?.type || 'application/zip')
+      const fileContentBase64 = String(file?.contentBase64 || '').trim()
+      const downloadedAt = String(payload?.downloadedAt || '').trim()
+      const resolvedAttachmentKeys = Array.isArray(payload?.attachmentKeys)
+        ? payload.attachmentKeys.map((key) => String(key || '').trim()).filter(Boolean)
+        : []
+      const fallbackKeys = downloadables
+        .map((attachment) => String(attachment?.attachmentKey || '').trim())
+        .filter(Boolean)
+      const keysToMark = resolvedAttachmentKeys.length ? resolvedAttachmentKeys : fallbackKeys
 
-    if (successCount === downloadables.length) return
-    if (successCount === 0) {
-      setDocumentsActionError('Não foi possível baixar os anexos deste documento.')
+      if (!fileContentBase64) {
+        throw new Error('Não foi possível gerar o arquivo ZIP para download.')
+      }
+
+      const downloaded = triggerBase64Download({
+        contentBase64: fileContentBase64,
+        fileName,
+        mimeType: fileType,
+      })
+      if (!downloaded) {
+        throw new Error('Não foi possível baixar o arquivo ZIP.')
+      }
+
+      setDocuments((prev) =>
+        prev.map((item) => {
+          const currentKey = String(item?.documentKey || '').trim()
+          if (currentKey !== documentKey) return item
+          return applyDownloadedAttachmentsState(item, keysToMark, downloadedAt)
+        }),
+      )
+      setDownloadModalDocument((prev) => {
+        const currentKey = String(prev?.documentKey || '').trim()
+        if (currentKey !== documentKey) return prev
+        return applyDownloadedAttachmentsState(prev, keysToMark, downloadedAt)
+      })
+    } catch (error) {
+      if (handleTokenFailure(error)) return
+      setDocumentsActionError(error?.message || 'Não foi possível baixar os anexos deste documento.')
       return
+    } finally {
+      setDownloadingAllAttachments(false)
     }
-    setDocumentsActionError(
-      `Foram baixados ${successCount} de ${downloadables.length} anexos. Alguns arquivos falharam.`,
-    )
   }
 
   const handleSolicitationAttachmentDraftChange = (event) => {

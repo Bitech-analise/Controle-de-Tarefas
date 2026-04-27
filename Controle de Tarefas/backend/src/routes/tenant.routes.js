@@ -134,6 +134,10 @@ const portalDocumentDownloadSchema = z.object({
   attachmentKey: z.string().optional().nullable(),
 })
 
+const portalDocumentDownloadZipSchema = z.object({
+  documentKey: z.string().min(1),
+})
+
 const tenantUserCreateSchema = z.object({
   name: z.string().min(2),
   username: z
@@ -624,6 +628,185 @@ const buildPortalDocumentGroupKey = ({ source, recordId }) =>
 
 const buildPortalDocumentAttachmentKey = ({ source, recordId, attachmentId, attachmentName, index }) =>
   `${buildPortalDocumentGroupKey({ source, recordId })}::${String(attachmentId || '').trim() || index}::${String(attachmentName || '').trim()}`
+
+const ZIP_CRC32_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let index = 0; index < 256; index += 1) {
+    let crc = index
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+    }
+    table[index] = crc >>> 0
+  }
+  return table
+})()
+
+const calculateCrc32 = (buffer) => {
+  let crc = 0xffffffff
+  for (const byte of buffer) {
+    crc = ZIP_CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8)
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+const getZipDosDateTime = (value) => {
+  const parsed = value ? new Date(value) : new Date()
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed
+  const year = Math.min(2107, Math.max(1980, date.getFullYear()))
+  const month = date.getMonth() + 1
+  const day = date.getDate()
+  const hours = date.getHours()
+  const minutes = date.getMinutes()
+  const seconds = Math.floor(date.getSeconds() / 2)
+
+  const dosDate = ((year - 1980) << 9) | (month << 5) | day
+  const dosTime = (hours << 11) | (minutes << 5) | seconds
+
+  return {
+    dosDate,
+    dosTime,
+  }
+}
+
+const normalizeZipArchiveName = (value) => {
+  const sanitized = String(value || '')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const baseName = sanitized || 'documentos'
+  return String(baseName).toLowerCase().endsWith('.zip') ? baseName : `${baseName}.zip`
+}
+
+const stripControlCharacters = (value) =>
+  Array.from(String(value || ''))
+    .filter((char) => {
+      const code = char.charCodeAt(0)
+      return code >= 32 && code !== 127
+    })
+    .join('')
+
+const normalizeZipEntryName = ({ value, fallbackBaseName, index, usedNames }) => {
+  const rawName = String(value || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+  const sanitized = stripControlCharacters(rawName || '')
+    .replace(/[<>:"|?*]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  let resolved = sanitized || `${fallbackBaseName}-${index + 1}`
+  if (resolved.length > 180) {
+    resolved = resolved.slice(0, 180).trim() || `${fallbackBaseName}-${index + 1}`
+  }
+
+  const dotIndex = resolved.lastIndexOf('.')
+  const base = dotIndex > 0 ? resolved.slice(0, dotIndex) : resolved
+  const extension = dotIndex > 0 ? resolved.slice(dotIndex) : ''
+  let uniqueName = resolved
+  let suffix = 2
+  const normalizedSet = usedNames || new Set()
+
+  while (normalizedSet.has(uniqueName.toLowerCase())) {
+    uniqueName = `${base} (${suffix})${extension}`
+    suffix += 1
+  }
+  normalizedSet.add(uniqueName.toLowerCase())
+  return uniqueName
+}
+
+const buildZipFileBuffer = ({ attachments, fallbackBaseName }) => {
+  const source = Array.isArray(attachments) ? attachments : []
+  if (!source.length) return null
+
+  const usedNames = new Set()
+  const entries = source
+    .map((attachment, index) => {
+      const contentBase64 = String(attachment?.contentBase64 || '').trim()
+      if (!contentBase64) return null
+      const contentBuffer = Buffer.from(contentBase64, 'base64')
+      const fileName = normalizeZipEntryName({
+        value: attachment?.attachmentName,
+        fallbackBaseName: String(fallbackBaseName || 'anexo').trim() || 'anexo',
+        index,
+        usedNames,
+      })
+      const fileNameBuffer = Buffer.from(fileName, 'utf8')
+      const { dosDate, dosTime } = getZipDosDateTime(attachment?.docsSharedAt || attachment?.downloadedAt)
+      const crc32 = calculateCrc32(contentBuffer)
+
+      return {
+        fileNameBuffer,
+        contentBuffer,
+        dosDate,
+        dosTime,
+        crc32,
+      }
+    })
+    .filter(Boolean)
+
+  if (!entries.length) return null
+
+  const localChunks = []
+  const centralChunks = []
+  let localOffset = 0
+
+  for (const entry of entries) {
+    const compressedSize = entry.contentBuffer.length
+    const uncompressedSize = entry.contentBuffer.length
+
+    const localHeader = Buffer.alloc(30)
+    localHeader.writeUInt32LE(0x04034b50, 0)
+    localHeader.writeUInt16LE(20, 4)
+    localHeader.writeUInt16LE(0, 6)
+    localHeader.writeUInt16LE(0, 8)
+    localHeader.writeUInt16LE(entry.dosTime, 10)
+    localHeader.writeUInt16LE(entry.dosDate, 12)
+    localHeader.writeUInt32LE(entry.crc32, 14)
+    localHeader.writeUInt32LE(compressedSize, 18)
+    localHeader.writeUInt32LE(uncompressedSize, 22)
+    localHeader.writeUInt16LE(entry.fileNameBuffer.length, 26)
+    localHeader.writeUInt16LE(0, 28)
+
+    localChunks.push(localHeader, entry.fileNameBuffer, entry.contentBuffer)
+
+    const centralHeader = Buffer.alloc(46)
+    centralHeader.writeUInt32LE(0x02014b50, 0)
+    centralHeader.writeUInt16LE(20, 4)
+    centralHeader.writeUInt16LE(20, 6)
+    centralHeader.writeUInt16LE(0, 8)
+    centralHeader.writeUInt16LE(0, 10)
+    centralHeader.writeUInt16LE(entry.dosTime, 12)
+    centralHeader.writeUInt16LE(entry.dosDate, 14)
+    centralHeader.writeUInt32LE(entry.crc32, 16)
+    centralHeader.writeUInt32LE(compressedSize, 20)
+    centralHeader.writeUInt32LE(uncompressedSize, 24)
+    centralHeader.writeUInt16LE(entry.fileNameBuffer.length, 28)
+    centralHeader.writeUInt16LE(0, 30)
+    centralHeader.writeUInt16LE(0, 32)
+    centralHeader.writeUInt16LE(0, 34)
+    centralHeader.writeUInt16LE(0, 36)
+    centralHeader.writeUInt32LE(0, 38)
+    centralHeader.writeUInt32LE(localOffset, 42)
+
+    centralChunks.push(centralHeader, entry.fileNameBuffer)
+    localOffset += localHeader.length + entry.fileNameBuffer.length + entry.contentBuffer.length
+  }
+
+  const centralDirectoryBuffer = Buffer.concat(centralChunks)
+  const centralDirectoryOffset = localOffset
+  const endOfCentralDirectory = Buffer.alloc(22)
+  endOfCentralDirectory.writeUInt32LE(0x06054b50, 0)
+  endOfCentralDirectory.writeUInt16LE(0, 4)
+  endOfCentralDirectory.writeUInt16LE(0, 6)
+  endOfCentralDirectory.writeUInt16LE(entries.length, 8)
+  endOfCentralDirectory.writeUInt16LE(entries.length, 10)
+  endOfCentralDirectory.writeUInt32LE(centralDirectoryBuffer.length, 12)
+  endOfCentralDirectory.writeUInt32LE(centralDirectoryOffset, 16)
+  endOfCentralDirectory.writeUInt16LE(0, 20)
+
+  return Buffer.concat([...localChunks, centralDirectoryBuffer, endOfCentralDirectory])
+}
 
 const buildPortalDocumentsFromState = ({
   stateData,
@@ -1665,6 +1848,145 @@ router.get('/portal/bootstrap', async (req, res, next) => {
     return next(error)
   }
 })
+
+router.post(
+  '/portal/documents/download-zip',
+  validateBody(portalDocumentDownloadZipSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = getTenantId(req)
+      if (!tenantId) {
+        return res.status(400).json({ message: 'tenantId e obrigatorio para este usuario.' })
+      }
+
+      const authUser = await prisma.tenantUser.findFirst({
+        where: { id: req.auth?.sub, tenantId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          clientIds: true,
+        },
+      })
+
+      if (!authUser) {
+        return res.status(403).json({ message: 'Usuario sem acesso ao tenant informado.' })
+      }
+
+      const stateRecord = await getTenantStateRecord(tenantId)
+      const stateData = getTenantStateData(stateRecord)
+      const stateClients = normalizeClientsFromState(stateData)
+
+      const isTenantRestrictedUser = authUser.role === 'TENANT_USER'
+      const allowedClientIds = new Set(
+        (Array.isArray(authUser.clientIds) ? authUser.clientIds : [])
+          .map((clientId) => String(clientId || '').trim())
+          .filter(Boolean),
+      )
+      const fallbackClientByIdentity = findClientByUserIdentity(stateClients, authUser)
+      const effectiveAllowedClientIds =
+        isTenantRestrictedUser && allowedClientIds.size === 0 && fallbackClientByIdentity?.id
+          ? new Set([String(fallbackClientByIdentity.id).trim()])
+          : allowedClientIds
+
+      const visibleClients = isTenantRestrictedUser
+        ? stateClients.filter((client) => effectiveAllowedClientIds.has(client.id))
+        : stateClients
+
+      const portalDocuments = buildPortalDocumentsFromState({
+        stateData,
+        visibleClients,
+        isTenantRestrictedUser,
+        authUser,
+      })
+
+      const documentKey = String(req.body?.documentKey || '').trim()
+      const targetDocument = portalDocuments.find((item) => String(item?.documentKey || '').trim() === documentKey)
+      if (!targetDocument) {
+        return res.status(404).json({ message: 'Documento nao encontrado para este usuario.' })
+      }
+
+      const documentAttachments = Array.isArray(targetDocument?.attachments) ? targetDocument.attachments : []
+      const downloadableAttachments = documentAttachments.filter((item) =>
+        Boolean(String(item?.contentBase64 || '').trim()),
+      )
+      if (!downloadableAttachments.length) {
+        return res.status(404).json({ message: 'Nenhum anexo com conteudo disponivel para download.' })
+      }
+
+      const zipFileName = normalizeZipArchiveName(
+        `${String(targetDocument?.nome || 'documentos').trim() || 'documentos'} - anexos`,
+      )
+      const zipBuffer = buildZipFileBuffer({
+        attachments: downloadableAttachments,
+        fallbackBaseName: String(targetDocument?.nome || 'anexo').trim() || 'anexo',
+      })
+      if (!zipBuffer) {
+        return res.status(400).json({ message: 'Nao foi possivel gerar o arquivo zip.' })
+      }
+
+      const downloadedAt = new Date().toISOString()
+      const downloadedAttachmentKeys = downloadableAttachments
+        .map((item) => String(item?.attachmentKey || '').trim())
+        .filter(Boolean)
+      const keySet = new Set(downloadedAttachmentKeys)
+      const currentDownloads = Array.isArray(stateData?.docsReceivedDownloads)
+        ? stateData.docsReceivedDownloads
+        : []
+      const authUserId = String(authUser.id || '').trim()
+      const authUserEmail = String(authUser.email || '').trim()
+      const authUserEmailNormalized = normalizeLookupText(authUserEmail)
+
+      const nextDownloads = [
+        ...currentDownloads.filter((entry) => {
+          const entryKey = String(entry?.key || '').trim()
+          if (!keySet.has(entryKey)) return true
+          const sameUserById = String(entry?.userId || '').trim() === authUserId
+          const sameUserByEmail =
+            Boolean(authUserEmailNormalized) &&
+            normalizeLookupText(String(entry?.userEmail || '').trim()) === authUserEmailNormalized
+          return !(sameUserById || sameUserByEmail)
+        }),
+        ...downloadedAttachmentKeys.map((entryKey) => ({
+          key: entryKey,
+          userId: authUserId,
+          userEmail: authUserEmail,
+          downloadedAt,
+        })),
+      ]
+
+      const stateToPersist = {
+        ...stateData,
+        schemaVersion: typeof stateData?.schemaVersion === 'number' ? stateData.schemaVersion : 1,
+        docsReceivedDownloads: nextDownloads,
+      }
+
+      await prisma.tenantState.upsert({
+        where: { tenantId },
+        update: { data: stateToPersist },
+        create: {
+          tenantId,
+          data: stateToPersist,
+        },
+      })
+
+      return res.json({
+        ok: true,
+        downloadedAt,
+        attachmentKeys: downloadedAttachmentKeys,
+        file: {
+          name: zipFileName,
+          type: 'application/zip',
+          size: zipBuffer.length,
+          contentBase64: zipBuffer.toString('base64'),
+        },
+      })
+    } catch (error) {
+      return next(error)
+    }
+  },
+)
 
 router.post(
   '/portal/documents/download',
