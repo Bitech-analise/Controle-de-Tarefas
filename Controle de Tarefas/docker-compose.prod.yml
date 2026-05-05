@@ -30,6 +30,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-hive_tarefas}?schema=public
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-4000}
+      API_BODY_LIMIT: ${API_BODY_LIMIT:-80mb}
       JWT_SECRET: ${JWT_SECRET:-change_me_super_secret}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-https://tarefas.hivesync.com.br}

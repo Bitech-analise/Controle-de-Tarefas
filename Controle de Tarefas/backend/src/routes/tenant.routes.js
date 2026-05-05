@@ -22,6 +22,30 @@ function getTenantId(req) {
   return resolveTenantFromAuth(req, tenantIdFromQuery)
 }
 
+function getRequestOriginMeta(req) {
+  const forwardedForRaw = req.headers['x-forwarded-for']
+  const forwardedFor = Array.isArray(forwardedForRaw)
+    ? forwardedForRaw.join(', ')
+    : String(forwardedForRaw || '').trim()
+  return {
+    ip: req.ip || req.socket?.remoteAddress || '',
+    forwardedFor,
+    userAgent: String(req.headers['user-agent'] || '').trim(),
+  }
+}
+
+function getStateRowsCount(stateData) {
+  const safeState = stateData && typeof stateData === 'object' ? stateData : {}
+  const tasksRows = Array.isArray(safeState?.tasksRows) ? safeState.tasksRows.length : 0
+  const solicitationRecords = Array.isArray(safeState?.solicitationRecords)
+    ? safeState.solicitationRecords.length
+    : 0
+  return {
+    tasksRows,
+    solicitationRecords,
+  }
+}
+
 const listClientsQuerySchema = z.object({
   q: z.string().optional().default(''),
   status: z.enum(['ACTIVE', 'INACTIVE', 'ALL']).optional().default('ALL'),
@@ -127,6 +151,17 @@ const docsSolicitationCreateSchema = z.object({
 
 const portalSolicitationReplySchema = z.object({
   message: z.string().trim().min(1).max(5000),
+  attachments: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        size: z.number().int().nonnegative().max(MAX_DOCS_ATTACHMENT_SIZE_BYTES).optional().default(0),
+        type: z.string().optional().default('application/octet-stream'),
+        contentBase64: z.string().min(1),
+      }),
+    )
+    .optional()
+    .default([]),
 })
 
 const portalDocumentDownloadSchema = z.object({
@@ -482,9 +517,56 @@ const normalizeConversationMessages = (value) => {
         authorEmail: String(entry?.authorEmail || '').trim(),
         text,
         createdAt,
+        attachments: (Array.isArray(entry?.attachments) ? entry.attachments : [])
+          .map((attachment, attachmentIndex) => ({
+            id: String(attachment?.id || `${Date.now()}-${index}-${attachmentIndex}`).trim(),
+            name: String(attachment?.name || attachment?.fileName || `anexo-${attachmentIndex + 1}`).trim(),
+            size: Number(attachment?.size || 0),
+            type: String(attachment?.type || 'application/octet-stream').trim() || 'application/octet-stream',
+            contentBase64: String(attachment?.contentBase64 || '').trim(),
+          }))
+          .filter((attachment) => attachment.name && attachment.contentBase64),
       }
     })
     .filter(Boolean)
+}
+
+const mergeConversationMessages = (currentValue, incomingValue) => {
+  const currentConversation = normalizeConversationMessages(currentValue)
+  const incomingConversation = normalizeConversationMessages(incomingValue)
+  const mergedByKey = new Map()
+
+  const buildMessageKey = (message) => {
+    const messageId = String(message?.id || '').trim()
+    if (messageId) return `id:${messageId}`
+    return `txt:${String(message?.authorType || '').trim()}|${String(message?.authorEmail || '').trim()}|${
+      String(message?.createdAt || '').trim()
+    }|${String(message?.text || '').trim()}`
+  }
+
+  for (const message of [...currentConversation, ...incomingConversation]) {
+    const key = buildMessageKey(message)
+    const existing = mergedByKey.get(key)
+    if (!existing) {
+      mergedByKey.set(key, message)
+      continue
+    }
+
+    const existingTime = Date.parse(String(existing?.createdAt || ''))
+    const nextTime = Date.parse(String(message?.createdAt || ''))
+    if (Number.isFinite(nextTime) && (!Number.isFinite(existingTime) || nextTime >= existingTime)) {
+      mergedByKey.set(key, message)
+    }
+  }
+
+  return Array.from(mergedByKey.values()).sort((left, right) => {
+    const leftTime = Date.parse(String(left?.createdAt || ''))
+    const rightTime = Date.parse(String(right?.createdAt || ''))
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime
+    }
+    return String(left?.id || '').localeCompare(String(right?.id || ''))
+  })
 }
 
 const normalizeClientDocument = (client) =>
@@ -1287,12 +1369,153 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
       currentStateRecord?.data && typeof currentStateRecord.data === 'object'
         ? currentStateRecord.data
         : getEmptyTenantState()
+    const requestOrigin = getRequestOriginMeta(req)
 
     const incomingState =
       req.body?.state && typeof req.body.state === 'object' ? req.body.state : getEmptyTenantState()
 
+    const getMaxNumericId = (rows) =>
+      (Array.isArray(rows) ? rows : []).reduce((maxValue, row) => {
+        const numericId = Number(row?.id)
+        return Number.isFinite(numericId) ? Math.max(maxValue, numericId) : maxValue
+      }, 0)
+
+    const normalizeRowsWithIds = (rows, { currentRows = [] } = {}) => {
+      const source = Array.isArray(rows) ? rows : []
+      const currentIds = new Set(
+        (Array.isArray(currentRows) ? currentRows : [])
+          .map((row) => String(row?.id ?? '').trim())
+          .filter(Boolean),
+      )
+
+      let nextNumericId = Math.max(getMaxNumericId(currentRows), getMaxNumericId(source)) + 1
+      const seenIncomingIds = new Set()
+
+      return source.map((row) => {
+        const safeRow = row && typeof row === 'object' ? row : {}
+        let nextId = String(safeRow?.id ?? '').trim()
+        const hasCurrentId = nextId && currentIds.has(nextId)
+        const hasDuplicateIncomingId = nextId && seenIncomingIds.has(nextId)
+        if (!nextId || hasDuplicateIncomingId || (!hasCurrentId && nextId)) {
+          nextId = String(nextNumericId)
+          nextNumericId += 1
+        }
+        seenIncomingIds.add(nextId)
+        return {
+          ...safeRow,
+          id: nextId,
+        }
+      })
+    }
+
+    const mergeRowsById = (currentRows, incomingRows, options = {}) => {
+      const mergeConversation = options?.mergeConversation === true
+      const safeCurrent = Array.isArray(currentRows) ? currentRows : []
+      const safeIncoming = Array.isArray(incomingRows) ? incomingRows : []
+      const currentById = new Map(
+        safeCurrent
+          .map((row) => {
+            const id = String(row?.id ?? '').trim()
+            return id ? [id, row] : null
+          })
+          .filter(Boolean),
+      )
+
+      const mergedById = new Map(currentById)
+      for (const row of safeIncoming) {
+        const id = String(row?.id ?? '').trim()
+        if (!id) continue
+        const current = mergedById.get(id)
+        if (!current) {
+          mergedById.set(id, row)
+          continue
+        }
+        const nextRow = { ...current, ...row }
+        if (mergeConversation) {
+          nextRow.conversation = mergeConversationMessages(current?.conversation, row?.conversation)
+        }
+        mergedById.set(id, nextRow)
+      }
+      return Array.from(mergedById.values())
+    }
+
+    const currentTasksRows = Array.isArray(currentState?.tasksRows) ? currentState.tasksRows : []
+    const currentSolicitationRecords = Array.isArray(currentState?.solicitationRecords)
+      ? currentState.solicitationRecords
+      : []
+    const incomingTasksRows = Array.isArray(incomingState?.tasksRows) ? incomingState.tasksRows : []
+    const incomingSolicitationRecords = Array.isArray(incomingState?.solicitationRecords)
+      ? incomingState.solicitationRecords
+      : []
+
+    const normalizedIncomingTasksRows = normalizeRowsWithIds(incomingTasksRows, {
+      currentRows: currentTasksRows,
+    })
+    const normalizedIncomingSolicitationRecords = normalizeRowsWithIds(incomingSolicitationRecords, {
+      currentRows: currentSolicitationRecords,
+    })
+
+    const hasExistingRows = currentTasksRows.length > 0 || currentSolicitationRecords.length > 0
+    const isIncomingStateEmpty =
+      normalizedIncomingTasksRows.length === 0 && normalizedIncomingSolicitationRecords.length === 0
+    if (hasExistingRows && isIncomingStateEmpty) {
+      const currentCounts = getStateRowsCount(currentState)
+      const incomingCounts = getStateRowsCount(incomingState)
+      console.warn(
+        `[tenant/state] bloqueado payload vazio tenant=${tenantId} actor=${req.auth?.sub || '-'} role=${
+          req.auth?.role || '-'
+        } ip=${requestOrigin.ip || '-'} xff=${requestOrigin.forwardedFor || '-'} tasks=${currentCounts.tasksRows}->${incomingCounts.tasksRows} solicitations=${currentCounts.solicitationRecords}->${incomingCounts.solicitationRecords}`,
+      )
+      return res.status(409).json({
+        message:
+          'Bloqueio de seguranca: tentativa de sobrescrever o estado do tenant com tarefas e solicitacoes vazias.',
+        detail:
+          'Se for intencional, realize a limpeza por rotina administrativa dedicada e auditavel.',
+      })
+    }
+
+    // Protecao adicional: nao permitir remocao silenciosa de tarefas/solicitacoes ja existentes.
+    // Edicoes manuais continuam permitidas porque preservam os mesmos IDs.
+    const currentTaskIds = new Set(currentTasksRows.map((task) => String(task?.id ?? '')).filter(Boolean))
+    const incomingTaskIds = new Set(
+      normalizedIncomingTasksRows.map((task) => String(task?.id ?? '')).filter(Boolean),
+    )
+    const removedTaskIds = [...currentTaskIds].filter((id) => !incomingTaskIds.has(id))
+
+    const currentSolicitationIds = new Set(
+      currentSolicitationRecords.map((record) => String(record?.id ?? '')).filter(Boolean),
+    )
+    const incomingSolicitationIds = new Set(
+      normalizedIncomingSolicitationRecords.map((record) => String(record?.id ?? '')).filter(Boolean),
+    )
+    const removedSolicitationIds = [...currentSolicitationIds].filter((id) => !incomingSolicitationIds.has(id))
+
+    if (removedTaskIds.length > 0 || removedSolicitationIds.length > 0) {
+      const currentCounts = getStateRowsCount(currentState)
+      const incomingCounts = getStateRowsCount(incomingState)
+      console.warn(
+        `[tenant/state] bloqueado remocao tenant=${tenantId} actor=${req.auth?.sub || '-'} role=${
+          req.auth?.role || '-'
+        } ip=${requestOrigin.ip || '-'} xff=${requestOrigin.forwardedFor || '-'} removedTaskIds=${
+          removedTaskIds.length
+        } removedSolicitationIds=${removedSolicitationIds.length} tasks=${currentCounts.tasksRows}->${incomingCounts.tasksRows} solicitations=${currentCounts.solicitationRecords}->${incomingCounts.solicitationRecords}`,
+      )
+      return res.status(409).json({
+        message:
+          'Bloqueio de seguranca: remocao em massa detectada no estado do tenant. Operacao cancelada.',
+        detail:
+          'Tarefas e solicitacoes em andamento nao podem ser sobrescritas automaticamente. Edite os registros manualmente.',
+      })
+    }
+
     let stateToPersist = {
       ...incomingState,
+      tasksRows: mergeRowsById(currentTasksRows, normalizedIncomingTasksRows),
+      solicitationRecords: mergeRowsById(
+        currentSolicitationRecords,
+        normalizedIncomingSolicitationRecords,
+        { mergeConversation: true },
+      ),
       docsReceivedDownloads: Array.isArray(incomingState?.docsReceivedDownloads)
         ? incomingState.docsReceivedDownloads
         : Array.isArray(currentState?.docsReceivedDownloads)
@@ -1317,19 +1540,18 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
     }
 
     if (req.auth?.role === 'TENANT_USER') {
-      const currentTasksRows = Array.isArray(currentState?.tasksRows) ? currentState.tasksRows : []
-      const incomingTasksRows = Array.isArray(stateToPersist?.tasksRows) ? stateToPersist.tasksRows : []
       const currentTaskIds = new Set(currentTasksRows.map((task) => String(task?.id ?? '')))
+      const candidateTaskRows = Array.isArray(stateToPersist?.tasksRows) ? stateToPersist.tasksRows : []
       const canPersistTaskRowsWithoutCreateOrDelete =
-        incomingTasksRows.length === currentTasksRows.length &&
-        incomingTasksRows.every((task) => currentTaskIds.has(String(task?.id ?? '')))
+        candidateTaskRows.length === currentTasksRows.length &&
+        candidateTaskRows.every((task) => currentTaskIds.has(String(task?.id ?? '')))
 
       stateToPersist = {
         ...stateToPersist,
         users: Array.isArray(currentState?.users) ? currentState.users : [],
         clients: Array.isArray(currentState?.clients) ? currentState.clients : [],
         taskBlueprints: Array.isArray(currentState?.taskBlueprints) ? currentState.taskBlueprints : [],
-        tasksRows: canPersistTaskRowsWithoutCreateOrDelete ? incomingTasksRows : currentTasksRows,
+        tasksRows: canPersistTaskRowsWithoutCreateOrDelete ? candidateTaskRows : currentTasksRows,
       }
     }
 
@@ -1342,6 +1564,16 @@ router.put('/state', validateBody(tenantStateBodySchema), async (req, res, next)
       },
       select: { updatedAt: true },
     })
+
+    const persistedCounts = getStateRowsCount(stateToPersist)
+    const currentCounts = getStateRowsCount(currentState)
+    console.info(
+      `[tenant/state] persisted tenant=${tenantId} actor=${req.auth?.sub || '-'} role=${
+        req.auth?.role || '-'
+      } ip=${requestOrigin.ip || '-'} xff=${requestOrigin.forwardedFor || '-'} tasks=${
+        currentCounts.tasksRows
+      }->${persistedCounts.tasksRows} solicitations=${currentCounts.solicitationRecords}->${persistedCounts.solicitationRecords}`,
+    )
 
     return res.json({ ok: true, updatedAt: persisted.updatedAt })
   } catch (error) {
@@ -2601,6 +2833,35 @@ router.post(
         return res.status(400).json({ message: 'Informe uma mensagem para responder.' })
       }
 
+      const incomingAttachments = Array.isArray(req.body?.attachments) ? req.body.attachments : []
+      const normalizedIncomingAttachments = []
+      for (const attachment of incomingAttachments) {
+        const attachmentName = String(attachment?.name || '').trim()
+        const attachmentType = String(attachment?.type || 'application/octet-stream').trim() || 'application/octet-stream'
+        const contentBase64 = String(attachment?.contentBase64 || '').trim()
+        let decodedSize = 0
+        try {
+          decodedSize = Buffer.byteLength(contentBase64, 'base64')
+        } catch {
+          return res.status(400).json({ message: `Anexo inválido: ${attachmentName || 'anexo'}.` })
+        }
+        if (!attachmentName || !decodedSize || !contentBase64) {
+          return res.status(400).json({ message: `Anexo inválido: ${attachmentName || 'anexo'}.` })
+        }
+        if (decodedSize > MAX_DOCS_ATTACHMENT_SIZE_BYTES) {
+          return res
+            .status(400)
+            .json({ message: `O anexo ${attachmentName} excede 25MB. Limite por documento: 25MB.` })
+        }
+        normalizedIncomingAttachments.push({
+          id: '',
+          name: attachmentName,
+          size: decodedSize,
+          type: attachmentType,
+          contentBase64,
+        })
+      }
+
       const nowIso = new Date().toISOString()
       const authorType = authUser.role === 'TENANT_USER' ? 'client' : 'internal'
       const authorName =
@@ -2616,6 +2877,10 @@ router.post(
         authorEmail: String(authUser.email || '').trim(),
         text: messageText,
         createdAt: nowIso,
+        attachments: normalizedIncomingAttachments.map((attachment, index) => ({
+          ...attachment,
+          id: `${targetId}-${Date.now()}-att-${index}`,
+        })),
       }
 
       const updatedRecord = {

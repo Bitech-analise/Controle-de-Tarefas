@@ -170,6 +170,15 @@ const normalizeConversationMessages = (value) => {
         authorEmail: String(entry?.authorEmail || '').trim(),
         text,
         createdAt: normalizedCreatedAt,
+        attachments: (Array.isArray(entry?.attachments) ? entry.attachments : [])
+          .map((attachment, attachmentIndex) => ({
+            id: String(attachment?.id || `docs-chat-att-${Date.now()}-${index}-${attachmentIndex}`),
+            name: String(attachment?.name || attachment?.fileName || `anexo-${attachmentIndex + 1}`),
+            size: Number(attachment?.size || 0),
+            type: String(attachment?.type || 'application/octet-stream'),
+            contentBase64: String(attachment?.contentBase64 || '').trim(),
+          }))
+          .filter((attachment) => attachment.name && attachment.contentBase64),
       }
     })
     .filter(Boolean)
@@ -401,6 +410,7 @@ function DocsApp() {
   const [conversationRecord, setConversationRecord] = useState(null)
   const [conversationReplyOpen, setConversationReplyOpen] = useState(false)
   const [conversationDraft, setConversationDraft] = useState('')
+  const [conversationAttachments, setConversationAttachments] = useState([])
   const [conversationLoading, setConversationLoading] = useState(false)
   const [conversationError, setConversationError] = useState('')
   const [solicitationLoading, setSolicitationLoading] = useState(false)
@@ -474,22 +484,25 @@ function DocsApp() {
       const payload = await apiRequest('/tenant/portal/bootstrap', {
         token: activeSession.token,
       })
+      const nextSolicitations = Array.isArray(payload?.solicitations)
+        ? payload.solicitations.map((record) => ({
+            ...record,
+            conversation: normalizeConversationMessages(record?.conversation),
+          }))
+        : []
+      const nextDocuments = Array.isArray(payload?.documents)
+        ? payload.documents.map((row) => normalizePortalDocumentRecord(row))
+        : []
       setUser(payload?.user || null)
-      setSolicitations(
-        Array.isArray(payload?.solicitations)
-          ? payload.solicitations.map((record) => ({
-              ...record,
-              conversation: normalizeConversationMessages(record?.conversation),
-            }))
-          : [],
-      )
-      setDocuments(
-        Array.isArray(payload?.documents)
-          ? payload.documents.map((row) => normalizePortalDocumentRecord(row))
-          : [],
-      )
+      setSolicitations(nextSolicitations)
+      setDocuments(nextDocuments)
       setDocumentsActionError('')
       setSolicitationActionError('')
+      return {
+        user: payload?.user || null,
+        solicitations: nextSolicitations,
+        documents: nextDocuments,
+      }
     } catch (error) {
       if (handleTokenFailure(error)) return
       setBootstrapError(error?.message || 'Não foi possível carregar dados do HIVE DOCS.')
@@ -868,17 +881,31 @@ function DocsApp() {
     setConversationRecord(null)
     setConversationReplyOpen(false)
     setConversationDraft('')
+    setConversationAttachments([])
     setConversationError('')
   }
 
-  const openConversationModal = (record) => {
+  const openConversationModal = async (record) => {
     if (!record) return
+    let sourceRecord = record
+    if (session?.token) {
+      try {
+        const latestPayload = await loadBootstrap(session)
+        const latestRecord = (Array.isArray(latestPayload?.solicitations) ? latestPayload.solicitations : []).find(
+          (item) => String(item?.id || '').trim() === String(record?.id || '').trim(),
+        )
+        if (latestRecord) sourceRecord = latestRecord
+      } catch (error) {
+        console.error('Falha ao recarregar dados antes de abrir conversa no Hive Docs:', error)
+      }
+    }
     setConversationRecord({
-      ...record,
-      conversation: normalizeConversationMessages(record?.conversation),
+      ...sourceRecord,
+      conversation: normalizeConversationMessages(sourceRecord?.conversation),
     })
     setConversationReplyOpen(false)
     setConversationDraft('')
+    setConversationAttachments([])
     setConversationError('')
     setConversationOpen(true)
   }
@@ -942,7 +969,51 @@ function DocsApp() {
       return
     }
     setConversationReplyOpen((prev) => !prev)
+    if (conversationReplyOpen) {
+      setConversationDraft('')
+      setConversationAttachments([])
+    }
     setConversationError('')
+  }
+
+  const handleConversationAttachmentChange = async (event) => {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    try {
+      const mapped = await Promise.all(
+        files.map(async (file, index) => ({
+          id: `docs-reply-attachment-${Date.now()}-${index}`,
+          name: String(file.name || `anexo-${index + 1}`),
+          size: Number(file.size || 0),
+          type: String(file.type || 'application/octet-stream'),
+          contentBase64: await fileToBase64(file),
+        })),
+      )
+      setConversationAttachments((prev) => [...prev, ...mapped])
+      setConversationError('')
+    } catch (error) {
+      setConversationError(error?.message || 'Não foi possível processar o anexo.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const removeConversationAttachment = (attachmentId) => {
+    setConversationAttachments((prev) =>
+      prev.filter((attachment) => String(attachment?.id || '') !== String(attachmentId || '')),
+    )
+  }
+
+  const downloadConversationAttachment = (attachment) => {
+    if (!attachment) return
+    const downloaded = triggerBase64Download({
+      contentBase64: attachment.contentBase64,
+      fileName: attachment.name,
+      mimeType: attachment.type || 'application/octet-stream',
+    })
+    if (!downloaded) {
+      setConversationError('Não foi possível baixar o anexo da conversa.')
+    }
   }
 
   const sendConversationReply = async () => {
@@ -967,7 +1038,15 @@ function DocsApp() {
       const payload = await apiRequest(`/tenant/portal/solicitations/${encodeURIComponent(recordId)}/reply`, {
         method: 'POST',
         token: session.token,
-        body: { message },
+        body: {
+          message,
+          attachments: conversationAttachments.map((attachment) => ({
+            name: attachment.name,
+            size: Number(attachment.size || 0),
+            type: attachment.type || 'application/octet-stream',
+            contentBase64: String(attachment.contentBase64 || '').trim(),
+          })),
+        },
       })
       const updatedRecord = payload?.record || null
       if (updatedRecord) {
@@ -983,8 +1062,10 @@ function DocsApp() {
           ),
         )
         setConversationRecord(normalizedRecord)
+        await loadBootstrap(session)
       }
       setConversationDraft('')
+      setConversationAttachments([])
       setConversationReplyOpen(false)
     } catch (error) {
       if (handleTokenFailure(error)) return
@@ -2100,6 +2181,20 @@ function DocsApp() {
                           <span>{createdAtLabel || '-'}</span>
                         </header>
                         <p>{message.text}</p>
+                        {Array.isArray(message.attachments) && message.attachments.length ? (
+                          <div className="docs-conversation-attachments">
+                            {message.attachments.map((attachment) => (
+                              <button
+                                key={attachment.id}
+                                type="button"
+                                className="docs-link-button"
+                                onClick={() => downloadConversationAttachment(attachment)}
+                              >
+                                {attachment.name} ({formatFileSize(attachment.size)})
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
                       </article>
                     )
                   })}
@@ -2120,6 +2215,32 @@ function DocsApp() {
                     disabled={conversationLoading || conversationIsFinal}
                   />
                 </label>
+                <label>
+                  <span>Anexos da conversa</span>
+                  <input
+                    type="file"
+                    multiple
+                    onChange={handleConversationAttachmentChange}
+                    disabled={conversationLoading || conversationIsFinal}
+                  />
+                </label>
+                {conversationAttachments.length ? (
+                  <div className="docs-conversation-attachments">
+                    {conversationAttachments.map((attachment) => (
+                      <div key={attachment.id} className="docs-attachment-item">
+                        <span>{attachment.name} ({formatFileSize(attachment.size)})</span>
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => removeConversationAttachment(attachment.id)}
+                          disabled={conversationLoading}
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="docs-conversation-actions">
                   <button
                     type="button"

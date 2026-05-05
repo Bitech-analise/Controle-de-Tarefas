@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:16-alpine
     container_name: hive_db
+    restart: unless-stopped
     environment:
       POSTGRES_DB: hive_tarefas
       POSTGRES_USER: postgres
@@ -20,6 +21,7 @@ services:
     build:
       context: ./backend
     container_name: hive_api
+    restart: unless-stopped
     env_file:
       - ./backend/.env
     environment:
@@ -39,6 +41,7 @@ services:
   web:
     image: node:20-alpine
     container_name: hive_web
+    restart: unless-stopped
     working_dir: /app
     environment:
       VITE_API_URL: http://localhost:4000/api

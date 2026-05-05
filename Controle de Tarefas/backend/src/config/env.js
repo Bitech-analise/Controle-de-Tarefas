@@ -15,6 +15,7 @@ const env = {
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '12h',
   allowedOrigin: process.env.ALLOWED_ORIGIN || '*',
+  apiBodyLimit: process.env.API_BODY_LIMIT || '80mb',
   smtpHost: process.env.SMTP_HOST || '',
   smtpPort: Number(process.env.SMTP_PORT || 587),
   smtpSecure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',

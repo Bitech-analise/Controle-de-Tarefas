@@ -17,7 +17,7 @@ app.use(
     credentials: true,
   }),
 )
-app.use(express.json({ limit: '25mb' }))
+app.use(express.json({ limit: env.apiBodyLimit }))
 app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'))
 
 app.get('/', (_req, res) => {

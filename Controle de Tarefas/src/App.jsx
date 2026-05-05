@@ -1985,6 +1985,15 @@ const normalizeConversationMessages = (value) => {
         authorEmail: String(entry?.authorEmail || '').trim(),
         text,
         createdAt: normalizedCreatedAt,
+        attachments: (Array.isArray(entry?.attachments) ? entry.attachments : [])
+          .map((attachment, attachmentIndex) => ({
+            id: String(attachment?.id || `conversation-att-${Date.now()}-${index}-${attachmentIndex}`),
+            name: String(attachment?.name || attachment?.fileName || `anexo-${attachmentIndex + 1}`),
+            size: Number(attachment?.size || 0),
+            type: String(attachment?.type || 'application/octet-stream'),
+            contentBase64: String(attachment?.contentBase64 || '').trim(),
+          }))
+          .filter((attachment) => attachment.name && attachment.contentBase64),
       }
     })
     .filter(Boolean)
@@ -2113,6 +2122,20 @@ const getEmptySettingsTaskForm = () => {
     attachments: [],
     owner: '',
     guests: '',
+  }
+}
+
+const getEmptySporadicTaskForm = () => {
+  const today = getTodayIsoLocal()
+  return {
+    actionDate: today,
+    metaDate: today,
+    dueDate: today,
+    obligation: '',
+    departmentScope: '',
+    clientId: '',
+    attachments: [],
+    generalInfo: '',
   }
 }
 
@@ -2350,6 +2373,7 @@ function App() {
   })
   const [createOpen, setCreateOpen] = useState(false)
   const [taskCreateOpen, setTaskCreateOpen] = useState(false)
+  const [sporadicTaskOpen, setSporadicTaskOpen] = useState(false)
   const [solicitationOpen, setSolicitationOpen] = useState(false)
   const [clientOpen, setClientOpen] = useState(false)
   const [clientTaskGenerateOpen, setClientTaskGenerateOpen] = useState(false)
@@ -2376,6 +2400,8 @@ function App() {
   const userClientsRef = useRef(null)
   const [settingsTaskForm, setSettingsTaskForm] = useState(() => getEmptySettingsTaskForm())
   const [settingsTaskFeedback, setSettingsTaskFeedback] = useState('')
+  const [sporadicTaskForm, setSporadicTaskForm] = useState(() => getEmptySporadicTaskForm())
+  const [sporadicTaskFeedback, setSporadicTaskFeedback] = useState('')
   const [clients, setClients] = useState([])
   const [tasksRows, setTasksRows] = useState([])
   const [taskBlueprints, setTaskBlueprints] = useState([])
@@ -2386,6 +2412,7 @@ function App() {
   const [taskActionError, setTaskActionError] = useState('')
   const [taskReplyOpen, setTaskReplyOpen] = useState(false)
   const [taskReplyDraft, setTaskReplyDraft] = useState('')
+  const [taskReplyAttachments, setTaskReplyAttachments] = useState([])
   const [taskReplySending, setTaskReplySending] = useState(false)
   const [taskConversationOpen, setTaskConversationOpen] = useState(false)
   const [taskTransferTarget, setTaskTransferTarget] = useState('')
@@ -2787,6 +2814,20 @@ function App() {
     tenantStatePersistTimeoutRef.current = null
   }
 
+  async function handleTenantStateConflict(error, sourceLabel = 'persistência automática') {
+    if (error?.status !== 409) return false
+    const conflictMessage =
+      'Conflito ao salvar dados: o sistema detectou estado desatualizado para proteger as tarefas. A tela será recarregada com os dados mais recentes.'
+    console.warn(`[tenant/state] conflito 409 em ${sourceLabel}:`, error)
+    window.alert(conflictMessage)
+    try {
+      await loadTenantState()
+    } catch (reloadError) {
+      console.error('Falha ao recarregar estado do tenant após conflito:', reloadError)
+    }
+    return true
+  }
+
   useEffect(() => {
     if (!authSession?.token || isSuperAdmin || !tenantStateHydrated) return
 
@@ -2816,6 +2857,8 @@ function App() {
           body: { state: statePayload },
         })
       } catch (error) {
+        const handledConflict = await handleTenantStateConflict(error, 'autosave')
+        if (handledConflict) return
         console.error('Falha ao persistir estado do tenant:', error)
       }
     }, 650)
@@ -3276,6 +3319,7 @@ function App() {
       senha: '',
       clientIds: Array.isArray(authSession?.user?.clientIds) ? authSession.user.clientIds : [],
     }
+    let stateLoadedSuccessfully = false
 
     try {
       setTenantStateHydrated(false)
@@ -3399,6 +3443,7 @@ function App() {
       setActiveOnboardingStepId('')
       setOnboardingFeedback('')
       setClientRegistrationContext(null)
+      stateLoadedSuccessfully = true
     } catch (error) {
       if (error?.status === 401 || error?.status === 403) {
         setAuthSession(null)
@@ -3431,7 +3476,7 @@ function App() {
       setOnboardingFeedback('')
       setClientRegistrationContext(null)
     } finally {
-      setTenantStateHydrated(true)
+      setTenantStateHydrated(stateLoadedSuccessfully)
     }
   }
 
@@ -3454,11 +3499,17 @@ function App() {
       onboardingRecords,
       taskActionLogs,
     }
-    await apiRequest('/tenant/state', {
-      method: 'PUT',
-      token: authSession.token,
-      body: { state: statePayload },
-    })
+    try {
+      await apiRequest('/tenant/state', {
+        method: 'PUT',
+        token: authSession.token,
+        body: { state: statePayload },
+      })
+    } catch (error) {
+      const handledConflict = await handleTenantStateConflict(error, 'persistência imediata')
+      if (handledConflict) return
+      throw error
+    }
   }
 
   const persistTenantBrandingNow = async (brandingPayload) => {
@@ -3829,7 +3880,26 @@ function App() {
     clearSolicitationForm()
     setCreateOpen(false)
     setTaskCreateOpen(false)
+    setSporadicTaskOpen(false)
     setSolicitationOpen(true)
+  }
+
+  const clearSporadicTaskForm = (closeModal = false) => {
+    setSporadicTaskForm(getEmptySporadicTaskForm())
+    setSporadicTaskFeedback('')
+    if (closeModal) {
+      setSporadicTaskOpen(false)
+    }
+  }
+
+  const openSporadicTaskModal = () => {
+    clearSporadicTaskForm()
+    setCreateOpen(false)
+    setTaskCreateOpen(false)
+    setSolicitationOpen(false)
+    window.setTimeout(() => {
+      setSporadicTaskOpen(true)
+    }, 0)
   }
 
   const openClientModal = (mode = 'create', client = null, options = {}) => {
@@ -4499,7 +4569,7 @@ function App() {
       ),
     )
 
-    let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, task.id), 0) + 1
+    let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, Number(task?.id) || 0), 0) + 1
     let skippedDuplicates = 0
     let clientsWithGeneration = 0
     const generatedRows = []
@@ -5901,11 +5971,19 @@ function App() {
     setTaskConversationOpen(false)
     setTaskReplyOpen(false)
     setTaskReplyDraft('')
+    setTaskReplyAttachments([])
     setTaskActionError('')
   }
 
-  const handleTaskReplyToggle = () => {
+  const handleTaskReplyToggle = async () => {
     if (!isSelectedSolicitation) return
+    if (authSession?.token) {
+      try {
+        await loadTenantState()
+      } catch (error) {
+        console.error('Falha ao recarregar solicitação antes de abrir conversa:', error)
+      }
+    }
     setTaskConversationOpen(true)
     setTaskReplyOpen(false)
     setTaskActionError('')
@@ -5933,7 +6011,15 @@ function App() {
         {
           method: 'POST',
           token: authSession.token,
-          body: { message },
+          body: {
+            message,
+            attachments: taskReplyAttachments.map((attachment) => ({
+              name: attachment.name,
+              size: Number(attachment.size || 0),
+              type: attachment.type || 'application/octet-stream',
+              contentBase64: String(attachment.contentBase64 || '').trim(),
+            })),
+          },
         },
       )
       const updatedRecord = payload?.record
@@ -5942,13 +6028,69 @@ function App() {
           prev.map((item) => (String(item.id) === String(updatedRecord.id) ? updatedRecord : item)),
         )
       }
+      await loadTenantState()
       logTaskAction(selectedTask, 'Responder')
       setTaskReplyDraft('')
+      setTaskReplyAttachments([])
       setTaskReplyOpen(false)
     } catch (error) {
       setTaskActionError(error?.message || 'Não foi possível enviar a resposta.')
     } finally {
       setTaskReplySending(false)
+    }
+  }
+
+  const handleTaskReplyAttachments = async (event) => {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    try {
+      const mapped = await Promise.all(
+        files.map(async (file, index) => ({
+          id: `task-reply-attachment-${Date.now()}-${index}`,
+          name: String(file.name || `anexo-${index + 1}`),
+          size: Number(file.size || 0),
+          type: String(file.type || 'application/octet-stream'),
+          contentBase64: await fileToBase64(file),
+        })),
+      )
+      setTaskReplyAttachments((prev) => [...prev, ...mapped])
+      setTaskActionError('')
+    } catch (error) {
+      setTaskActionError(error?.message || 'Não foi possível processar o anexo.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const removeTaskReplyAttachment = (attachmentId) => {
+    setTaskReplyAttachments((prev) =>
+      prev.filter((attachment) => String(attachment?.id || '') !== String(attachmentId || '')),
+    )
+  }
+
+  const downloadConversationAttachment = (attachment) => {
+    if (!attachment) return
+    const rawBase64 = String(attachment.contentBase64 || '').trim()
+    if (!rawBase64) {
+      setTaskActionError('O anexo da conversa não está disponível para download.')
+      return
+    }
+    const normalizedBase64 = rawBase64.includes('base64,')
+      ? rawBase64.split('base64,')[1] || ''
+      : rawBase64
+    try {
+      const binary = atob(normalizedBase64)
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index)
+      }
+      downloadFileFromBlob(
+        bytes,
+        String(attachment.name || 'anexo'),
+        String(attachment.type || 'application/octet-stream'),
+      )
+    } catch {
+      setTaskActionError('Não foi possível baixar o anexo da conversa.')
     }
   }
 
@@ -6235,7 +6377,7 @@ function App() {
     setTaskReplyOpen(false)
     setTaskReplyDraft('')
     setTaskConversationOpen(false)
-    setScreen('reports')
+    setScreen(selectedTaskRef?.source === 'solicitation' ? 'solicitations' : 'reports')
   }
 
   const getClientsByDepartment = (department) => {
@@ -6653,6 +6795,147 @@ function App() {
     }))
   }
 
+  const handleSporadicTaskChange = (field, value) => {
+    setSporadicTaskForm((prev) => ({ ...prev, [field]: value }))
+    setSporadicTaskFeedback('')
+  }
+
+  const handleSporadicTaskAttachments = (event) => {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    setSporadicTaskForm((prev) => ({
+      ...prev,
+      attachments: [...prev.attachments, ...files],
+    }))
+    setSporadicTaskFeedback('')
+    event.target.value = ''
+  }
+
+  const removeSporadicTaskAttachment = (fileName, fileSize) => {
+    setSporadicTaskForm((prev) => ({
+      ...prev,
+      attachments: prev.attachments.filter(
+        (file) => !(file.name === fileName && file.size === fileSize),
+      ),
+    }))
+  }
+
+  const handleSporadicTaskSave = (event) => {
+    event.preventDefault()
+
+    if (!canCreateTaskBlueprints) {
+      setSporadicTaskFeedback('Somente administradores podem criar tarefa esporádica.')
+      return
+    }
+
+    const obligation = String(sporadicTaskForm.obligation || '').trim()
+    const departmentScope = String(sporadicTaskForm.departmentScope || '').trim()
+    const selectedClientId = String(sporadicTaskForm.clientId || '').trim()
+    const generalInfo = String(sporadicTaskForm.generalInfo || '').trim()
+
+    if (!sporadicTaskForm.actionDate || !sporadicTaskForm.metaDate || !sporadicTaskForm.dueDate) {
+      setSporadicTaskFeedback('Preencha Ação, Meta e Vencimento.')
+      return
+    }
+
+    if (!obligation) {
+      setSporadicTaskFeedback('Informe a Obrigação da tarefa esporádica.')
+      return
+    }
+
+    if (!departmentScope) {
+      setSporadicTaskFeedback('Selecione o campo Obrigação Departamento.')
+      return
+    }
+
+    if (!selectedClientId) {
+      setSporadicTaskFeedback('Selecione o cliente da tarefa esporádica.')
+      return
+    }
+
+    const targetClient = clientsForCurrentUser.find((client) => String(client.id) === selectedClientId)
+    if (!targetClient) {
+      setSporadicTaskFeedback('Cliente selecionado não encontrado.')
+      return
+    }
+
+    const actionDateBr = parseIsoDateToBr(sporadicTaskForm.actionDate)
+    const metaDateBr = parseIsoDateToBr(sporadicTaskForm.metaDate)
+    const dueDateBr = parseIsoDateToBr(sporadicTaskForm.dueDate)
+    const generatedStatus = getGeneratedTaskStatus(
+      sporadicTaskForm.actionDate,
+      sporadicTaskForm.metaDate,
+      sporadicTaskForm.dueDate,
+    )
+    const loggedOwner =
+      users.find((user) => user.email.trim().toLowerCase() === username.trim().toLowerCase())?.nome ||
+      username ||
+      'Não definido'
+    const fallbackOwner = String(loggedOwner).trim() || 'Não definido'
+    const resolvedOwner =
+      getResponsibleByClientAndDepartment({
+        clientId: targetClient.id,
+        clientName: targetClient.nome,
+        department: departmentScope,
+        fallback: fallbackOwner,
+      }) || fallbackOwner
+    const nextTaskId = tasksRows.reduce((maxId, task) => Math.max(maxId, Number(task.id) || 0), 0) + 1
+    const clientName = getDisplayClientName(targetClient.nome, targetClient.inscricao || '')
+    const clientDocument =
+      String(targetClient.inscricao || '').trim() ||
+      `${String(targetClient.docType || 'Documento').trim()} não informado`
+
+    const newTaskRow = {
+      id: nextTaskId,
+      status: generatedStatus.status,
+      dept: departmentScope,
+      subject: obligation,
+      competence: getCompetenceFromDate(sporadicTaskForm.actionDate, 'Mesmo mês'),
+      client: clientName,
+      clientId: targetClient.id,
+      clientEmail: String(targetClient.email || '').trim(),
+      cnpj: clientDocument,
+      clientStatus: targetClient.status === 'Ativo' ? 'Ativo' : 'Desativado',
+      dates: [`A: ${actionDateBr}`, `M: ${metaDateBr}`, `V: ${dueDateBr}`],
+      deliveryDate: '',
+      conclusionDate: '',
+      owner: resolvedOwner,
+      authorizer: resolvedOwner,
+      guests: generalInfo || 'Não definido',
+      andamento: generalInfo,
+      tag: generatedStatus.tag,
+      attachments: sporadicTaskForm.attachments.map((file, index) => ({
+        id: `${nextTaskId}-${index}-${file.name}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        file,
+      })),
+      baixaAt: '',
+      baixaAction: '',
+      justification: '',
+      emailSentAt: '',
+      emailSentTo: '',
+      docsSentAt: '',
+      docsSentTo: '',
+      emailNotificationStatus: '',
+      emailNotificationError: '',
+      emailNotificationAttemptAt: '',
+      generatedBySettings: false,
+      source: 'sporadic-obligation',
+      obligationType: 'esporadica',
+      departmentScope,
+      frequency: 'Esporádica',
+    }
+
+    setTasksRows((prev) => [newTaskRow, ...prev])
+    setTaskFilters(initialTaskFilters)
+    setAppliedTaskFilters(initialTaskFilters)
+    setTaskPage(1)
+    clearSporadicTaskForm(true)
+    openTaskDetail(newTaskRow.id, 'task')
+  }
+
   const clearSettingsTaskForm = (closeModal = false) => {
     setEditingTaskBlueprintId(null)
     setSettingsTaskCompanyTypeOpen(false)
@@ -6850,7 +7133,7 @@ function App() {
       return
     }
 
-    let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, task.id), 0) + 1
+    let nextId = tasksRows.reduce((maxId, task) => Math.max(maxId, Number(task?.id) || 0), 0) + 1
     const generatedRows = []
 
     targetClients.forEach((client) => {
@@ -7105,6 +7388,13 @@ function App() {
   const settingsTaskClients = clientsForCurrentUser.filter(
     (client) => settingsTaskForm.includeDisabledClients || client.status !== 'Inativo',
   )
+  const sporadicTaskClientOptions = clientsForCurrentUser
+    .filter((client) => client.status !== 'Inativo')
+    .sort((left, right) =>
+      String(left.nome || '').localeCompare(String(right.nome || ''), 'pt-BR', {
+        sensitivity: 'base',
+      }),
+    )
   const clientTaxationOptions = Array.from(
     new Set(clientsForCurrentUser.map((client) => (client.tributacao || '').trim()).filter(Boolean)),
   )
@@ -7447,7 +7737,8 @@ function App() {
   })
 
   const hasTaskPeriodFilter = Boolean(appliedTaskFilters.startDate || appliedTaskFilters.endDate)
-  const rowsVisibleInTaskPanelRaw = hasTaskPeriodFilter
+  const hasStatusBucketDrilldown = (appliedTaskFilters.statusBucket || 'all') !== 'all'
+  const rowsVisibleInTaskPanelRaw = hasTaskPeriodFilter || hasStatusBucketDrilldown
     ? filteredReportRows
     : filteredReportRows.filter((row) => {
         const rowDateIso = parseBrDateToIso(getTaskDateBy(row, appliedTaskFilters.dateBy))
@@ -8425,6 +8716,18 @@ function App() {
   const obligationsRowsDynamic = Array.from(obligationsByDepartment.values()).sort((a, b) =>
     a.name.localeCompare(b.name, 'pt-BR'),
   )
+  const pendingObligationsByDepartment = taskReportRows
+    .filter((row) => row.taskType === 'Tarefa')
+    .reduce((acc, row) => {
+      if (isCompletedTaskStatus(getTaskDisplayStatus(row).status)) return acc
+      const key = getDepartmentLabel(row.dept) || 'Sem departamento'
+      acc.set(key, (acc.get(key) || 0) + 1)
+      return acc
+    }, new Map())
+  const obligationsRowsWithGlobalPending = obligationsRowsDynamic.map((row) => ({
+    ...row,
+    pending: pendingObligationsByDepartment.get(row.name) || 0,
+  }))
   const solicitationDepartmentOptions = Array.from(
     new Set(
       [
@@ -8534,11 +8837,23 @@ function App() {
   const solicitationItems = Array.from(solicitationsByDepartment.values()).sort((a, b) =>
     a.name.localeCompare(b.name, 'pt-BR'),
   )
+  const pendingSolicitationsByDepartment = taskReportRows
+    .filter((row) => row.taskType === 'Solicitação')
+    .reduce((acc, row) => {
+      if (isCompletedTaskStatus(getTaskDisplayStatus(row).status)) return acc
+      const key = getDepartmentLabel(normalizeSolicitationDepartment(row.dept)) || 'Sem departamento'
+      acc.set(key, (acc.get(key) || 0) + 1)
+      return acc
+    }, new Map())
+  const solicitationItemsWithGlobalPending = solicitationItems.map((row) => ({
+    ...row,
+    pending: pendingSolicitationsByDepartment.get(row.name) || 0,
+  }))
   const controlRowsData = controlRows.map((group) => {
     if (group.group === 'Obrigações') {
       return {
         ...group,
-        items: obligationsRowsDynamic.filter(
+        items: obligationsRowsWithGlobalPending.filter(
           (item) => normalizeFreeText(item.name) !== normalizeFreeText('Cliente'),
         ),
       }
@@ -8546,7 +8861,7 @@ function App() {
     if (group.group === 'Solicitações') {
       return {
         ...group,
-        items: solicitationItems.filter(
+        items: solicitationItemsWithGlobalPending.filter(
           (item) => normalizeFreeText(item.name) !== normalizeFreeText('Cliente'),
         ),
       }
@@ -10707,7 +11022,7 @@ function App() {
                 <header className="task-detail-header card">
                   <div className="task-detail-title">
                     <button type="button" className="chip small" onClick={goBackToTasks}>
-                      Voltar para Obrigações
+                      {isSelectedSolicitation ? 'Voltar para Solicitações' : 'Voltar para Obrigações'}
                     </button>
                     <h4>{selectedTask ? selectedTask.subject : `${selectedEntityLabel} não encontrada`}</h4>
                     <p>
@@ -11085,6 +11400,20 @@ function App() {
                                       </span>
                                     </header>
                                     <p>{message.text}</p>
+                                    {Array.isArray(message.attachments) && message.attachments.length ? (
+                                      <div className="task-conversation-attachments">
+                                        {message.attachments.map((attachment) => (
+                                          <button
+                                            key={attachment.id}
+                                            type="button"
+                                            className="chip tiny"
+                                            onClick={() => downloadConversationAttachment(attachment)}
+                                          >
+                                            {attachment.name}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                   </article>
                                 ))}
                               </div>
@@ -11106,6 +11435,27 @@ function App() {
                                   placeholder="Digite a resposta para o cliente..."
                                 />
                               </label>
+                              <label className="task-reply-composer-field">
+                                <span>Anexos da conversa</span>
+                                <input type="file" multiple onChange={handleTaskReplyAttachments} />
+                              </label>
+                              {taskReplyAttachments.length ? (
+                                <div className="task-conversation-attachments">
+                                  {taskReplyAttachments.map((attachment) => (
+                                    <div key={attachment.id} className="task-conversation-attachment-item">
+                                      <span>{attachment.name}</span>
+                                      <button
+                                        type="button"
+                                        className="chip tiny"
+                                        onClick={() => removeTaskReplyAttachment(attachment.id)}
+                                        disabled={taskReplySending}
+                                      >
+                                        Remover
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
                               <div className="task-reply-composer-actions task-conversation-actions">
                                 <button
                                   type="button"
@@ -11113,6 +11463,7 @@ function App() {
                                   onClick={() => {
                                     setTaskReplyOpen(false)
                                     setTaskReplyDraft('')
+                                    setTaskReplyAttachments([])
                                     setTaskActionError('')
                                   }}
                                   disabled={taskReplySending}
@@ -11154,7 +11505,7 @@ function App() {
                   <section className="card task-detail-empty">
                     <p>{`A ${selectedEntityLabelLower} selecionada não foi encontrada.`}</p>
                     <button type="button" className="chip small" onClick={goBackToTasks}>
-                      Voltar para listagem
+                      {isSelectedSolicitation ? 'Voltar para Solicitações' : 'Voltar para Obrigações'}
                     </button>
                   </section>
                 )}
@@ -13012,7 +13363,7 @@ function App() {
                   </button>
                 </header>
                 <div className="modal-grid">
-                  <button className="create-option" type="button">
+                  <button className="create-option" type="button" onClick={openSporadicTaskModal}>
                     <span className="option-icon" />
                     Obrigação Esporádica
                   </button>
@@ -13424,6 +13775,186 @@ function App() {
                   </div>
                 </form>
                 {settingsTaskFeedback ? <p className="settings-feedback">{settingsTaskFeedback}</p> : null}
+              </div>
+            </div>
+          ) : null}
+
+          {sporadicTaskOpen ? (
+            <div
+              className="modal-backdrop"
+              onMouseDown={handleModalBackdropMouseDown}
+              onClick={(event) => handleModalBackdropClick(event, () => clearSporadicTaskForm(true))}
+            >
+              <div className="modal-card wide" onClick={(event) => event.stopPropagation()}>
+                <header className="modal-header">
+                  <h3>Tarefa Esporádica</h3>
+                  <button className="modal-close" type="button" onClick={() => clearSporadicTaskForm(true)}>
+                    ×
+                  </button>
+                </header>
+
+                <form className="settings-task-form" onSubmit={handleSporadicTaskSave}>
+                  <div className="settings-form-grid settings-task-dates">
+                    <label className="settings-field">
+                      <span>
+                        Ação <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={String(getDayOfMonthFromIso(sporadicTaskForm.actionDate))}
+                        onChange={(event) =>
+                          handleSporadicTaskChange(
+                            'actionDate',
+                            setIsoDateDay(sporadicTaskForm.actionDate, event.target.value),
+                          )
+                        }
+                      >
+                        {monthDayOptions.map((day) => (
+                          <option key={`sporadic-action-day-${day}`} value={day}>
+                            {day}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Meta <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={String(getDayOfMonthFromIso(sporadicTaskForm.metaDate))}
+                        onChange={(event) =>
+                          handleSporadicTaskChange(
+                            'metaDate',
+                            setIsoDateDay(sporadicTaskForm.metaDate, event.target.value),
+                          )
+                        }
+                      >
+                        {monthDayOptions.map((day) => (
+                          <option key={`sporadic-meta-day-${day}`} value={day}>
+                            {day}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>
+                        Vencimento <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={String(getDayOfMonthFromIso(sporadicTaskForm.dueDate))}
+                        onChange={(event) =>
+                          handleSporadicTaskChange(
+                            'dueDate',
+                            setIsoDateDay(sporadicTaskForm.dueDate, event.target.value),
+                          )
+                        }
+                      >
+                        {monthDayOptions.map((day) => (
+                          <option key={`sporadic-due-day-${day}`} value={day}>
+                            {day}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="settings-form-grid settings-task-obligation">
+                    <label className="settings-field">
+                      <span>
+                        Obrigação <strong className="req">*</strong>
+                      </span>
+                      <input
+                        list="settings-obligation-options-sporadic"
+                        type="text"
+                        value={sporadicTaskForm.obligation}
+                        onChange={(event) => handleSporadicTaskChange('obligation', event.target.value)}
+                        placeholder="Selecione ou digite"
+                      />
+                      <datalist id="settings-obligation-options-sporadic">
+                        {settingsTaskObligationOptions.map((option) => (
+                          <option key={option} value={option} />
+                        ))}
+                      </datalist>
+                    </label>
+
+                    <label className="settings-field">
+                      <span>
+                        Selecionar Cliente <strong className="req">*</strong>
+                      </span>
+                      <select
+                        value={sporadicTaskForm.clientId}
+                        onChange={(event) => handleSporadicTaskChange('clientId', event.target.value)}
+                      >
+                        <option value="">Selecione...</option>
+                        {sporadicTaskClientOptions.map((client) => (
+                          <option key={`sporadic-client-${client.id}`} value={String(client.id)}>
+                            {getDisplayClientName(client.nome, client.inscricao || '')}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <label className="settings-field">
+                    <span>
+                      Obrigação Departamento <strong className="req">*</strong>
+                    </span>
+                    <select
+                      value={sporadicTaskForm.departmentScope}
+                      onChange={(event) => handleSporadicTaskChange('departmentScope', event.target.value)}
+                    >
+                      <option value="">Selecione...</option>
+                      {groupOptions.map((option) => (
+                        <option key={`sporadic-department-${option}`} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="settings-field">
+                    <span>Anexar arquivos</span>
+                    <input type="file" multiple onChange={handleSporadicTaskAttachments} />
+                  </label>
+                  {sporadicTaskForm.attachments.length ? (
+                    <div className="settings-attachments">
+                      {sporadicTaskForm.attachments.map((file) => (
+                        <span key={`${file.name}-${file.size}`} className="settings-attachment-pill">
+                          {file.name}
+                          <button
+                            type="button"
+                            onClick={() => removeSporadicTaskAttachment(file.name, file.size)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <label className="settings-field">
+                    <span>Informações gerais</span>
+                    <textarea
+                      rows={4}
+                      value={sporadicTaskForm.generalInfo}
+                      onChange={(event) => handleSporadicTaskChange('generalInfo', event.target.value)}
+                      placeholder="Preencha se necessário..."
+                    />
+                  </label>
+
+                  <div className="settings-actions-row">
+                    <button
+                      type="button"
+                      className="chip small"
+                      onClick={() => clearSporadicTaskForm(true)}
+                    >
+                      Cancelar
+                    </button>
+                    <button type="submit" className="primary small">
+                      Confirmar
+                    </button>
+                  </div>
+                </form>
+                {sporadicTaskFeedback ? <p className="settings-feedback">{sporadicTaskFeedback}</p> : null}
               </div>
             </div>
           ) : null}
